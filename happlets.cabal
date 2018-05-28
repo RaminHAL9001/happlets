@@ -85,18 +85,16 @@ Library {
 
   BUILD-DEPENDS:
     bytestring           >=0.10.0.0 && <1.0.0.0,
-    colour               >=2.0.0    && <3.0.0,
-    containers           >=0.5.5.0  && <=0.5.7.0,
-    fail                 >=4.7      && <5.0,
+    containers           >=0.5.5.0  && <0.6.0.0,
     lens                 >=4.0.0.0  && <5.0.0.0,
     linear               >=1.20.0   && <2.0.0.0,
     mtl                  >=2.2.0    && <=2.2.1,
     semigroups           >=0.16.0   && <0.19.0,
-    time                 >=1.4.0.0  && <=1.6.0.0,
-    text                 >=1.1.1.4  && <=2.0.0.0,
-    transformers         >=0.1.1    && <0.5.0,
-    unordered-containers >=0.2.0.0  && <=0.3.0.0,
-    base                 >=4.7      && <4.9
+    time                 >=1.4.0.0  && <=1.7.0.0,
+    text                 >=1.1.1.4  && <2.0.0.0,
+    transformers         >=0.1.1    && <0.6.0,
+    unordered-containers >=0.2.0.0  && <0.3.0.0,
+    base                 >=4.7      && <4.10
 
   DEFAULT-EXTENSIONS:
     DeriveDataTypeable
