@@ -54,7 +54,7 @@ data TextExtents2D
 -- programmers to evaluate all of these functions using the 'Happlets.GUI.onView' function and
 -- perform the expected update on the Happlet window.
 class (Functor render, Applicative render, Monad render, MonadIO render, Show font)
-   => HappletsDrawText render font | font -> render where
+   => HappletsDrawText render font | render -> font where
   -- | Obtain a list of fonts available to this @canvas@.
   listFonts :: render [font]
 
