@@ -31,8 +31,7 @@
 -- 3. call 'attachWindow' to attach the 'Happlets.GUI.Happlet' to the window, passing an
 --    initializing 'Happlets.GUI.GUI' function to setup the event handlers.
 -- 4. perform the above 3 steps for as many windows as necessary.
--- 5. call 'launchGUIEventLoop' to start the application
--- 6. if necessary, call 'deleteWindow'.
+-- 5. if necessary, call 'deleteWindow'.
 --
 -- @
 -- main :: IO ()
@@ -58,12 +57,6 @@
 --     --- attaching the happlet container to the window and initializing the event handlers ---
 --     ---
 --     'attachWindow' win happ initMyHapplet
---     ---
---     'launchGUIEventLoop' -- Will not return until an exit condition halts the event loop.
---     ---
---     --- not always necessary, but delete the windows after the event loop halts ---
---     ---
---     'deleteWindow' win
 -- @
 --
 -- The initializing function passed to 'attachWindow' takes a 'Happlets.Draw.SampCoord.PixSize', so
@@ -168,21 +161,29 @@ instance MonadState Config (Initialize window) where
 --     )
 -- @
 simpleHapplet
-  :: Provider window
+  :: Provider window -- ^ pass the Happlets back-end provider
   -> StateT Config IO ()
-  -> model
+      -- ^ Use lens functions like @('Control.Lens..=')@ and @('Control.Lens.%=')@ to define this
+      -- function.
+  -> model -- ^ pass the initial model
   -> (PixSize -> GUI window model ())
+      -- ^ Pass the function which installs the event handlers.
   -> IO ()
-simpleHapplet provider updcfg model init = happlet provider $ do
-  get >>= liftIO . execStateT updcfg >>= put
-  join $ attachWindow True <$> newWindow <*> newHapplet model <*> pure init
+simpleHapplet provider updcfg model init = do
+  doInitializeGUI provider
+  hap <- makeHapplet model
+  config <- execStateT updcfg (defaultConfig provider)
+  win <- doWindowNew provider config
+  doWindowAttach provider True win hap init
+  doGUIEventLoopLaunch provider config
+  doWindowDelete provider win
 
 -- | Run the 'Initialize' function with the given back-end 'Happlets.Happlet.Provider'.
 happlet :: Provider window -> Initialize window a -> IO a
 happlet provider (Initialize f) = do
   doInitializeGUI provider
   (a, config) <- runStateT (runReaderT f provider) (defaultConfig provider)
-  doGUIEventLoopLaunch provider config
+  liftIO $ doGUIEventLoopLaunch provider config
   return a
 
 -- | Create a new @window@. The @window@ itself only contains stateful information relevant to the
@@ -223,17 +224,18 @@ attachWindow
 attachWindow vis win happ init = liftIO =<<
   asks doWindowAttach <*> pure vis <*> pure win <*> pure happ <*> pure init
 
--- | This function launches the GUI event loop. You must call this function once after all of your
--- Happlet setup has been performed. This function will not return until the GUI event loop has
--- halted, so it must be the last function called in the 'Initialize' "do" block, except perhaps for
--- the 'deleteWindow' function which can be evaluated after it.
-launchGUIEventLoop :: Initialize window ()
-launchGUIEventLoop = get >>= \ config -> asks doGUIEventLoopLaunch >>= liftIO . ($ config)
+---- | This function launches the GUI event loop. This function is called automatically by the
+---- functions 'happlet' and 'simpleHapplet', so it should generally not be called. This function is
+---- exported for those who wish to 
+--launchGUIEventLoop :: Initialize window ()
+--launchGUIEventLoop = get >>= \ config -> asks doGUIEventLoopLaunch >>= liftIO . ($ config)
 
--- | Delete a window. It often is not necessary to delete a Happlet window because usually once the
--- 'Initialize' function has completed evaluating, there ought not be anything after the 'happlet'
--- function in the @main@ function, and so the executable program will quit, signaling to the
--- operating system window manager to delete all windows associated with this program. None the
--- less, this function exists for the purpose of explicitly deleting windows.
-deleteWindow :: window -> Initialize window ()
-deleteWindow win = liftIO =<< asks doWindowDelete <*> pure win
+---- | Delete a window. It almost never necessary to delete a Happlet window because usually once the
+---- 'Initialize' function has completed evaluating, there ought not be anything after the 'happlet'
+---- function in the @main@ function, and so the executable program will quit, signaling to the
+---- operating system window manager to delete all windows associated with this program. However this
+---- function exists for the purpose of explicitly deleting windows. Be sure this function is called
+---- /after/ evaluating the 'launchGUIEventLoop' function, otherwise the window will be deleted before
+---- the event loop begins.
+--deleteWindow :: window -> Initialize window ()
+--deleteWindow win = liftIO =<< asks doWindowDelete <*> pure win
