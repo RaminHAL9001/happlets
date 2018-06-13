@@ -4,7 +4,9 @@
 -- it is easier to do so. This module can be imported with the "Happlets.Draw" module.
 module Happlets.Draw.Color
   ( PackedRGBA32(..), FillColor, LineColor,
-    unpackRGBA32Color, packRGBA32Color, packRGBA32, unpackRGBA32,
+    unpackRGBA32Color, packRGBA32Color,
+    packRGBA32, unpackRGBA32,
+    packRGBA32Root2, unpackRGBA32Pow2,
     quantizeColorChannel, unquantizeColorChannel,
     -- * British Spellings
     FillColour, LineColour,
@@ -79,10 +81,21 @@ packRGBA32 :: Word8 -> Word8 -> Word8 -> Word8 -> PackedRGBA32
 packRGBA32 r g b a = PackedRGBA32 $! sh r 24 .|. sh g 16 .|. sh b 8 .|. sh a 0 where
   sh c s = shift (fromIntegral c) s
 
+-- | Perform an integral square root on each component value and then call 'packRGBA32'.
+packRGBA32Root2 :: Word16 -> Word16 -> Word16 -> Word16 -> PackedRGBA32
+packRGBA32Root2 r g b a = packRGBA32 (root r) (root g) (root b) (root a) where
+  root = round . sqrt . (realToFrac :: Word16 -> Float)
+
 -- | This is the inverse operation of 'packRGBA32'.
 unpackRGBA32 :: PackedRGBA32 -> (Word8, Word8, Word8, Word8)
 unpackRGBA32 (PackedRGBA32 w) = (unsh 24, unsh 16, unsh 8, unsh 0) where
   unsh s = fromIntegral $! 0x000000FF .&. shift w (negate s)
+
+-- | Similar to 'unpackRGBA32', but returns 'Data.Word.Word16' values, and raises each returned
+-- value to the power of 2.
+unpackRGBA32Pow2 :: PackedRGBA32 -> (Word16, Word16, Word16, Word16)
+unpackRGBA32Pow2 = unpackRGBA32 >>> \ (r, g, b, a) -> (un r, un g, un b, un a) where
+  un = fromIntegral >>> \ x -> x * x
 
 -- | This function takes a linear color value expressed as a 'Prelude-Double'-precision
 -- floating-point value, clamps it to a value between 0 and 1, then computes the square-root on this
