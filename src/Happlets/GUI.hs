@@ -75,6 +75,7 @@ import           Prelude hiding ((.), id)
 
 import           Happlets.Event
 import           Happlets.Draw.SampCoord
+import           Happlets.Draw.Types2D
 
 import           Control.Arrow
 import           Control.Category
@@ -153,9 +154,27 @@ class HappletWindow window render | window -> render where
     -> (PixSize -> GUI window newmodel ())
     -> GUI window oldmodel ()
 
-  -- | Construct a 'GUI' function which evaluates a @render@ function that updates the image of the
-  -- @window@.
+  -- | Construct a 'GUI' function which evaluates a @render@ function that updates the buffer image
+  -- of the @window@. Since this is the buffer image being updated, you can think of this as the
+  -- more "permanent" image of the window. Images drawn with this function can be copied back to the
+  -- window any time, and this happens automatically when the window is covered and only the covered
+  -- portion need to be redrawn.
   onView :: forall model a . (PixSize -> render a) -> GUI window model a
+
+  -- | Similar to 'onView' but does NOT draw to the buffer. By calling 'redrawRegion' you can
+  -- "erase" portions of the view that were drawn by this function with the content of the buffer
+  -- that was drawn by the 'onView' function. Use this function only when you want to draw an image
+  -- "temporarily," for example, when drawing an image that moves with the mouse cursor.
+  drawToWindow :: forall model a . (PixSize -> render a) -> GUI window model a
+
+  -- | Force an area of the window to be re-drawn by re-blitting the double-buffer image to the
+  -- window. Use this method to clear parts of the window that have been drawn over by the
+  -- 'drawToWindow' function.
+  refreshRegion :: Rect2D SampCoord -> GUI window model ()
+
+  -- | Like 'refreshRegion' but refreshes the whole window. This function deletes everything drawn
+  -- by the 'drawToWindow' function and replaces it with the content of the image drawn by 'onView'.
+  refreshWindow :: GUI window model ()
 
 -- | This is a type class similar to the 'Prelude.Show' class, except it displays to the 'GUI'.
 class Display drawable render | drawable -> render where
