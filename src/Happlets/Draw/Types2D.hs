@@ -6,14 +6,15 @@
 -- should be enough to construct minimalist user interfaces.
 module Happlets.Draw.Types2D
   ( RealApprox(..), realApprox,
-    Point2D(..), point2D, pointX, pointY, pointXY,
+    Point2D, point2D, pointX, pointY, pointXY,
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
     Rect2D(..), rect2D, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
-    rect2DMinBoundOf, rect2DIntersect, rect2DDiagonal,
+    canonicalRect2D, rect2DMinBoundOf, rect2DIntersect, rect2DDiagonal,
     MaybeSingleton2D(..), HasBoundingBox(..),
     LineWidth,
   ) where
 
+import           Control.Arrow
 import           Control.Lens
 import           Control.Monad
 
@@ -33,15 +34,7 @@ instance Read RealApprox where
   readsPrec p str = readsPrec p str >>= \ (n, rem) -> [(RealApprox n, rem)]
 
 -- | This type represents a single point.
-newtype Point2D n = Point2D (V2 n)
-  deriving (Eq, Functor)
-
-instance Num n => Semigroup (Point2D n) where
-  (Point2D(V2 xa ya)) <> (Point2D(V2 xb yb)) = Point2D $ V2 (xa + xb) (ya + yb)
-
-instance Num n => Monoid (Point2D n) where
-  mempty = Point2D $ V2 0 0
-  mappend = (<>)
+type Point2D n = V2 n
 
 -- | This type represents a line segment consisting of two points.
 data Line2D n = Line2D !(Point2D n) !(Point2D n)
@@ -58,22 +51,22 @@ instance Ord n => Semigroup (Rect2D n) where { (<>) = rect2DMinBoundOf; }
 
 -- | An initializing 'Point2D' where 'pointX' and 'pointY' are both zero.
 point2D :: Num n => Point2D n
-point2D = Point2D $ V2 0 0
+point2D = V2 0 0
 
 realApprox :: Iso' RealApprox Double
 realApprox = iso unwrapRealApprox RealApprox
 
 -- | The X coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
 pointX :: Lens' (Point2D n) n
-pointX = lens (\ (Point2D(V2 x _)) -> x) $ \ (Point2D(V2 _ y)) x -> Point2D (V2 x y)
+pointX = lens (\ (V2 x _) -> x) $ \ (V2 _ y) x -> (V2 x y)
 
--- | The X coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
+-- | The Y coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
 pointY :: Lens' (Point2D n) n
-pointY = lens (\ (Point2D(V2 _ y)) -> y) $ \ (Point2D(V2 x _)) y -> Point2D (V2 x y)
+pointY = lens (\ (V2 _ y) -> y) $ \ (V2 x _) y -> (V2 x y)
 
 -- | Expresses the point as a tuple of @(x, y)@ coordinates
 pointXY :: Iso' (Point2D n) (n, n)
-pointXY = iso (\ (Point2D (V2 x y)) -> (x, y)) (\ (x,y) -> Point2D $ V2 x y)
+pointXY = iso (\ (V2 x y) -> (x, y)) (\ (x,y) -> V2 x y)
 
 -- | An initializing 'Line2D' where 'lineHead' and 'lineTail' are both the zero 'point2D'.
 line2D :: Num n => Line2D n
@@ -107,31 +100,34 @@ rect2DTail = lens (\ (Rect2D _ b) -> b) $ \ (Rect2D _ b) a -> Rect2D a b
 rect2DPoints :: Iso' (Rect2D n) (Point2D n, Point2D n)
 rect2DPoints = iso (\ (Rect2D a b) -> (a, b)) (\ (a,b) -> Rect2D a b)
 
+-- | Re-order the bounding 'Point2D's of the 'Rect2D' such that the 'rect2DHead' is the point
+-- closest to the origin @('Linear.V2.V2' 0 0)@ and the 'rect2DTail' is the point furthest from the
+-- origin.
+canonicalRect2D :: Ord n => Rect2D n -> Rect2D n
+canonicalRect2D (Rect2D (V2 x0 y0) (V2 x1 y1)) =
+  Rect2D (V2 (min x0 x1) (min y0 y1)) (V2 (max x0 x1) (max y0 y1))
+
 -- | Test if the given 'Point2D' lies within, or on the bounding box of, the given 'Rect2D'.
 pointInRect2D :: Ord n => Point2D n -> Rect2D n -> Bool
-pointInRect2D (Point2D(V2 x y)) (Rect2D(Point2D(V2 xa ya))(Point2D(V2 xb yb))) =
-  let xlo = min xa xb
-      ylo = min ya yb
-      xhi = max xa xb
-      yhi = max ya yb
+pointInRect2D (V2 x y) = view rect2DPoints . canonicalRect2D >>> \ (p0, p1) ->
+  let (xlo, ylo) = p0 ^. pointXY
+      (xhi, yhi) = p1 ^. pointXY
       between a b c = a <= b && b <= c
   in  between xlo x xhi && between ylo y yhi
 
 -- | Computes the smallest possible rectangle that can contain both rectangles, no matter how far
 -- apart they are.
 rect2DMinBoundOf :: Ord n => Rect2D n -> Rect2D n -> Rect2D n
-rect2DMinBoundOf 
-  (Rect2D(Point2D(V2 xa ya))(Point2D(V2 xb yb)))
-  (Rect2D(Point2D(V2 xc yc))(Point2D(V2 xd yd))) =
-    let f4 comp a b c d = comp a $ comp b $ comp c d in Rect2D
-      (Point2D (V2 (f4 min xa xb xc xd) (f4 min ya yb yc yd)))
-      (Point2D (V2 (f4 max xa xb xc xd) (f4 max ya yb yc yd)))
+rect2DMinBoundOf (Rect2D(V2 xa ya)(V2 xb yb)) (Rect2D(V2 xc yc)(V2 xd yd)) =
+  let f4 comp a b c d = comp a $ comp b $ comp c d in Rect2D
+    (V2 (f4 min xa xb xc xd) (f4 min ya yb yc yd))
+    (V2 (f4 max xa xb xc xd) (f4 max ya yb yc yd))
 
 -- | Returns an intersection of two 'Rect2D's if the two 'Rect2D's overlap.
 rect2DIntersect :: Ord n => Rect2D n -> Rect2D n -> Maybe (Rect2D n)
 rect2DIntersect
-  (Rect2D(Point2D(V2 xa ya))(Point2D(V2 xb yb)))
-  (Rect2D(Point2D(V2 xc yc))(Point2D(V2 xd yd))) = do
+  (Rect2D(V2 xa ya)(V2 xb yb))
+  (Rect2D(V2 xc yc)(V2 xd yd)) = do
     (xa, xb) <- pure (min xa xb, max xa xb)
     (ya, yb) <- pure (min ya yb, max ya yb)
     (xc, xd) <- pure (min xc xd, max xc xd)
@@ -140,7 +136,7 @@ rect2DIntersect
     let isect a b c d = guard (between a c b || between c b d) >> return (min xa xc, max xb xd) 
     (xlo, xhi) <- isect xa xb xc xd
     (ylo, yhi) <- isect ya yb yc yd
-    return $ Rect2D (Point2D (V2 xlo ylo)) (Point2D (V2 xhi yhi))
+    return $ Rect2D (V2 xlo ylo) (V2 xhi yhi)
 
 -- | Convert a 'Rect2D' to a 'Line2D'
 rect2DDiagonal :: Rect2D n -> Line2D n
