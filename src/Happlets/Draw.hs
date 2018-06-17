@@ -30,7 +30,7 @@ import           Control.Monad.IO.Class
 --
 -- The @render@ data type instantiated here is expected to be the the same as the @render@ type
 -- instantiated into the 'Happlets.GUI.HappletWindow' type class, which should allow Happlet
--- programmers to evaluate all of these functions using the 'Happlets.GUI.onView' function and
+-- programmers to evaluate all of these functions using the 'Happlets.GUI.onCanvas' function and
 -- perform the expected update on the Happlet window.
 class (Functor render, Applicative render, Monad render, MonadIO render)
    => Happlet2DGraphics render where

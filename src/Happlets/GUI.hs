@@ -37,7 +37,7 @@
 -- the 'getModel', 'putModel', and 'modifyModel' functions are also provided in this module which
 -- are 'GUI'-specific versions of the "Contorol.Monad.State.Class" functions.
 --
--- GUI functions update the window using the 'onView' function which evaluates a screen updating
+-- GUI functions update the window using the 'onCanvas' function which evaluates a screen updating
 -- function specific to the back-end 'Happlets.Provider.Provider' as defined by the 'HappletWindow'
 -- type class.
 module Happlets.GUI
@@ -141,7 +141,27 @@ peekModel (Happlet{happletMVar=mvar}) = readMVar mvar
 ----------------------------------------------------------------------------------------------------
 
 -- | All Happlet back-end 'Happlets.Provider.Provider's must instantiate this type class at the very
--- least.
+-- least. The functions in this typeclass allow you to draw images that become visible on screen.
+--
+-- When drawing images, keep in mind that the Happlet window is double buffered, and you may draw to
+-- either buffer.
+--
+-- * There is a __"canvas"__ buffer which you fully control, only your code has access to this
+--   buffer. This buffer has more permanence, because the only time it can be changed is when your
+--   own code changes it.
+--
+-- * There is also an __"OS buffer"__ which is a buffer managed by your operating system's window
+--   manager. This buffer is often modified by the operating system, for example, when a window from
+--   another application is laid on top of your Happlet's window.
+--
+-- When the OS buffer becomes "dirty" (modified by some event happening elsewhere in the operating
+-- system and window manager), the canvas buffer is used to re-draw the dirty region of the window.
+--
+-- The only time you should draw to the __OS buffer__ is when drawing a temporary image, like a
+-- custom mouse cursor, or a drag-and-drop shadow. You can draw an image that follows the mouse
+-- cursor, then when the cursor moves again, use 'refreshWindow' or 'refreshRegion' to delete the
+-- temporary image and redrawing that part of the window with the __canvas__ buffer, and draw the
+-- cursor again at the new mouse location.
 class HappletWindow window render | window -> render where
 
   -- | Similar to 'doWindowNewHapplet', except places an existing 'Happlet' into the @window@,
@@ -155,25 +175,26 @@ class HappletWindow window render | window -> render where
     -> GUI window oldmodel ()
 
   -- | Construct a 'GUI' function which evaluates a @render@ function that updates the buffer image
-  -- of the @window@. Since this is the buffer image being updated, you can think of this as the
-  -- more "permanent" image of the window. Images drawn with this function can be copied back to the
-  -- window any time, and this happens automatically when the window is covered and only the covered
-  -- portion need to be redrawn.
-  onView :: forall model a . (PixSize -> render a) -> GUI window model a
+  -- of the @window@. Since this is the "canvas buffer" being updated, the images drawn by
+  -- this function have much more permanence than images draw directly to the window with
+  -- 'drawToWindow'. Images drawn with this function are copied back to the window whenever the
+  -- window becomes "dirty," like when a your window is covered by another window from another
+  -- application.
+  onCanvas :: forall model a . (PixSize -> render a) -> GUI window model a
 
-  -- | Similar to 'onView' but does NOT draw to the buffer. By calling 'redrawRegion' you can
+  -- | Similar to 'onCanvas' but does NOT draw to the buffer. By calling 'redrawRegion' you can
   -- "erase" portions of the view that were drawn by this function with the content of the buffer
-  -- that was drawn by the 'onView' function. Use this function only when you want to draw an image
+  -- that was drawn by the 'onCanvas' function. Use this function only when you want to draw an image
   -- "temporarily," for example, when drawing an image that moves with the mouse cursor.
-  drawToWindow :: forall model a . (PixSize -> render a) -> GUI window model a
+  onOSBuffer :: forall model a . (PixSize -> render a) -> GUI window model a
 
-  -- | Force an area of the window to be re-drawn by re-blitting the double-buffer image to the
+  -- | Force an area of the window to be redrawn by re-blitting the double buffer image to the
   -- window. Use this method to clear parts of the window that have been drawn over by the
   -- 'drawToWindow' function.
-  refreshRegion :: Rect2D SampCoord -> GUI window model ()
+  refreshRegion :: [Rect2D SampCoord] -> GUI window model ()
 
   -- | Like 'refreshRegion' but refreshes the whole window. This function deletes everything drawn
-  -- by the 'drawToWindow' function and replaces it with the content of the image drawn by 'onView'.
+  -- by the 'drawToWindow' function and replaces it with the content of the image drawn by 'onCanvas'.
   refreshWindow :: GUI window model ()
 
 -- | This is a type class similar to the 'Prelude.Show' class, except it displays to the 'GUI'.
