@@ -164,6 +164,14 @@ peekModel (Happlet{happletMVar=mvar}) = readMVar mvar
 -- cursor again at the new mouse location.
 class HappletWindow window render | window -> render where
 
+  -- | Return the size of the window. As you can see from the type of this function, it can only be
+  -- evaluated from within a GUI, which guarantees the window size is valid for the duration of the
+  -- function evaluation. After a 'GUI' function finishes evaluation, it is not called again until a
+  -- new event comes in, at which time the size of the window may have changed and you will need to
+  -- call this function again to obtain the new size. It is a good idea to call this function first
+  -- before doing anyting else, if you need the window size for your 'GUI' computation.
+  getWindowSize :: GUI window model PixSize
+
   -- | Similar to 'doWindowNewHapplet', except places an existing 'Happlet' into the @window@,
   -- removing the previous 'Happlet'. This is effectivel a context switch that occurs within a
   -- single @window@. This function disables all event handlers, then evaluates the given 'GUI'
@@ -180,13 +188,13 @@ class HappletWindow window render | window -> render where
   -- 'drawToWindow'. Images drawn with this function are copied back to the window whenever the
   -- window becomes "dirty," like when a your window is covered by another window from another
   -- application.
-  onCanvas :: forall model a . (PixSize -> render a) -> GUI window model a
+  onCanvas :: forall model a . render a -> GUI window model a
 
   -- | Similar to 'onCanvas' but does NOT draw to the buffer. By calling 'redrawRegion' you can
   -- "erase" portions of the view that were drawn by this function with the content of the buffer
   -- that was drawn by the 'onCanvas' function. Use this function only when you want to draw an image
   -- "temporarily," for example, when drawing an image that moves with the mouse cursor.
-  onOSBuffer :: forall model a . (PixSize -> render a) -> GUI window model a
+  onOSBuffer :: forall model a . render a -> GUI window model a
 
   -- | Force an area of the window to be redrawn by re-blitting the double buffer image to the
   -- window. Use this method to clear parts of the window that have been drawn over by the
@@ -390,7 +398,11 @@ class Managed window where
 -- resolutions or screen orientations can change.
 class CanResize window where
   -- | This event handler is evaluated when the window is resized. It should NOT be called when the
-  -- window is first initialized, or when it is made visible
+  -- window is first initialized, or when it is first made visible. The 'PixSize' event value passed
+  -- to the event handler 'GUI' function you provie to this event handler will always be exactly the
+  -- same value as what is returned by 'getWindowSize'. The reason we provide the 'PixSize' via
+  -- continuation passing style here is to maintain consistency with all other event handlers which
+  -- always take one event value.
   resizeEvents :: (PixSize -> GUI window model ()) -> GUI window model ()
 
 -- | This class provides the ability to install animation event handlers which are repeatedly called
