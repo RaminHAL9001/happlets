@@ -12,7 +12,10 @@ module Happlets.Draw.Types2D
     canonicalRect2D, rect2DMinBoundOf, rect2DIntersect, rect2DDiagonal,
     MaybeSingleton2D(..), HasBoundingBox(..),
     LineWidth,
+    module Happlets.Draw.SampCoord,
   ) where
+
+import           Happlets.Draw.SampCoord
 
 import           Control.Arrow
 import           Control.Lens
