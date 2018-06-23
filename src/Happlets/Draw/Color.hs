@@ -3,18 +3,23 @@
 -- import the "Happlets" module, so if you would prefer to use a better alternative color data type
 -- it is easier to do so. This module can be imported with the "Happlets.Draw" module.
 module Happlets.Draw.Color
-  ( PackedRGBA32(..), FillColor, LineColor,
+  ( PackedRGBA32, FillColor, LineColor,
+    get32BitsRGBA, set32BitsRGBA, word32RGBA,
+    get32BitsARGB, set32BitsARGB, word32ARGB,
     unpackRGBA32Color, packRGBA32Color,
     packRGBA32, unpackRGBA32,
     packRGBA32Root2, unpackRGBA32Pow2,
-    quantizeColorChannel, unquantizeColorChannel,
+    quantizedColor, quantizeColorChannel, unquantizeColorChannel,
     -- * British Spellings
     FillColour, LineColour,
     unpackRGBA32Colour, packRGBA32Colour, quantizeColourChannel, unquantizeColourChannel,
     -- * Fundamental Colors and Shades,
-    red, green, blue, cyan, magenta, yellow, white, black, grey, gray, light, dark,
+    red, maroon, lime, green, blue, navy,
+    cyan, aqua, teal, magenta, fuchsia, purple, yellow, olive,
+    chartreuse, violet, orange, rose, spring, azure,
+    white, black, grey, gray, light, dark,
     -- * Color Channels
-    redChannel, greenChannel, blueChannel, alphaChannel,
+    chanR, chanG, chanB, alphaChannel,
   ) where
 
 import           Control.Arrow
@@ -34,7 +39,7 @@ type FillColor = PackedRGBA32
 -- | For using a type name that describes how the 'PackedRGBA32' value is being used for.
 type LineColor = PackedRGBA32
 
-newtype PackedRGBA32 = PackedRGBA32{ unwrapPackedRGBA32 :: Word32 }
+newtype PackedRGBA32 = PackedRGBA32 Word32
   deriving Eq
 
 instance Show PackedRGBA32 where
@@ -113,6 +118,40 @@ quantizeColorChannel =
 unquantizeColorChannel :: Word8 -> Double
 unquantizeColorChannel = (** 2.0) . (/ (realToFrac (maxBound :: Word8) :: Double)) . realToFrac
 
+-- | An 'Control.Lens.Iso'morphism for 'quantizeColorChannel' and 'unquantizeColorChannel'.
+quantizedColor :: Iso' Double Word8
+quantizedColor = iso quantizeColorChannel unquantizeColorChannel
+
+-- | Obtain the bits as a 'Data.Word.Word32' value formatted with each octet in the
+-- Red-Green-Blue-Alpha format (in that order, from biggest to littlest significant bits). This is
+-- similar to 'get32BitsARGB' but the resultant 'Data.Word.Word32' value is bitwise rotated -8
+-- steps.
+get32BitsRGBA :: PackedRGBA32 -> Word32
+get32BitsRGBA (PackedRGBA32 w) = w
+
+-- | The inverse operation of 'packed32BitsRGBA'.
+set32BitsRGBA :: Word32 -> PackedRGBA32
+set32BitsRGBA = PackedRGBA32
+
+-- | An 'Control.Lens.Iso'morphism wrapping 'get32BitsRGBA' and 'set32BitsRGBA'.
+word32RGBA :: Iso' PackedRGBA32 Word32
+word32RGBA = iso get32BitsRGBA set32BitsRGBA
+
+-- | Obtain the bits as a 'Data.Word.Word32' value formatted with each octet in the
+-- Alpha-Red-Green-Blue format (in that order, from biggest to littlest significant bit). This is
+-- similar to 'get32BitsRGBA' but the resultant 'Data.Word.Word32' value is bitwise rotated +8
+-- steps.
+get32BitsARGB :: PackedRGBA32 -> Word32
+get32BitsARGB (PackedRGBA32 w) = rotate w (-8)
+
+-- | The inverse operation of 'get32BitsARGB'.
+set32BitsARGB :: Word32 -> PackedRGBA32
+set32BitsARGB = PackedRGBA32 . flip rotate 8
+
+-- | An 'Control.Lens.Iso'morphism wrapping 'get32BitsARGB' and 'set32BitsRGBA'.
+word32ARGB :: Iso' PackedRGBA32 Word32
+word32ARGB = iso get32BitsARGB set32BitsARGB
+
 ----------------------------------------------------------------------------------------------------
 
 -- | British spelling of 'FillColor'
@@ -139,45 +178,104 @@ unquantizeColourChannel = unquantizeColorChannel
 
 ----------------------------------------------------------------------------------------------------
 
--- |
+nameColor :: Word32 -> PackedRGBA32
+nameColor w = PackedRGBA32 $ rotate w 8 .|. 0x0000FF
+
+-- | #FF0000
 red :: PackedRGBA32
-red = PackedRGBA32 0xFF0000FF
+red = nameColor 0xFF0000
 
--- | 
+-- | #7F0000
+maroon :: PackedRGBA32
+maroon = nameColor 0x7F0000
+
+-- | #00FF00 
+lime :: PackedRGBA32
+lime = nameColor 0x00FF00
+
+-- | #007F00
 green :: PackedRGBA32
-green = PackedRGBA32 0x00FF00FF
+green = nameColor 0x007F00
 
--- |
+-- | #0000FF
 blue :: PackedRGBA32
-blue = PackedRGBA32 0x0000FFFF
+blue = nameColor 0x0000FF
 
--- |
+-- | #00007F
+navy :: PackedRGBA32
+navy = nameColor 0x00007F
+
+-- | #00FFFF (same as 'aqua')
 cyan :: PackedRGBA32
-cyan = PackedRGBA32 0x00FFFFFF
+cyan = nameColor 0x00FFFF
 
--- |
+-- | #00FFFF (same as 'cyan')
+aqua :: PackedRGBA32
+aqua = cyan
+
+-- | #FF00FF (same as 'fuchsia')
 magenta :: PackedRGBA32
-magenta = PackedRGBA32 0xFF00FFFF
+magenta = nameColor 0xFF00FF
 
--- |
+-- | #FF00FF (same as 'magenta')
+fuchsia :: PackedRGBA32
+fuchsia = magenta
+
+-- | #FFFF00
 yellow :: PackedRGBA32
-yellow = PackedRGBA32 0xFFFF00FF
+yellow = nameColor 0xFFFF00
 
--- |
+-- | #7FFF00FF
+chartreuse :: PackedRGBA32
+chartreuse = nameColor 0x7FFF00FF
+
+-- | #FF7F00FF
+orange :: PackedRGBA32
+orange = nameColor 0xFF7F00FF
+
+-- | #7F00FF
+violet :: PackedRGBA32
+violet = nameColor 0x7F00FF
+
+-- | #FF007F
+rose :: PackedRGBA32
+rose = nameColor 0xFF007F
+
+-- | #007FFF
+azure :: PackedRGBA32
+azure = nameColor 0x007FFF
+
+-- | #00FF7F
+spring :: PackedRGBA32
+spring = nameColor 0x00FF7F
+
+-- | #007F7F
+teal :: PackedRGBA32
+teal = nameColor 0x007F7F
+
+-- | #7F7F00
+purple :: PackedRGBA32
+purple = nameColor 0x7F7F00
+
+-- | #7F7F00
+olive :: PackedRGBA32
+olive = nameColor 0x7F7F00
+
+-- | #FFFFFF
 white :: PackedRGBA32
-white = PackedRGBA32 0xFFFFFFFF
+white = nameColor 0xFFFFFF
 
--- |
+-- | #000000
 black :: PackedRGBA32
-black = PackedRGBA32 0x000000FF
+black = nameColor 0x000000
 
--- |
-grey :: PackedRGBA32
-grey = PackedRGBA32 0x808080FF
-
--- |
+-- | #7F7F7F (same as 'grey')
 gray :: PackedRGBA32
-gray = grey
+gray = nameColor 0x7F7F7F
+
+-- | #7F7F7F (same as 'gray')
+grey :: PackedRGBA32
+grey = grey
 
 ----------------------------------------------------------------------------------------------------
 
@@ -197,18 +295,18 @@ alphaChannel = bitShiftColorChannelLens 0
 
 -- | A lens to change the linear (unquantized) red channel value without needing to unpack then
 -- repack the 'PackedRGBA32' value.
-redChannel :: Lens' PackedRGBA32 Double
-redChannel = bitShiftColorChannelLens 24
+chanR :: Lens' PackedRGBA32 Double
+chanR = bitShiftColorChannelLens 24
 
 -- | A lens to change the linear (unquantized) green channel value without needing to unpack then
 -- repack the 'PackedRGBA32' value.
-greenChannel :: Lens' PackedRGBA32 Double
-greenChannel = bitShiftColorChannelLens 16
+chanG :: Lens' PackedRGBA32 Double
+chanG = bitShiftColorChannelLens 16
 
 -- | A lens to change the linear (unquantized) blue channel value without needing to unpack then
 -- repack the 'PackedRGBA32' value.
-blueChannel :: Lens' PackedRGBA32 Double
-blueChannel = bitShiftColorChannelLens 8
+chanB :: Lens' PackedRGBA32 Double
+chanB = bitShiftColorChannelLens 8
 
 -- | Shift the color toward white. For example @('light' 'red')@ may look like a "pink"
 -- color. Please be aware that this is not necessarily the inverse function of 'dark' due to loss of
