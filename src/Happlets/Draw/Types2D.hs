@@ -6,7 +6,7 @@
 -- should be enough to construct minimalist user interfaces.
 module Happlets.Draw.Types2D
   ( RealApprox(..), realApprox,
-    Point2D, point2D, pointX, pointY, pointXY,
+    Point2D, Size2D, point2D, size2D, pointX, pointY, pointXY,
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
     Rect2D(..), rect2D, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
     canonicalRect2D, rect2DMinBoundOf, rect2DIntersect, rect2DDiagonal,
@@ -39,6 +39,8 @@ instance Read RealApprox where
 -- | This type represents a single point.
 type Point2D n = V2 n
 
+type Size2D n = V2 n
+
 -- | This type represents a line segment consisting of two points.
 data Line2D n = Line2D !(Point2D n) !(Point2D n)
   deriving (Eq, Functor)
@@ -55,6 +57,10 @@ instance Ord n => Semigroup (Rect2D n) where { (<>) = rect2DMinBoundOf; }
 -- | An initializing 'Point2D' where 'pointX' and 'pointY' are both zero.
 point2D :: Num n => Point2D n
 point2D = V2 0 0
+
+-- | A synonym for 'point2D'.
+size2D :: Num n => Size2D n
+size2D = point2D
 
 realApprox :: Iso' RealApprox Double
 realApprox = iso unwrapRealApprox RealApprox
