@@ -2,11 +2,48 @@
 --
 -- This module provides a minimal extended API for rendering text into a Happlet window as an
 -- old-fashioned "dumb terminal" would display fonts, e.g. the DEC VT-100 terminal protocol still
--- used today on modern Linux systems. The basic idea is that the visible window contains a layer of
--- text that is always on top of the graphics layer. The window is sub-divided into rows and
--- columns, and the cursor (by default) advances from left to right, and on a carriage return
--- advnaces downward. The text grid increases and decreases with the window size, but the cells of
--- the text grid are always a value of 03 by 03.
+-- used today on modern Linux systems.
+--
+-- The most important function type is the 'ScreenPrinter'. Construct a 'ScreenPrinter' from a
+-- string using 'displayString' or 'displayChar'. You can also modify the font style using the
+-- 'fontStyle' function. If you have set the @-XOverloadedStrings@ Haskell compiler flag, simply
+-- writing a string literal will construct a 'ScreenPrinter' by way of the 'Data.String.fromString'
+-- function. For example:
+--
+-- @
+-- 'Happlets.GUI.onCanvas' $ do
+--     'screenPrinter' $ do
+--         'textCursor' . 'gridRow'
+--         'displayString' "This is some text printed in the default font.\\n"
+--         'fontStyle' (do 'fontForeColor' 'Control.Lens..=' 'Happlets.Draw.Color.blue'; 'fontBold' 'Control.Lens..=' 'Prelude.True';) $ do
+--             "This text is written with a bold blue font of the default size.\\n"
+--             "Using -XOverloadedStrings, you don't need to use \''displayString'\' at all.\\n"
+--             'displayString' "Or you can use it for clarity.\\n"
+--         "This text is back to the default font.\\n"
+--
+-- 'Happlets.GUI.display' $ do
+--     'displayString' "The \''ScreenPrinter'\' type instantiates the \''display'\' function.\\n"
+-- @
+--
+-- The 'ScreenPrinter' function type lifts a @render@ function type that /should/ be defined by the
+-- Happlets back-end provider to be the same @render@ type as that of the
+-- 'Happlets.GUI.HappletWindow' class. In order to display text in a Happlet window, evaluate a
+-- 'ScreenPrinter' using the 'screenPrinter' function, which produces a @render@ function. Then
+-- use either the 'Happlets.GUI.onCanvas' or 'Happlets.GUI.onOSBuffer' function to evaluate the
+-- @render@ function to a 'GUI' function that can be evaluate from within any Happlet event handler.
+--
+-- It is also possible to display text with the 'Happlets.GUI.display' function, however you cannot
+-- pass overloaded strings to the 'display' function because Haskell's type inference will not be
+-- able to deduce that the type you intend for 'display' to evaluate is of the 'ScreenPrinter' type
+-- from a polymorphic string literal alone.
+--
+-- The functions and data types in this module model a virtual dumb terminal device, all font styles
+-- are assumed to be monospace fonts with a limited range of font sizes. The font sizes are integer
+-- multiples of a minimum text grid size. The way this virtual device basically works is that the
+-- visible window contains a layer of text that is always on top of the graphics layer. The window
+-- is sub-divided into rows and columns, and the cursor (by default) advances from left to right,
+-- and on a carriage return advnaces downward. The text grid increases and decreases with the window
+-- size, but the cells of the text grid are always a value of 03 by 03.
 --
 -- Characters are placed into the grid, and each character advances a cursor. Characters can be
 -- half-width which advances the column count by 1 times the 'fontSizeMultiplier' or full-width,
@@ -19,23 +56,24 @@
 --
 -- The default text mode is 'normalSize' black text on white
 module Happlets.Draw.Text
-  (-- * Character Printing Machine
-    RenderText(..), printChar, printString,
-    getWindowTextGridSize, gridTextLocationToPoint, getPixSizeOfChar,
-    ScreenPrinter(..), ScreenPrinterState(..), mkScreenPrinter, runScreenPrinter,
-    printStyle, gridColumn, gridRow, cursorCharRule, renderOffset,
+  ( ScreenPrinter(..), screenPrinter, fontStyle,
+    textCursor, cursorCharRule, renderOffset, printerFontStyle,
+    HasTextGridLocation(..),
+    -- * Font Styles
+    FontStyle(..), IsUnderlined(..), IsStriken(..), defaultFontStyle,
+    fontForeColor, fontBackColor, fontSize, fontBold, fontItalic, fontUnderline, fontStriken,
     -- * Font Sizes
     FontSize(..), fontSizeMultiple,
     tinySize, smallSize, normalSize, mediumSize, largeSize, superSize, doubleSize,
-    -- * Font Styles
-    FontStyle(..),
-    IsUnderlined(..), IsStriken(..),  mkFontStyle,
-    fontForeColor, fontBackColor, fontSize, fontBold, fontItalic, fontUnderline, fontStriken,
-    -- * Text Grid Location
-    TextGridRow(..), rowInt, TextGridColumn(..), columnInt,
-    TextGridLocation(..), TextGridSize, mkTextGridLocation,
     -- * Cursor Advance Mechanism
     CursorCharRule, cursorCharRuleLangC, cursorCharRuleLangDOS,
+    -- * Text Grid Location
+    TextGridRow(..), rowInt, TextGridColumn(..), columnInt,
+    TextGridLocation(..), TextGridSize, textGridLocation,
+    -- * Character Printing Machine
+    RenderText(..), displayChar, displayString,
+    getWindowTextGridSize, gridTextLocationToPoint, getPixSizeOfChar,
+    ScreenPrinterState(..), screenPrinterState, runScreenPrinter,
     module Data.Char,
     module Data.Char.WCWidth
   ) where
@@ -48,6 +86,7 @@ import           Control.Monad.State
 
 import           Data.Char
 import           Data.Char.WCWidth
+import           Data.String
 
 import           Linear.V2
 
@@ -121,9 +160,10 @@ data FontStyle
     , theFontUnderline :: !IsUnderlined
     , theFontStriken   :: !IsStriken
     }
+  deriving Eq
 
-mkFontStyle :: FontStyle
-mkFontStyle = FontStyle
+defaultFontStyle :: FontStyle
+defaultFontStyle = FontStyle
   { theFontForeColor = black
   , theFontBackColor = white
   , theFontSize      = normalSize
@@ -184,8 +224,8 @@ instance HasTextGridLocation TextGridLocation where
   gridColumn = lens (\ (TextGridLocation   _ b) -> b)
                     (\ (TextGridLocation a _) b -> TextGridLocation a b)
 
-mkTextGridLocation :: TextGridLocation
-mkTextGridLocation = TextGridLocation 1 1
+textGridLocation :: TextGridLocation
+textGridLocation = TextGridLocation 1 1
 
 rowInt    :: Iso' TextGridRow Int
 rowInt    = iso (\ (TextGridRow i) -> i) TextGridRow
@@ -200,7 +240,7 @@ columnInt = iso (\ (TextGridColumn i) -> i) TextGridColumn
 -- lenes. For example, to set the font to be bold:
 --
 -- @
--- do  'printStyle' . 'fontBold' .= True
+-- do  'printerFontStyle' . 'fontBold' .= True
 -- @
 --
 -- To get the current row and column:
@@ -212,27 +252,30 @@ columnInt = iso (\ (TextGridColumn i) -> i) TextGridColumn
 -- @
 data ScreenPrinterState
   = ScreenPrinterState
-    { thePrintStyle     :: !FontStyle
-    , theTextCursor     :: !TextGridLocation
-    , theRenderOffset   :: !(V2 Double)
-    , theCursorCharRule :: CursorCharRule
+    { thePrinterFontStyle :: !FontStyle
+    , theTextCursor       :: !TextGridLocation
+    , theRenderOffset     :: !(V2 Double)
+    , theCursorCharRule   :: CursorCharRule
     }
 
-mkScreenPrinter :: ScreenPrinterState
-mkScreenPrinter = ScreenPrinterState
-  { thePrintStyle     = mkFontStyle
-  , theTextCursor     = mkTextGridLocation
-  , theRenderOffset   = V2 (0.0) (0.0)
-  , theCursorCharRule = cursorCharRuleLangC
+screenPrinterState :: ScreenPrinterState
+screenPrinterState = ScreenPrinterState
+  { thePrinterFontStyle = defaultFontStyle
+  , theTextCursor       = textGridLocation
+  , theRenderOffset     = V2 (0.0) (0.0)
+  , theCursorCharRule   = cursorCharRuleLangC
   }
 
--- | The current font style.
-printStyle    :: Lens' ScreenPrinterState FontStyle
-printStyle    = lens thePrintStyle $ \ a b -> a{ thePrintStyle = b }
+-- | The current font style. Use this function to force the font to change without using
+-- 'fontStyle'. If this function is called within a 'fontStyle' @do@ block, any changes made by this
+-- function are lost and the font style that was set before the parent 'fontStyle' function @do@
+-- block will be restored.
+printerFontStyle :: Lens' ScreenPrinterState FontStyle
+printerFontStyle = lens thePrinterFontStyle $ \ a b -> a{ thePrinterFontStyle = b }
 
 -- | The current 'gridRow' and 'gridColumn' of the text cursor.
-textCursor    :: Lens' ScreenPrinterState TextGridLocation
-textCursor    = lens theTextCursor $ \ a b -> a{ theTextCursor = b }
+textCursor       :: Lens' ScreenPrinterState TextGridLocation
+textCursor       = lens theTextCursor $ \ a b -> a{ theTextCursor = b }
 
 instance HasTextGridLocation ScreenPrinterState where
   gridColumn = textCursor . gridColumn
@@ -241,12 +284,12 @@ instance HasTextGridLocation ScreenPrinterState where
 -- | Determines how far from the left and top of the screen a character will be positioned when it
 -- is rendered at the cursor location @('gridRow' 'Control.Lens..=' 1)@ @('gridColumn'
 -- 'Cursor.Lens..=' 1)@.
-renderOffset   :: Lens' ScreenPrinterState (V2 Double)
-renderOffset   = lens theRenderOffset $ \ a b -> a{ theRenderOffset = b }
+renderOffset     :: Lens' ScreenPrinterState (V2 Double)
+renderOffset     = lens theRenderOffset $ \ a b -> a{ theRenderOffset = b }
 
--- | This function is called to advance the cursor every time the 'printChar' function is called.
-cursorCharRule :: Lens' ScreenPrinterState CursorCharRule
-cursorCharRule = lens theCursorCharRule $ \ a b -> a{ theCursorCharRule = b }
+-- | This function is called to advance the cursor every time the 'displayChar' function is called.
+cursorCharRule   :: Lens' ScreenPrinterState CursorCharRule
+cursorCharRule   = lens theCursorCharRule $ \ a b -> a{ theCursorCharRule = b }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -258,7 +301,7 @@ cursorCharWCWidth :: CursorCharRule
 cursorCharWCWidth st c = execState $ do
   let w = wcwidth c
   unless (w <= 0) $ do
-    let size = st ^. printStyle . fontSize
+    let size = st ^. printerFontStyle . fontSize
     gridColumn += TextGridColumn (w * fontSizeMultiple size)
 
 -- | This is the default text cursor behavior. If the given character is @('\\LF')@, the
@@ -273,7 +316,7 @@ cursorCharWCWidth st c = execState $ do
 cursorCharRuleLangC :: CursorCharRule
 cursorCharRuleLangC st c = execState $ case c of
   '\n'-> do
-    let size = st ^. printStyle . fontSize
+    let size = st ^. printerFontStyle . fontSize
     gridRow += TextGridRow (2 * fontSizeMultiple size)
     gridColumn .= 1
   c   -> modify $ cursorCharWCWidth st c
@@ -301,6 +344,8 @@ instance Monad render => MonadState ScreenPrinterState (ScreenPrinter render) wh
 instance MonadTrans ScreenPrinter where
   lift = ScreenPrinter . lift
 
+instance RenderText render => IsString (ScreenPrinter render ()) where { fromString = displayString; }
+
 -- | Instantiate this class into a monadic @render@ing function by
 -- 'Control.Monad.Trans.Class.lift'ing the @render@ function type into the 'ScreenPrinter' type. Use
 -- the 'Control.Monad.State.get' or 'Control.Lens.use' functions to obtain the 'fontStyle' and
@@ -325,7 +370,25 @@ class Monad render => RenderText render where
   -- including the row and column position.
   screenPrintCharNoAdvance  :: ScreenPrinterState -> Char -> render ()
 
--- | Evaluate the 'Control.Monad.State.Class.MonadState' 'ScreenPrinter'.
+  -- | Preserve a single 'ScreenPrinterState' in the @render@ state.
+  saveScreenPrinterState :: ScreenPrinterState -> render ()
+
+  -- | Produce a copy of the laste 'ScreenPrinterState' that was called with
+  -- 'saveScreenPrinterState', or return 'screenPrinterState' if 'saveScreenPrinterState' was never
+  -- called.
+  recallSavedScreenPrinterState :: render ScreenPrinterState
+
+-- | Evaluate the 'Control.Monad.State.Class.MonadState' 'ScreenPrinter'. Use this function within a
+-- @do@ block passed to the 'Happlets.GUI.onCanvas' or 'Happlets.GUI.onOSBuffer' function in order
+-- to to place text on screen.
+screenPrinter :: RenderText render => ScreenPrinter render a -> render a
+screenPrinter f = do
+  (a, st) <- recallSavedScreenPrinterState >>= runScreenPrinter f
+  saveScreenPrinterState st
+  return a
+
+-- | Wrapper around the 'Control.Monad.State.runStateT' function for evaluating a 'ScreenPrinter'
+-- function.
 runScreenPrinter :: ScreenPrinter render a -> ScreenPrinterState -> render (a, ScreenPrinterState)
 runScreenPrinter = runStateT . unwrapScreenPrinter
 
@@ -353,16 +416,35 @@ getPixSizeOfChar :: RenderText render => ScreenPrinterState -> Char -> render (S
 getPixSizeOfChar st c = do
   let cw = wcwidth c
   cellsize <- getGridCellSize
-  let fs = fontSizeMultiple $ st ^. printStyle . fontSize
+  let fs = fontSizeMultiple $ st ^. printerFontStyle . fontSize
   return $ V2 (cellsize * realToFrac (fs * cw)) (cellsize * realToFrac (fs * 2))
 
 -- | This function renders a single character, then advances the 'gridColumn' or 'gridRow'.
-printChar :: RenderText render => Char -> ScreenPrinter render ()
-printChar c = do
+displayChar :: RenderText render => Char -> ScreenPrinter render ()
+displayChar c = do
   st <- get
   lift $ screenPrintCharNoAdvance st c
   textCursor %= theCursorCharRule st st c
 
--- | Render a string by repeatedly calling 'printChar' repeatedly.
-printString :: RenderText render => String -> ScreenPrinter render ()
-printString = mapM_ printChar
+-- | Render a string by repeatedly calling 'displayChar' repeatedly. The 
+displayString :: RenderText render => String -> ScreenPrinter render ()
+displayString = mapM_ displayChar
+
+-- | This function takes a function which temporarily changes the font style used by the
+-- printer. The function used to modify the 'printerFontStyle' is a pure 'Control.Monad.State.State'
+-- function, meaning you can make use of the 'Control.Lens.Lens'es like @('Control.Lens..=')@ to set
+-- the font style. For example:
+--
+-- @
+-- "This text is printed in the default font.\n"
+-- 'fontStyle' (do 'fontForeColor' 'Control.Lens..=' 'Happlets.Draw.Color.blue'; 'fontBold' 'Control.Lens..=' True) $ do
+--     "This text is bold and blue."
+-- "This text is the 
+-- @
+fontStyle
+  :: RenderText render
+  => State FontStyle () -> ScreenPrinter render a -> ScreenPrinter render a
+fontStyle changeFont print = do
+  oldStyle <- use printerFontStyle
+  printerFontStyle %= execState changeFont
+  print <* (printerFontStyle .= oldStyle)
