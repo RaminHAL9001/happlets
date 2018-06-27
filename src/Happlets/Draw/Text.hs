@@ -63,7 +63,7 @@ module Happlets.Draw.Text
     FontStyle(..), IsUnderlined(..), IsStriken(..), defaultFontStyle,
     fontForeColor, fontBackColor, fontSize, fontBold, fontItalic, fontUnderline, fontStriken,
     -- * Font Sizes
-    FontSize(..), fontSizeMultiple,
+    FontSize(..), fontSizeStep, fontSizeMultiple,
     tinySize, smallSize, normalSize, mediumSize, largeSize, superSize, doubleSize,
     -- * Cursor Advance Mechanism
     CursorCharRule, cursorCharRuleLangC, cursorCharRuleLangDOS,
@@ -102,8 +102,8 @@ data FontSize
 
 -- | Font widths are defined as multiples of 3, starting with 6. This function returns the multiple,
 -- so 'FontSize06' returns 1, 'fontSize30' returns 5.
-fontSizeMultiple :: FontSize -> Int
-fontSizeMultiple = \ case
+fontSizeStep :: FontSize -> Int
+fontSizeStep = \ case
   FontSize06 -> 1
   FontSize09 -> 2
   FontSize12 -> 3
@@ -111,6 +111,11 @@ fontSizeMultiple = \ case
   FontSize18 -> 5
   FontSize21 -> 6
   FontSize24 -> 7
+
+-- | Return a multiplier value for the 'FontSize' which, when multiplied by a minimum font size
+-- value for your back-end Happlets provider, produces a reasonable font size scalar value.
+fontSizeMultiple :: FontSize -> Float
+fontSizeMultiple size = 1.0 + (0.5 * (realToFrac (fontSizeStep size) - 1.0))
 
 -- | Synonym for 'FontSize06', smallest font size
 tinySize :: FontSize
@@ -302,7 +307,7 @@ cursorCharWCWidth st c = execState $ do
   let w = wcwidth c
   unless (w <= 0) $ do
     let size = st ^. printerFontStyle . fontSize
-    gridColumn += TextGridColumn (w * fontSizeMultiple size)
+    gridColumn += TextGridColumn (w * fontSizeStep size)
 
 -- | This is the default text cursor behavior. If the given character is @('\\LF')@, the
 -- 'gridColumn' is set to 1 and the 'gridRow' is incremented. For all other characters, the
@@ -317,7 +322,7 @@ cursorCharRuleLangC :: CursorCharRule
 cursorCharRuleLangC st c = execState $ case c of
   '\n'-> do
     let size = st ^. printerFontStyle . fontSize
-    gridRow += TextGridRow (2 * fontSizeMultiple size)
+    gridRow += TextGridRow (2 * fontSizeStep size)
     gridColumn .= 1
   c   -> modify $ cursorCharWCWidth st c
 
@@ -416,7 +421,7 @@ getPixSizeOfChar :: RenderText render => ScreenPrinterState -> Char -> render (S
 getPixSizeOfChar st c = do
   let cw = wcwidth c
   cellsize <- getGridCellSize
-  let fs = fontSizeMultiple $ st ^. printerFontStyle . fontSize
+  let fs = fontSizeStep $ st ^. printerFontStyle . fontSize
   return $ V2 (cellsize * realToFrac (fs * cw)) (cellsize * realToFrac (fs * 2))
 
 -- | This function renders a single character, then advances the 'gridColumn' or 'gridRow'.
