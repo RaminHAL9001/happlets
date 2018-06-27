@@ -406,8 +406,8 @@ gridTextLocationToPoint (TextGridLocation (TextGridRow row) (TextGridColumn col)
   cellsize       <- getGridCellSize
   (V2 winW winH) <- getWindowGridCellSize
   return $ V2
-    ((if row < 0 then (+ (realToFrac winH)) else id) $ realToFrac row * cellsize)
     ((if col < 0 then (+ (realToFrac winW)) else id) $ realToFrac col * cellsize)
+    ((if row < 0 then (+ (realToFrac winH)) else id) $ realToFrac row * cellsize)
 
 -- | Get the pixel size of a character given the current 'fontStyle'. This value is entirely
 -- dependent on just three values: the result of 'getGridSizeOfWindow' and the current 'FontSize',
