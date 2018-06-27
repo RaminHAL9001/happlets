@@ -482,7 +482,7 @@ class CanTrackpad window where
 
 class CanBufferImages window image render | window -> image, window -> render where
   -- | Create a new image buffer.
-  newImageBuffer :: forall model a . PixSize -> render a -> GUI window model image
+  newImageBuffer :: forall model a . PixSize -> render a -> GUI window model (a, image)
   -- | Resize the image buffer.
   resizeImageBuffer :: forall model a . image -> PixSize -> render a -> GUI window model a
   -- | Draw to the image buffer using a @draw@ function.
