@@ -157,8 +157,8 @@ data IsStriken = NotStriken | Striken | DoubleStriken deriving (Eq, Ord, Show)
 
 data FontStyle
   = FontStyle
-    { theFontForeColor :: !PackedRGBA32
-    , theFontBackColor :: !PackedRGBA32
+    { theFontForeColor :: !Color
+    , theFontBackColor :: !Color
     , theFontSize      :: !FontSize
     , theFontBold      :: !Bool
     , theFontItalic    :: !Bool
@@ -178,10 +178,10 @@ defaultFontStyle = FontStyle
   , theFontStriken   = NotStriken
   }
 
-fontForeColor     :: Lens' FontStyle PackedRGBA32
+fontForeColor     :: Lens' FontStyle Color
 fontForeColor = lens theFontForeColor $ \ a b -> a{ theFontForeColor = b }
 
-fontBackColor     :: Lens' FontStyle PackedRGBA32
+fontBackColor     :: Lens' FontStyle Color
 fontBackColor = lens theFontBackColor $ \ a b -> a{ theFontBackColor = b }
 
 fontSize      :: Lens' FontStyle FontSize

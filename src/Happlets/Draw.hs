@@ -49,12 +49,12 @@ class (Functor render, Applicative render, Monad render, MonadIO render)
   drawRect :: LineColor -> LineWidth -> FillColor -> Rect2D RealApprox -> render ()
 
   -- | Update a pixel value somewhere on the canvas.
-  setPoint :: Point2D RealApprox -> PackedRGBA32 -> render ()
+  setPoint :: Point2D RealApprox -> Color -> render ()
 
   -- | Read a pixel value somewhere on the canvas. Out-of-bounds indicies throw an exception.
-  getPoint :: Point2D RealApprox -> render PackedRGBA32
+  getPoint :: Point2D RealApprox -> render Color
 
 modifyPoint
   :: (Monad render, Happlet2DGraphics render)
-  => Point2D RealApprox -> (PackedRGBA32 -> PackedRGBA32) -> render ()
+  => Point2D RealApprox -> (Color -> Color) -> render ()
 modifyPoint p f = getPoint p >>= setPoint p . f
