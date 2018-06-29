@@ -230,7 +230,7 @@ instance HasTextGridLocation TextGridLocation where
                     (\ (TextGridLocation a _) b -> TextGridLocation a b)
 
 textGridLocation :: TextGridLocation
-textGridLocation = TextGridLocation 1 1
+textGridLocation = TextGridLocation 0 0
 
 rowInt    :: Iso' TextGridRow Int
 rowInt    = iso (\ (TextGridRow i) -> i) TextGridRow
@@ -323,7 +323,7 @@ cursorCharRuleLangC st c = execState $ case c of
   '\n'-> do
     let size = st ^. printerFontStyle . fontSize
     gridRow += TextGridRow (2 * fontSizeStep size)
-    gridColumn .= 1
+    gridColumn .= 0
   c   -> modify $ cursorCharWCWidth st c
 
 -- | Similar to 'cursorCharLangC' with one difference: the new line character @('\\LF')@ simply
@@ -333,8 +333,8 @@ cursorCharRuleLangC st c = execState $ case c of
 -- cursor to the next line.
 cursorCharRuleLangDOS :: CursorCharRule
 cursorCharRuleLangDOS st c = case c of
-  '\n' -> gridRow %~ (+ 1)
-  '\r' -> gridColumn .~ 1
+  '\n' -> gridRow +~ 1
+  '\r' -> gridColumn .~ 0
   c    -> cursorCharWCWidth st c
 
 ----------------------------------------------------------------------------------------------------
@@ -417,11 +417,11 @@ gridTextLocationToPoint (TextGridLocation (TextGridRow row) (TextGridColumn col)
 -- | Get the pixel size of a character given the current 'fontStyle'. This value is entirely
 -- dependent on just three values: the result of 'getGridSizeOfWindow' and the current 'FontSize',
 -- and the width of the character returned by 'Data.Char.WCWidth.wcwidth'.
-getPixSizeOfChar :: RenderText render => ScreenPrinterState -> Char -> render (Size2D Double)
-getPixSizeOfChar st c = do
+getPixSizeOfChar :: RenderText render => FontSize -> Char -> render (Size2D Double)
+getPixSizeOfChar size c = do
   let cw = wcwidth c
   cellsize <- getGridCellSize
-  let fs = fontSizeStep $ st ^. printerFontStyle . fontSize
+  let fs = fontSizeStep size
   return $ V2 (cellsize * realToFrac (fs * cw)) (cellsize * realToFrac (fs * 2))
 
 -- | This function renders a single character, then advances the 'gridColumn' or 'gridRow'.
