@@ -61,8 +61,8 @@ type Pressed = Bool
 
 -- | Keyboard event modifier bits. This is just an abstract, opaque, intermediate type used to
 -- encode information from various Happlet back-ends.
-data ModifierBits = ModifierBits Word32
-  deriving (Eq, Ord, Bounded, Typeable)
+newtype ModifierBits = ModifierBits Word32
+  deriving (Eq, Ord, Bounded, Bits, Typeable)
 
 instance Show ModifierBits where
   show = show . unpackModifiers
@@ -71,8 +71,15 @@ instance Show ModifierBits where
 -- information from various Happlet back-ends in a platform-independent way. It has a small list of
 -- symbols found on typical commercial keyboards.
 data KeyPoint
-  = CharKey !Char
-  | FuncKey !Int
+  = ModifierOnly
+    -- ^ In some systems, a modifier key (like Shift or Control) pressed alone will not generate an
+    -- event until accompanied with a 'CharKey' or some other 'KeyPoint'. However sometimes a
+    -- modifier key event is generated all by itself. When a modfier key is pressed alone, the
+    -- 'KeyPoint' should be set to 'ModifierOnly'.
+  | CharKey !Char
+    -- ^ A letter key, which should be upper or lower case depending on whether the shift modifier
+    -- is pressed or if the caps lock mode is enabled.
+  | FuncKey !Word8
     -- ^ Arbitrary function keys. Typical keybords typically have keys labeled "F1" through "F12".
   | UpArrowKey
   | DownArrowKey
@@ -80,15 +87,27 @@ data KeyPoint
   | RighArrowKey
   | TabKey
   | EnterKey
+  | ReturnKey
   | EscapeKey
   | BackSpaceKey
   | DeleteKey
+  | MenuKey
   | HomeKey
   | EndKey
   | PageUpKey
   | PageDownKey
   | InsertKey
   | PuaseKey
+  | BreakKey
+  | SysRqKey
+  | PrintScreenKey
+  | ScrollLockKey
+  | NumLockKey
+  | KanjiKey
+  | ZenkakuHankakuKey
+  | MuhenkanKey
+  | HenkanKey
+  | HiraganaKatakanaKey
   | SymbolKey Strict.ByteString
     -- ^ For keys not included in this list. This will typically be the logical name mapped to a raw
     -- keyboard point by the operating system.
@@ -104,12 +123,12 @@ data ModifierTag
   | Ctrl
   | LeftCtrl
   | RightCtrl
-  | Alt1
-  | LeftAlt1
-  | RightAlt1
-  | Alt2
-  | LeftAlt2
-  | RightAlt2
+  | Alt
+  | LeftAlt
+  | RightAlt
+  | Command -- A second alt key, specific to Apple keyboards
+  | LeftCommand
+  | RightCommand
   | Super1
   | LeftSuper1
   | RightSuper1
@@ -128,23 +147,59 @@ unpackModifiers :: ModifierBits -> [ModifierTag]
 unpackModifiers (ModifierBits bits) = [minBound .. maxBound] >>= \ tag ->
   guard (shift 1 (fromEnum tag) .&. bits /= 0) >> [tag]
 
-isAlt1 :: ModifierTag -> Bool
-isAlt1 = \ case
-  Alt1      -> True
-  LeftAlt1  -> True
-  RightAlt1 -> True
-  _         -> False
+-- | True if any of 'Alt', 'LeftAlt', or 'RightAlt' are set.
+altIsSet :: ModifierBits -> Bool
+altIsSet b = ModifierBits 0 /=
+  b .&. packModifiers [Alt, LeftAlt, RightAlt]
 
-isAlt2 :: ModifierTag -> Bool
-isAlt2 = \ case
-  Alt2      -> True
-  LeftAlt2  -> True
-  RightAlt2 -> True
-  _         -> False
+-- | True if any of 'Command', 'RightCommand', or 'LeftCommand' are set.
+commandIsSet :: ModifierBits -> Bool
+commandIsSet b = ModifierBits 0 /=
+  b .&. packModifiers [Command, LeftCommand, RightCommand]
 
+-- | True if any of 'Control', 'LeftControl', or 'RightControl' are set.
+ctrlIsSet :: ModifierBits -> Bool
+ctrlIsSet b = ModifierBits 0 /=
+  b .&. packModifiers [Ctrl, LeftCtrl, RightCtrl]
+
+-- | True if any of 'Shift', 'LeftShift', or 'RightShift' are set.
+shiftIsSet :: ModifierBits -> Bool
+shiftIsSet b = ModifierBits 0 /=
+  b .&. packModifiers [Shift, LeftShift, RightShift]
+
+-- | True if any of 'Super1', 'LeftSuper1', or 'RightSuper1' are set.
+super1IsSet :: ModifierBits -> Bool
+super1IsSet b = ModifierBits 0 /=
+  b .&. packModifiers [Super1, LeftSuper1, RightSuper1]
+
+-- | True if any of 'Super1', 'LeftSuper1', or 'RightSuper1' are set.
+super2IsSet :: ModifierBits -> Bool
+super2IsSet b = ModifierBits 0 /=
+  b .&. packModifiers [Super2, LeftSuper2, RightSuper2]
+
+-- | True if any of 'Super1', 'Super2', 'LeftSuper1', 'LeftSuper2', 'RightSuper1', or 'RightSuper2'
+-- have been set.
+superIsSet :: ModifierBits -> Bool
+superIsSet b = ModifierBits 0 /=
+  b .&. packModifiers [Super1, Super2, LeftSuper1, LeftSuper2, RightSuper1, RightSuper2]
+
+-- | True if the 'ModifierTag' is one of 'Alt', 'LeftAlt', or 'RightAlt'
 isAlt :: ModifierTag -> Bool
-isAlt tag = isAlt1 tag || isAlt2 tag
+isAlt = \ case
+  Alt      -> True
+  LeftAlt  -> True
+  RightAlt -> True
+  _        -> False
 
+-- | True if the 'ModifierTag' is one of 'Command', 'LeftCommand', or 'RightCommand'
+isCommand :: ModifierTag -> Bool
+isCommand = \ case
+  Command      -> True
+  LeftCommand  -> True
+  RightCommand -> True
+  _            -> False
+
+-- | True if the 'ModifierTag' is one of 'Ctrl', 'LeftCtrl', or 'RightCtrl'
 isCtrl :: ModifierTag -> Bool
 isCtrl = \ case
   Ctrl      -> True
@@ -152,6 +207,7 @@ isCtrl = \ case
   RightCtrl -> True
   _         -> False
 
+-- | True if the 'ModifierTag' is one of 'Shift', 'LeftShift', or 'RightShift'
 isShift :: ModifierTag -> Bool
 isShift = \ case
   Shift      -> True
@@ -159,6 +215,7 @@ isShift = \ case
   RightShift -> True
   _          -> False
 
+-- | True if the 'ModifierTag' is one of 'Super1', 'LeftSuper1', or 'RightSuper1'
 isSuper1 :: ModifierTag -> Bool
 isSuper1 = \ case
   Super1      -> True
@@ -166,6 +223,7 @@ isSuper1 = \ case
   RightSuper1 -> True
   _           -> False
 
+-- | True if the 'ModifierTag' is one of 'Super2', 'LeftSuper2', or 'RightSuper2'
 isSuper2 :: ModifierTag -> Bool
 isSuper2 = \ case
   Super2      -> True
@@ -173,11 +231,14 @@ isSuper2 = \ case
   RightSuper2 -> True
   _           -> False
 
+-- | True if either 'isSuper1' or 'isSuper2' are True.
 isSuper :: ModifierTag -> Bool
 isSuper tag = isSuper1 tag || isSuper2 tag
 
 ----------------------------------------------------------------------------------------------------
 
+-- | An abstraction for input devices that are neither keyboards nor mouses. This goes for game
+-- pads, joysticks, graphics tablets, touch screens, and motion-capture devices.
 type InputDeviceId = Strict.ByteString
 
 -- | An abstraction for mouse events. Includes whether a button was pressed or released, which
