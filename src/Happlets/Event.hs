@@ -84,7 +84,7 @@ data KeyPoint
   | UpArrowKey
   | DownArrowKey
   | LeftArrowKey
-  | RighArrowKey
+  | RightArrowKey
   | TabKey
   | EnterKey
   | ReturnKey
