@@ -9,7 +9,7 @@ import           Happlets.Draw.SampCoord
 import           Control.Monad
 
 import           Data.Bits
-import qualified Data.ByteString as Strict
+import qualified Data.Text as Strict
 import           Data.Time.Clock
 import           Data.Typeable
 import           Data.Word
@@ -108,7 +108,7 @@ data KeyPoint
   | MuhenkanKey
   | HenkanKey
   | HiraganaKatakanaKey
-  | SymbolKey Strict.ByteString
+  | SymbolKey Strict.Text
     -- ^ For keys not included in this list. This will typically be the logical name mapped to a raw
     -- keyboard point by the operating system.
   deriving (Eq, Show, Typeable)
@@ -239,7 +239,7 @@ isSuper tag = isSuper1 tag || isSuper2 tag
 
 -- | An abstraction for input devices that are neither keyboards nor mouses. This goes for game
 -- pads, joysticks, graphics tablets, touch screens, and motion-capture devices.
-type InputDeviceId = Strict.ByteString
+type InputDeviceId = Strict.Text
 
 -- | An abstraction for mouse events. Includes whether a button was pressed or released, which
 -- keyboard keys were pressed when the button was pressed, which buttons were pressed. An
