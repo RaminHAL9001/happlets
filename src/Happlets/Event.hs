@@ -9,6 +9,7 @@ import           Happlets.Draw.SampCoord
 import           Control.Monad
 
 import           Data.Bits
+import           Data.Semigroup
 import qualified Data.Text as Strict
 import           Data.Time.Clock
 import           Data.Typeable
@@ -60,19 +61,27 @@ data Keyboard
 type Pressed = Bool
 
 -- | Keyboard event modifier bits. This is just an abstract, opaque, intermediate type used to
--- encode information from various Happlet back-ends.
+-- encode information from various Happlet back-ends. Instantiates 'Semigroup' with the
+-- @('Data.Bits..|.')@ bitwise-OR function.
 newtype ModifierBits = ModifierBits Word32
   deriving (Eq, Ord, Bounded, Bits, Typeable)
 
 instance Show ModifierBits where
   show = show . unpackModifiers
 
+instance Semigroup ModifierBits where
+  (<>) = (.|.)
+
+instance Monoid ModifierBits where
+  mempty = ModifierBits 0
+  mappend = (<>)
+
 -- | Keyboard event information. This is just an abstract intermediate type used to encode
 -- information from various Happlet back-ends in a platform-independent way. It has a small list of
 -- symbols found on typical commercial keyboards.
 data KeyPoint
   = ModifierOnly
-    -- ^ In some systems, a modifier key (like Shift or Control) pressed alone will not generate an
+    -- ^ In some systems, a modifier key (like ShiftKey or Control) pressed alone will not generate an
     -- event until accompanied with a 'CharKey' or some other 'KeyPoint'. However sometimes a
     -- modifier key event is generated all by itself. When a modfier key is pressed alone, the
     -- 'KeyPoint' should be set to 'ModifierOnly'.
@@ -97,7 +106,7 @@ data KeyPoint
   | PageUpKey
   | PageDownKey
   | InsertKey
-  | PuaseKey
+  | PauseKey
   | BreakKey
   | SysRqKey
   | PrintScreenKey
@@ -116,29 +125,29 @@ data KeyPoint
 -- | Typical modifier keys provided by most GUI back-ends, platform-independent. These values are
 -- extracted from the 'ModifierBits' bit field 
 data ModifierTag
-  = Shift
-  | CapsLock
-  | LeftShift
-  | RightShift
-  | Ctrl
-  | LeftCtrl
-  | RightCtrl
-  | Alt
-  | LeftAlt
-  | RightAlt
-  | Command -- A second alt key, specific to Apple keyboards
-  | LeftCommand
-  | RightCommand
-  | Super1
-  | LeftSuper1
-  | RightSuper1
-  | Super2
-  | LeftSuper2
-  | RightSuper2
+  = ShiftKey
+  | CapsLockKey
+  | LeftShiftKey
+  | RightShiftKey
+  | CtrlKey
+  | LeftCtrlKey
+  | RightCtrlKey
+  | AltKey
+  | LeftAltKey
+  | RightAltKey
+  | CommandKey -- A second alt key, specific to Apple keyboards
+  | LeftCommandKey
+  | RightCommandKey
+  | Super1Key
+  | LeftSuper1Key
+  | RightSuper1Key
+  | Super2Key
+  | LeftSuper2Key
+  | RightSuper2Key
   deriving (Eq, Ord, Enum, Bounded, Show, Read, Typeable)
 
 noModifiers :: ModifierBits
-noModifiers = ModifierBits 0
+noModifiers = mempty
 
 packModifiers :: [ModifierTag] -> ModifierBits
 packModifiers = ModifierBits . (foldl (.|.) 0) . fmap (shift 1 . fromEnum)
@@ -147,93 +156,93 @@ unpackModifiers :: ModifierBits -> [ModifierTag]
 unpackModifiers (ModifierBits bits) = [minBound .. maxBound] >>= \ tag ->
   guard (shift 1 (fromEnum tag) .&. bits /= 0) >> [tag]
 
--- | True if any of 'Alt', 'LeftAlt', or 'RightAlt' are set.
+-- | True if any of 'AltKey', 'LeftAltKey', or 'RightAltKey' are set.
 altIsSet :: ModifierBits -> Bool
 altIsSet b = ModifierBits 0 /=
-  b .&. packModifiers [Alt, LeftAlt, RightAlt]
+  b .&. packModifiers [AltKey, LeftAltKey, RightAltKey]
 
--- | True if any of 'Command', 'RightCommand', or 'LeftCommand' are set.
+-- | True if any of 'CommandKey', 'RightCommandKey', or 'LeftCommandKey' are set.
 commandIsSet :: ModifierBits -> Bool
 commandIsSet b = ModifierBits 0 /=
-  b .&. packModifiers [Command, LeftCommand, RightCommand]
+  b .&. packModifiers [CommandKey, LeftCommandKey, RightCommandKey]
 
 -- | True if any of 'Control', 'LeftControl', or 'RightControl' are set.
 ctrlIsSet :: ModifierBits -> Bool
 ctrlIsSet b = ModifierBits 0 /=
-  b .&. packModifiers [Ctrl, LeftCtrl, RightCtrl]
+  b .&. packModifiers [CtrlKey, LeftCtrlKey, RightCtrlKey]
 
--- | True if any of 'Shift', 'LeftShift', or 'RightShift' are set.
+-- | True if any of 'ShiftKey', 'LeftShiftKey', or 'RightShiftKey' are set.
 shiftIsSet :: ModifierBits -> Bool
 shiftIsSet b = ModifierBits 0 /=
-  b .&. packModifiers [Shift, LeftShift, RightShift]
+  b .&. packModifiers [ShiftKey, LeftShiftKey, RightShiftKey]
 
--- | True if any of 'Super1', 'LeftSuper1', or 'RightSuper1' are set.
+-- | True if any of 'Super1Key', 'LeftSuper1Key', or 'RightSuper1Key' are set.
 super1IsSet :: ModifierBits -> Bool
 super1IsSet b = ModifierBits 0 /=
-  b .&. packModifiers [Super1, LeftSuper1, RightSuper1]
+  b .&. packModifiers [Super1Key, LeftSuper1Key, RightSuper1Key]
 
--- | True if any of 'Super1', 'LeftSuper1', or 'RightSuper1' are set.
+-- | True if any of 'Super1Key', 'LeftSuper1Key', or 'RightSuper1Key' are set.
 super2IsSet :: ModifierBits -> Bool
 super2IsSet b = ModifierBits 0 /=
-  b .&. packModifiers [Super2, LeftSuper2, RightSuper2]
+  b .&. packModifiers [Super2Key, LeftSuper2Key, RightSuper2Key]
 
--- | True if any of 'Super1', 'Super2', 'LeftSuper1', 'LeftSuper2', 'RightSuper1', or 'RightSuper2'
--- have been set.
+-- | True if any of 'Super1Key', 'Super2Key', 'LeftSuper1Key', 'LeftSuper2Key', 'RightSuper1Key', or
+-- 'RightSuper2Key' have been set.
 superIsSet :: ModifierBits -> Bool
-superIsSet b = ModifierBits 0 /=
-  b .&. packModifiers [Super1, Super2, LeftSuper1, LeftSuper2, RightSuper1, RightSuper2]
+superIsSet b = ModifierBits 0 /= b .&. packModifiers
+  [Super1Key, Super2Key, LeftSuper1Key, LeftSuper2Key, RightSuper1Key, RightSuper2Key]
 
--- | True if the 'ModifierTag' is one of 'Alt', 'LeftAlt', or 'RightAlt'
-isAlt :: ModifierTag -> Bool
-isAlt = \ case
-  Alt      -> True
-  LeftAlt  -> True
-  RightAlt -> True
+-- | True if the 'ModifierTag' is one of 'AltKey', 'LeftAltKey', or 'RightAltKey'
+isAltKey :: ModifierTag -> Bool
+isAltKey = \ case
+  AltKey      -> True
+  LeftAltKey  -> True
+  RightAltKey -> True
   _        -> False
 
--- | True if the 'ModifierTag' is one of 'Command', 'LeftCommand', or 'RightCommand'
-isCommand :: ModifierTag -> Bool
-isCommand = \ case
-  Command      -> True
-  LeftCommand  -> True
-  RightCommand -> True
+-- | True if the 'ModifierTag' is one of 'CommandKey', 'LeftCommandKey', or 'RightCommandKey'
+isCommandKey :: ModifierTag -> Bool
+isCommandKey = \ case
+  CommandKey      -> True
+  LeftCommandKey  -> True
+  RightCommandKey -> True
   _            -> False
 
--- | True if the 'ModifierTag' is one of 'Ctrl', 'LeftCtrl', or 'RightCtrl'
-isCtrl :: ModifierTag -> Bool
-isCtrl = \ case
-  Ctrl      -> True
-  LeftCtrl  -> True
-  RightCtrl -> True
+-- | True if the 'ModifierTag' is one of 'CtrlKey', 'LeftCtrlKey', or 'RightCtrlKey'
+isCtrlKey :: ModifierTag -> Bool
+isCtrlKey = \ case
+  CtrlKey      -> True
+  LeftCtrlKey  -> True
+  RightCtrlKey -> True
   _         -> False
 
--- | True if the 'ModifierTag' is one of 'Shift', 'LeftShift', or 'RightShift'
-isShift :: ModifierTag -> Bool
-isShift = \ case
-  Shift      -> True
-  LeftShift  -> True
-  RightShift -> True
+-- | True if the 'ModifierTag' is one of 'ShiftKey', 'LeftShiftKey', or 'RightShiftKey'
+isShiftKey :: ModifierTag -> Bool
+isShiftKey = \ case
+  ShiftKey      -> True
+  LeftShiftKey  -> True
+  RightShiftKey -> True
   _          -> False
 
--- | True if the 'ModifierTag' is one of 'Super1', 'LeftSuper1', or 'RightSuper1'
-isSuper1 :: ModifierTag -> Bool
-isSuper1 = \ case
-  Super1      -> True
-  LeftSuper1  -> True
-  RightSuper1 -> True
+-- | True if the 'ModifierTag' is one of 'Super1Key', 'LeftSuper1Key', or 'RightSuper1Key'
+isSuper1Key :: ModifierTag -> Bool
+isSuper1Key = \ case
+  Super1Key      -> True
+  LeftSuper1Key  -> True
+  RightSuper1Key -> True
   _           -> False
 
--- | True if the 'ModifierTag' is one of 'Super2', 'LeftSuper2', or 'RightSuper2'
-isSuper2 :: ModifierTag -> Bool
-isSuper2 = \ case
-  Super2      -> True
-  LeftSuper2  -> True
-  RightSuper2 -> True
+-- | True if the 'ModifierTag' is one of 'Super2Key', 'LeftSuper2Key', or 'RightSuper2Key'
+isSuper2Key :: ModifierTag -> Bool
+isSuper2Key = \ case
+  Super2Key      -> True
+  LeftSuper2Key  -> True
+  RightSuper2Key -> True
   _           -> False
 
--- | True if either 'isSuper1' or 'isSuper2' are True.
+-- | True if either 'isSuper1Key' or 'isSuper2Key' are True.
 isSuper :: ModifierTag -> Bool
-isSuper tag = isSuper1 tag || isSuper2 tag
+isSuper tag = isSuper1Key tag || isSuper2Key tag
 
 ----------------------------------------------------------------------------------------------------
 
