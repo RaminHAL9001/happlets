@@ -67,7 +67,7 @@ module Happlets.GUI
     GUIState(..), GUIContinue(..),
     guiModel, guiWindow, guiIsLive, evalGUI,
     makeHapplet, onHapplet, peekModel, sameHapplet,
-    getGUIState, putGUIState, askHapplet,
+    getGUIState, putGUIState, modifyGUIState, askHapplet,
 
   ) where
 
@@ -367,6 +367,11 @@ getGUIState = GUI $ lift $ lift get
 -- function should never be used unless you are programming a Happlet 'Happlets.Provider.Provider'.
 putGUIState :: GUIState window model -> GUI window model ()
 putGUIState = GUI . lift . lift . put
+
+-- | Modify the 'GUIState' data structure for the current context. This function should never be
+-- used unless you are programming a Happlet 'Happlets.Provider.Provider'
+modifyGUIState :: (GUIState window model -> GUIState window model) -> GUI window model ()
+modifyGUIState = GUI . lift . lift . modify
 
 -- | Obtain a reference to the 'Happlet' in which this 'GUI' function is being evaluated.
 askHapplet :: GUI window model (Happlet model)
