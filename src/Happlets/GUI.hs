@@ -227,6 +227,7 @@ data GUIContinue
   = GUIHalt -- ^ Disable the event handler
   | GUIContinue -- ^ Allow the event handler to remain enabled for the next incoming event.
   | GUIFail !String -- ^ report a failure
+  deriving (Eq, Show)
 
 -- | The 'GUIState' is the state that is constructed during the evaluation of a GUI function.
 data GUIState window model
