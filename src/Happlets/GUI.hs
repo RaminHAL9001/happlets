@@ -42,10 +42,11 @@
 -- type class.
 module Happlets.GUI
   ( -- * The Happlet Data Type
-    Happlet, HappletWindow(..), Display(..),
+    Happlet, HappletWindow(..), Display(..), getWaitingThreads,
 
     -- * The GUI Function Type
-    GUI, disable, failGUI, getModel, getSubModel, putModel, modifyModel,
+    GUI, getModel, getSubModel, putModel, modifyModel,
+    cancelIfBusy, howBusy, cancelNow, disable, failGUI,
 
     -- * Installing Event Handlers
     -- $InstallingEventHandlers
@@ -79,7 +80,9 @@ import           Happlets.Draw.Types2D
 
 import           Control.Arrow
 import           Control.Category
+import           Control.Concurrent (ThreadId, myThreadId)
 import           Control.Concurrent.MVar
+import           Control.Exception
 import           Control.Lens
 import           Control.Monad.Cont
 import qualified Control.Monad.Fail    as Monad
@@ -97,8 +100,30 @@ import           System.IO.Unsafe (unsafePerformIO) -- used for generating uniqu
 -- 'makeHapplet', but it is better to use 'Happlets.Initialize.makeHapplet' in the
 -- "Happlets.Initialize" module in order to construct a 'Happlet' and associate it with a @window@
 -- in a single step.
-data Happlet model = Happlet { happletId :: Int, happletMVar :: MVar model }
+data Happlet model
+  = Happlet
+    { happletId   :: !Int
+    , happletLock :: MVar ThreadTracker
+    , happletMVar :: MVar model
+    }
   deriving (Eq, Typeable)
+
+data ThreadTracker = ThreadTracker{ threadCount :: !Int, threadList :: ![ThreadId] }
+
+newThreadTracker :: ThreadTracker
+newThreadTracker = ThreadTracker{ threadCount = (-1), threadList = [] }
+
+addThread :: MVar ThreadTracker -> ThreadId -> IO ()
+addThread lock this = modifyMVar_ lock $ \ st -> return $ st
+  { threadCount = threadCount st + 1
+  , threadList  = this : threadList st
+  }
+
+removeThread :: MVar ThreadTracker -> ThreadId -> IO ()
+removeThread lock this = modifyMVar_ lock $ \ st -> return $ st
+  { threadCount = max (-1) (threadCount st - 1)
+  , threadList  = filter (/= this) (threadList st)
+  }
 
 happletIdGen :: MVar Int
 happletIdGen = unsafePerformIO $ newMVar minBound
@@ -119,14 +144,17 @@ sameHapplet a b = happletId a == happletId b
 -- 'Happlet' value itself, it is not stored in a reference.
 makeHapplet :: model -> IO (Happlet model)
 makeHapplet mod = do
-  mvar <- newMVar mod
+  mvar   <- newMVar mod
+  lock   <- newMVar newThreadTracker
   happId <- modifyMVar happletIdGen $ return . (id &&& id) . (+ 1)
-  return Happlet{ happletId = happId, happletMVar = mvar }
+  return Happlet{ happletId = happId, happletLock = lock, happletMVar = mvar }
 
 -- | Lock the 'Happlet' and perform an IO function on the content of it.
 onHapplet :: Happlet model -> (model -> IO (a, model)) -> IO (a, model)
-onHapplet (Happlet{happletMVar=mvar}) f = modifyMVar mvar $
-  liftM (\ (a, model) -> (model, (a, model))) . f
+onHapplet (Happlet{happletMVar=mvar,happletLock=lock}) f = do
+  this <- myThreadId
+  bracket_ (addThread lock this) (removeThread lock this) $ do
+    modifyMVar mvar $ liftM (\ (a, model) -> (model, (a, model))) . f
 
 -- | Create a copy of the @model@ contained within the 'Happlet' from the current thread. Since this
 -- @model@ is always being updated by various other threads, the value returned will only be a
@@ -137,6 +165,11 @@ onHapplet (Happlet{happletMVar=mvar}) f = modifyMVar mvar $
 -- of the event 'Happlet.GUI.GUI' proper, this is the function to use.
 peekModel :: Happlet model -> IO model
 peekModel (Happlet{happletMVar=mvar}) = readMVar mvar
+
+-- | Every thread that is waiting to access the @model@ of a 'Happlet' is recorded. This function
+-- returns the number of threads that are waiting for access.
+getWaitingThreads :: Happlet model -> IO (Int, [ThreadId])
+getWaitingThreads (Happlet{happletLock=lock}) = (threadCount &&& threadList) <$> readMVar lock
 
 ----------------------------------------------------------------------------------------------------
 
@@ -226,6 +259,7 @@ newtype GUI window model a
 data GUIContinue
   = GUIHalt -- ^ Disable the event handler
   | GUIContinue -- ^ Allow the event handler to remain enabled for the next incoming event.
+  | GUICancel -- ^ Like 'GUIHalt' but does not disable the event handlers.
   | GUIFail !String -- ^ report a failure
   deriving (Eq, Show)
 
@@ -233,6 +267,7 @@ data GUIContinue
 data GUIState window model
   = GUIState
     { theGUIModel    :: !model
+    , theGUIHapplet  :: !(Happlet model)
     , theGUIWindow   :: !window
     , theGUIContinue :: !GUIContinue
     }
@@ -286,12 +321,14 @@ evalGUI
 evalGUI (GUI f) happ win model =
   evalStateT (runContT (runReaderT (f >> lift (lift get)) happ) return) GUIState
     { theGUIModel    = model
+    , theGUIHapplet  = happ
     , theGUIWindow   = win
     , theGUIContinue = GUIContinue
     }
 
 -- | Once you install an event handler, the default behavior is to leave the event handler installed
--- after it has evaluated so that it can continue reacting to events without you needing to re-install the event handler after each reaction.
+-- after it has evaluated so that it can continue reacting to events without you needing to
+-- re-install the event handler after each reaction.
 --
 -- However if you wish for an event handler to remove itself, evaluate this function as the final
 -- function call in your 'GUI' procedure. Calling this function tells your 'GUI' function to
@@ -301,6 +338,24 @@ evalGUI (GUI f) happ win model =
 -- 'guiContinue' field.
 disable :: GUI window model void
 disable = breakGUI $ guiContinue .~ GUIHalt
+
+-- | Cancel the current event handler execution. This function is like 'disable' but does not
+-- instruct the event handler to remove itself.
+cancelNow :: GUI window model void
+cancelNow = breakGUI $ guiContinue .~ GUICancel
+
+-- | Cancel the current event handler execution only if there are one or more other threads waiting
+-- for access to the 'Happlet' @model@. This function should be evaluated after making important
+-- updates to the @model@ (especially ones that indicate which events have been handled), but before
+-- time-consuming drawing updates have begun. This allows other threads to have access to the model
+-- and perform their own drawing.
+cancelIfBusy :: GUI window model ()
+cancelIfBusy = howBusy >>= flip when cancelNow . (> 0)
+
+-- | Return a value indicating how many pending threads there are waiting for their turn to access
+-- the 'Happlet' @model@.
+howBusy :: GUI window model Int
+howBusy = GUI (gets theGUIHapplet) >>= liftIO . fmap fst . getWaitingThreads
 
 -- | Break out of the current 'GUI' evaluation context, performing a final updating function that
 -- will be applied to the 'GUIState' before returning to @IO@. This function will never return, and

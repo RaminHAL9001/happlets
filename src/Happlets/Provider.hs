@@ -45,8 +45,8 @@ data Provider window
       -- parameter is 'Prelude.True', calling this function should also quit the whole application.
     , doWindowDelete :: window -> IO ()
 
-      -- | This function __must__ delete all event handlers currently installed into the @window@
-      -- and evaluate a new 'Happlets.GUI.GUI' function which can install new event handlers.
+      -- | This function deletes all event handlers currently installed into the @window@ and
+      -- evaluate a new 'Happlets.GUI.GUI' function which can install new event handlers.
     , doWindowAttach
         :: forall model
         .  Bool -- ^ whether or not to make the window visible
