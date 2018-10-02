@@ -101,7 +101,7 @@ data FontSize
   deriving (Eq, Ord, Show, Bounded)
 
 -- | Font widths are defined as multiples of 3, starting with 6. This function returns the multiple,
--- so 'FontSize06' returns 1, 'fontSize30' returns 5.
+-- so 'FontSize06' returns 1 (6/3 - 1), 'fontSize24' returns 7 (24/3 - 1).
 fontSizeStep :: FontSize -> Int
 fontSizeStep = \ case
   FontSize06 -> 1
