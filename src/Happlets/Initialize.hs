@@ -216,10 +216,10 @@ newHapplet = liftIO . makeHapplet
 -- program execution. Please refer to the 'Happlets.GUI.windowChangeHapplet' function documentation
 -- for information about how to do this.
 attachWindow
-  :: Bool
-  -> window
-  -> Happlet model
-  -> (PixSize -> GUI window model ())
+  :: Bool          -- ^ make visible immediately?
+  -> window        -- ^ the window to which the happlet will be attached
+  -> Happlet model -- ^ the happlet to attach
+  -> (PixSize -> GUI window model ()) -- ^ the GUI initializer that will install event handlers
   -> Initialize window ()
 attachWindow vis win happ init = liftIO =<<
   asks doWindowAttach <*> pure vis <*> pure win <*> pure happ <*> pure init
