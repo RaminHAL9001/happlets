@@ -46,27 +46,33 @@ module Happlets.GUI
 
     -- * The GUI Function Type
     GUI, getModel, getSubModel, putModel, modifyModel,
-    cancelIfBusy, howBusy, cancelNow, disable, failGUI,
+    cancelIfBusy, howBusy, deleteEventHandler, bracketGUI,
+
+    -- * Widgets
+    Widget, widget, widgetState, widgetBoundingBox, onWidget, mouseOnWidget,
+    widgetContainsPoint, widgetContainsMouse, theWidgetState,
 
     -- * Installing Event Handlers
     -- $InstallingEventHandlers
     Managed(..),
-    CanResize(..),
+    CanResize(..), OldPixSize, NewPixSize, CanvasMode(..),
     CanAnimate(..),
     CanMouse(..), MouseEventPattern(..),
     CanKeyboard(..),
     CanTrackpad(..),
 
+    -- * Buffered Images
+    CanBufferImages(..),
+
     -- * Other Capabilities
     -- $OtherCapabilities
-    CanBufferImages(..),
     CanForceFeedback(..),
     DeviceHandler(..), unrecognizedInputDevices, failUnrecognizedInputDevices,
 
     -- * Low-level details
     -- $LowLevel_Details
-    GUIState(..), GUIContinue(..),
-    guiModel, guiWindow, guiIsLive, evalGUI,
+    GUIState(..), EventHandlerControl(..),
+    guiModel, guiWindow, guiIsLive, execGUI, runGUI,
     makeHapplet, onHapplet, peekModel, sameHapplet,
     getGUIState, putGUIState, modifyGUIState, askHapplet,
 
@@ -212,21 +218,58 @@ class HappletWindow window render | window -> render where
   -- any line of code in the @do@ block written after this function is called will never execute.
   windowChangeHapplet
     :: forall newmodel oldmodel . Happlet newmodel
-    -> (PixSize -> GUI window newmodel ())
+    -> (OldPixSize -> GUI window newmodel ())
     -> GUI window oldmodel ()
 
-  -- | Construct a 'GUI' function which evaluates a @render@ function that updates the buffer image
-  -- of the @window@. Since this is the "canvas buffer" being updated, the images drawn by
-  -- this function have much more permanence than images draw directly to the window with
-  -- 'drawToWindow'. Images drawn with this function are copied back to the window whenever the
-  -- window becomes "dirty," like when a your window is covered by another window from another
-  -- application.
+  -- | This event handler is called when 'windowChangeHapplet' is called, allowing one final event
+  -- handler to be called for cleaning-up, before the current 'Happlet' is detached from the
+  -- @window@. The event handler receives a reference to the 'Happlet' that will be replacing it, so
+  -- if the old 'Happlet' needs to communicate some important message to the new 'Happlet' using
+  -- 'onHapplet' it can do so.
+  changeEvents :: (Happlet newmodel -> GUI window oldmodel ()) -> GUI window oldmodel ()
+
+  -- | Push a clip region of the window's canvas buffer (the buffer that is drawn to by the
+  -- 'onCanvas' function). The coordinates used by all drawing operations will be translated such
+  -- that the upper-left corner of the 'Happlets.Draw.Types2D.Rect2D' within the window will be the
+  -- point @(0, 0)@ from the perspective of the 'onCanvas' @render@ing function. Only the top
+  -- element of the clip region stack is used, the remainder of the stack is ignored.
+  pushWindowClipRegion :: Rect2D SampCoord -> GUI window model ()
+
+  -- | Pop the clip reigion of the window's canvas buffer that was last pushed by
+  -- 'setWindowClipRegion'. If the stack of clip regions is empty, drawing operations now operate on
+  -- the entire window.
+  popWindowClipRegion :: GUI window model ()
+
+  -- | Construct a 'GUI' function which evaluates a @render@ function that updates the happlet's own
+  -- "canvas", which is an image buffer accessible only to your happlet, (it serves as the invisible
+  -- half of the double-buffer renderer). The Images drawn with this function are automatically
+  -- copied back to the operating system's window buffer (the visible half of the double-buffer
+  -- renderer) whenever the window becomes "dirty" from events happening outside of the program,
+  -- like when a your Happlet's window is covered by another window from another application.
+  --
+  -- As a result, it is usually best to draw to this buffer if you want an image that isn't effected
+  -- when you switch away from your Happlet to another applcation window, images drawn to the canvas
+  -- have a bit more permenance to them, since only your happlet can change it.
+  --
+  -- __NOTE__ that when a window is resized, the canvas buffer is deleted and a new one is allocated
+  -- to match the requested window size, so drawing to the canvas does not preserve your image if
+  -- your window is resized, you must still redraw after the window is resized.
   onCanvas :: forall model a . render a -> GUI window model a
 
-  -- | Similar to 'onCanvas' but does NOT draw to the buffer. By calling 'redrawRegion' you can
-  -- "erase" portions of the view that were drawn by this function with the content of the buffer
-  -- that was drawn by the 'onCanvas' function. Use this function only when you want to draw an image
-  -- "temporarily," for example, when drawing an image that moves with the mouse cursor.
+  -- | Similar to 'onCanvas' but does NOT draw to the Happlet's own reserved image buffer (the
+  -- invisible side of the double-buffer renderer), rather it draws directly to the image buffer
+  -- used by the operating system (the visible side of the double-buffer renderer).
+  --
+  -- There are a few consequences to drawing directly to the OS buffer, the first being that the OS
+  -- image buffer is regularly over-written by other applications running in the operating system,
+  -- so things drawn to the OS image buffer may dissapear at any time, even when there aren't any
+  -- events passed to your Happlet.
+  --
+  -- Another consequence is that you can overwrite the OS buffer with your happlet's "canvas" buffer
+  -- at any time using 'refreshRegion'. This can be very useful when you want a temporary image to
+  -- be displayed on top of your Happlet (like a pop-up menu or custom mouse cursor) that can be
+  -- erased and replaced with the content of the "canvas" buffer as soon as (for example) the mouse
+  -- moves or some such event occurs.
   onOSBuffer :: forall model a . render a -> GUI window model a
 
   -- | Force an area of the window to be redrawn by re-blitting the double buffer image to the
@@ -235,7 +278,8 @@ class HappletWindow window render | window -> render where
   refreshRegion :: [Rect2D SampCoord] -> GUI window model ()
 
   -- | Like 'refreshRegion' but refreshes the whole window. This function deletes everything drawn
-  -- by the 'drawToWindow' function and replaces it with the content of the image drawn by 'onCanvas'.
+  -- by the 'drawToWindow' function and replaces it with the content of the image drawn by
+  -- 'onCanvas'.
   refreshWindow :: GUI window model ()
 
 -- | This is a type class similar to the 'Prelude.Show' class, except it displays to the 'GUI'.
@@ -244,44 +288,96 @@ class Display drawable render | drawable -> render where
 
 ----------------------------------------------------------------------------------------------------
 
+-- | A widget is any part of your @model@ that can be drawn to the @window@ that is restricted to a
+-- rectangular bounding box. Use the 'onWidget' function to evaluate stateful updates on the
+-- 'widgetState'
+data Widget st
+  = Widget
+    { theWidgetBoundingBox :: !(Rect2D SampCoord)
+    , theWidgetState       :: st
+      -- ^ a function that accesses the 'Widget' state without need for the 'Control.Lens.view'
+      -- function.
+    }
+
+-- | Construct a new 'Widget'.
+widget :: st -> Rect2D SampCoord -> Widget st
+widget = flip $ Widget . canonicalRect2D
+
+-- | The state of this widget. The model of a widget should contain values that are directly related
+-- to elements that are drawn to the happlet window. Keeping part of the @model@ data structure is
+-- bad practice.
+widgetState :: Lens' (Widget st) st
+widgetState = lens theWidgetState $ \ a b -> a{ theWidgetState = b }
+
+-- | The bounding box of this widget.
+widgetBoundingBox :: Lens' (Widget st) (Rect2D SampCoord)
+widgetBoundingBox = lens theWidgetBoundingBox $ \ a b ->
+  a{ theWidgetBoundingBox = canonicalRect2D b }
+
+-- | Does a 'PixCoord' lie somewhere within the 'widgetBoundingBox'?
+widgetContainsPoint :: PixCoord -> Widget st -> Bool
+widgetContainsPoint (V2 x y) widget = loX <= x && x <= hiX && loY <= y && y <= hiY where
+  (Rect2D (V2 loX loY) (V2 hiX hiY)) = theWidgetBoundingBox widget
+
+-- | Does a 'Mouse' event's 'Happlets.Draw.SampCoord.PixCoord' lie within the 'widgetBoundingBox'?
+-- If not return 'Nothing', but if so, modify the 'Mouse' event so that it's coordinates are
+-- relative to the 'widgetBoundingBox'.
+widgetContainsMouse :: Mouse -> Widget st -> Maybe Mouse
+widgetContainsMouse (Mouse dev press mods button p@(V2 (SampCoord x) (SampCoord y))) widget = do
+  guard $ widgetContainsPoint p widget
+  let (Rect2D (V2 (SampCoord loX) (SampCoord loY)) _) = theWidgetBoundingBox widget
+  pure $ Mouse dev press mods button $ V2 (SampCoord $ x - loX) (SampCoord $ y - loY)
+
+----------------------------------------------------------------------------------------------------
+
 newtype GUI window model a
   = GUI
     { unwrapGUI ::
-        ( ReaderT (Happlet model)
-          ( ContT (GUIState window model) (StateT (GUIState window model) IO))
-          a
-        )
+        ReaderT (Happlet model) (StateT (GUIState window model) IO) (EventHandlerControl a)
     }
-  deriving (Functor, Applicative, Monad, MonadIO)
+  deriving (Functor)
 
 -- | A data type indicating the condition of GUI evaluation. This value is part of the 'GUIState'
 -- and is usually set when calling 'breakGUI'.
-data GUIContinue
-  = GUIHalt -- ^ Disable the event handler
-  | GUIContinue -- ^ Allow the event handler to remain enabled for the next incoming event.
-  | GUICancel -- ^ Like 'GUIHalt' but does not disable the event handlers.
+data EventHandlerControl a
+  = GUIContinue   a -- ^ Allow the event handler to remain enabled for the next incoming event.
+  | GUIHalt         -- ^ Disable the event handler
+  | GUICancel       -- ^ Like 'GUIHalt' but does not disable the event handlers.
   | GUIFail !String -- ^ report a failure
-  deriving (Eq, Show)
+  deriving (Eq, Show, Functor)
 
 -- | The 'GUIState' is the state that is constructed during the evaluation of a GUI function.
 data GUIState window model
   = GUIState
-    { theGUIModel    :: !model
-    , theGUIHapplet  :: !(Happlet model)
-    , theGUIWindow   :: !window
-    , theGUIContinue :: !GUIContinue
+    { theGUIModel   :: !model
+    , theGUIHapplet :: !(Happlet model)
+    , theGUIWindow  :: !window
     }
 
+instance Applicative (GUI window model) where { pure = return; (<*>) = ap; }
+
+instance Monad (GUI window model) where
+  return = GUI . return . GUIContinue
+  (GUI f) >>= next = GUI $ ReaderT $ \ happlet -> StateT $ \ st ->
+    runStateT (runReaderT f happlet) st >>= \ (a, st) -> case a of
+      GUIContinue a -> runStateT (runReaderT (unwrapGUI $ next a) happlet) st
+      GUIHalt       -> return (GUIHalt    , st)
+      GUICancel     -> return (GUICancel  , st)
+      GUIFail   err -> return (GUIFail err, st)
+
+instance MonadIO (GUI window model) where
+  liftIO f = GUI $ liftIO $ GUIContinue <$> f
+
 instance MonadState model (GUI window model) where
-  state f = GUI $ lift $ lift $ state $ \ st ->
-    let (a, model) = f (theGUIModel st) in (a, st{ theGUIModel = model })
+  state f = GUI $ lift $ state $ \ st ->
+    let (a, model) = f (theGUIModel st) in (GUIContinue a, st{ theGUIModel = model })
 
 instance MonadReader (Happlet model) (GUI window model) where
-  ask = GUI ask
+  ask = GUI $ GUIContinue <$> ask
   local loc = GUI . local loc . unwrapGUI
   
 instance Monad.MonadFail (GUI window model) where
-  fail = breakGUI . (guiContinue .~) . GUIFail
+  fail = GUI . return . GUIFail
 
 instance Semigroup a => Semigroup (GUI window model a) where
   a <> b = (<>) <$> a <*> b
@@ -301,30 +397,69 @@ guiModel = lens theGUIModel $ \ a b -> a{ theGUIModel = b }
 guiWindow :: Lens' (GUIState window model) window
 guiWindow = lens theGUIWindow $ \ a b -> a{ theGUIWindow = b }
 
--- | 'Control.Lens.Lens' for manipulating the 'GUIState'. This will get or set a function that
--- constructs a continuation to be used after evaluation of the 'GUI' function halts. This function
--- is usually called internally by the back-end 'Happlets.Provider.Provider', so it is better to not
--- use this function at all.
-guiContinue :: Lens' (GUIState window model) GUIContinue
-guiContinue = lens theGUIContinue $ \ a b -> a{ theGUIContinue = b }
-
--- | Evaluate a 'GUI' function on a given 'Happlet'. The 'Happlet' is locked durnig evaluation. If
--- the 'GUI' function evaluates to 'Disable', the given halt function (of type @IO ()@) is evaluated
--- before unlocking the 'Happlet', and then 'Prelude.False' is returned. If the 'GUI' function
--- evalautes to anything other than the 'Disable' value, the halt function is not evaluated and
--- 'Prelude.True' is returned.
-evalGUI
-  :: GUI window model void -- ^ the 'GUI' function to evaluate
+-- | Evaluate a 'GUI' function on a given 'Happlet'. The 'Happlet' is __NOT__ locked during
+-- evaluation, it is expected that the 'Happlet' has already been locked with 'onHapplet', however a
+-- copy of the 'Happlet' must be passed along with it's content to this function in order to
+-- evaluate it.
+runGUI
+  :: GUI window model a -- ^ the 'GUI' function to evaluate
   -> Happlet model
-  -> window -> model
+  -> GUIState window model
+  -> IO (EventHandlerControl a, GUIState window model)
+runGUI (GUI f) happlet st = runStateT (runReaderT f happlet) st
+
+execGUI
+  :: GUI window model a -- ^ the 'GUI' function to evaluate
+  -> Happlet model
+  -> GUIState window model
   -> IO (GUIState window model)
-evalGUI (GUI f) happ win model =
-  evalStateT (runContT (runReaderT (f >> lift (lift get)) happ) return) GUIState
-    { theGUIModel    = model
-    , theGUIHapplet  = happ
-    , theGUIWindow   = win
-    , theGUIContinue = GUIContinue
-    }
+execGUI f happlet = fmap snd . runGUI f happlet
+
+-- | Like the 'Control.Exception.bracket' function, but works in the 'GUI' monad.
+bracketGUI
+  :: GUI window model open
+  -> GUI window model closed
+  -> GUI window model a
+  -> GUI window model a
+bracketGUI lock unlock f = GUI $ ReaderT $ \ happlet -> StateT $ \ st -> do
+  mvar <- newEmptyMVar
+  a    <- bracket
+    (runGUI lock happlet st >>= \ (rsrc, st) -> putMVar mvar st >> return rsrc)
+    (const $ modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI unlock happlet)
+    (\ case
+      GUIContinue{} -> modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI f happlet
+      GUIHalt       -> return GUIHalt
+      GUICancel     -> return GUICancel
+      GUIFail err   -> return $ GUIFail err
+    )
+  st <- takeMVar mvar
+  return (a, st)
+
+-- | Use a 'Control.Lens.Lens'' to select a 'Widget' from the current @model@, then evaluate a 'GUI'
+-- function that updates this 'Widget'. The @window@ will have it's clip region set to the
+-- 'widgetBoundingBox'
+onWidget
+  :: HappletWindow window render
+  => Lens' model (Widget st)
+  -> (Widget st -> GUI window model (Widget st))
+  -> GUI window model st
+onWidget widget f = do
+  w <- use widget
+  w <- bracketGUI (pushWindowClipRegion $ theWidgetBoundingBox w) popWindowClipRegion (f w)
+  assign widget w
+  return $ theWidgetState w
+
+-- | Use this function to delegate a 'Happlets.Event.Mouse' event to a 'Widget'. This function
+-- automatically checks if the mouse lies within the 'widgetBoundingBox' and triggers the 'GUI'
+-- function evaluation using 'onWidget'.
+mouseOnWidget
+  :: HappletWindow window render
+  => Lens' model (Widget st)
+  -> Mouse
+  -> (Mouse -> Widget st -> GUI window model (Widget st))
+  -> GUI window model st
+mouseOnWidget widget evt f = use widget >>= \ w ->
+  maybe (return $ theWidgetState w) (onWidget widget . f) (widgetContainsMouse evt w)
 
 -- | Once you install an event handler, the default behavior is to leave the event handler installed
 -- after it has evaluated so that it can continue reacting to events without you needing to
@@ -336,40 +471,27 @@ evalGUI (GUI f) happ win model =
 --
 -- Under the hood, this function will evaluate 'breakGUI' with a 'GUIHalt' condition set in the
 -- 'guiContinue' field.
-disable :: GUI window model void
-disable = breakGUI $ guiContinue .~ GUIHalt
+deleteEventHandler :: GUI window model void
+deleteEventHandler = GUI $ return GUIHalt
 
 -- | Cancel the current event handler execution. This function is like 'disable' but does not
 -- instruct the event handler to remove itself.
 cancelNow :: GUI window model void
-cancelNow = breakGUI $ guiContinue .~ GUICancel
+cancelNow = GUI $ return GUICancel
 
--- | Cancel the current event handler execution only if there are one or more other threads waiting
--- for access to the 'Happlet' @model@. This function should be evaluated after making important
--- updates to the @model@ (especially ones that indicate which events have been handled), but before
--- time-consuming drawing updates have begun. This allows other threads to have access to the model
--- and perform their own drawing.
+-- | When an event handler evaluates this function, it is voluntarily canceling the current event
+-- handler execution if there are one or more other threads waiting for access to the 'Happlet'
+-- @model@. This function should be evaluated after making important updates to the @model@
+-- (especially ones that indicate which events have been handled), but before time-consuming drawing
+-- updates have begun. This allows other threads to have access to the model and perform their own
+-- drawing.
 cancelIfBusy :: GUI window model ()
 cancelIfBusy = howBusy >>= flip when cancelNow . (> 0)
 
 -- | Return a value indicating how many pending threads there are waiting for their turn to access
 -- the 'Happlet' @model@.
 howBusy :: GUI window model Int
-howBusy = GUI (gets theGUIHapplet) >>= liftIO . fmap fst . getWaitingThreads
-
--- | Break out of the current 'GUI' evaluation context, performing a final updating function that
--- will be applied to the 'GUIState' before returning to @IO@. This function will never return, and
--- the evaluating context will immediately receive a result as soon as this function is evaluated.
-breakGUI
-  :: (GUIState window model -> GUIState window model)
-  -> GUI window model void
-breakGUI = GUI . ReaderT . const . ContT . const . (>> get) . modify
-
--- | Calling this function tells your 'GUI' function to immediately halt, reporting an error
--- condition. Under the hood, this will evaluate 'breakGUI' with a 'GUIFail' message set in the
--- 'guiContinue' field.
-failGUI :: String -> GUI window model void
-failGUI = breakGUI . (guiContinue .~) . GUIFail
+howBusy = GUI (lift $ GUIContinue <$> gets theGUIHapplet) >>= liftIO . fmap fst . getWaitingThreads
 
 -- | The 'GUI' function type instantiates the 'Control.Monad.State.Class.MonadState' monad
 -- transformer so you can use functions like 'Control.Monad.State.Class.get'. However this function
@@ -409,24 +531,24 @@ modifyModel = modify
 
 -- | Tests if a the 'GUIState' produced after evaluating 'GUI' function with 'evalGUI' is still
 -- ready to receive further input signals.
-guiIsLive :: GUIState window model -> Bool
-guiIsLive = theGUIContinue >>> \ case { GUIContinue -> True; _ -> False; }
+guiIsLive :: EventHandlerControl a -> Bool
+guiIsLive = \ case { GUIContinue{} -> True; _ -> False; }
 
 -- | Obtain a copy of the entire 'GUIState' data structure set for the current 'GUI' evaluation
 -- context. This function should never be used unless you are programming a Happlet
 -- 'Happlets.Provider.Provider'.
 getGUIState :: GUI window model (GUIState window model)
-getGUIState = GUI $ lift $ lift get
+getGUIState = GUI $ lift $ GUIContinue <$> get
 
 -- | Update the entire copy of the 'GUIState' data structure for the current context. This
 -- function should never be used unless you are programming a Happlet 'Happlets.Provider.Provider'.
 putGUIState :: GUIState window model -> GUI window model ()
-putGUIState = GUI . lift . lift . put
+putGUIState = GUI . lift . fmap GUIContinue . put
 
 -- | Modify the 'GUIState' data structure for the current context. This function should never be
 -- used unless you are programming a Happlet 'Happlets.Provider.Provider'
 modifyGUIState :: (GUIState window model -> GUIState window model) -> GUI window model ()
-modifyGUIState = GUI . lift . lift . modify
+modifyGUIState = GUI . lift . fmap GUIContinue . modify
 
 -- | Obtain a reference to the 'Happlet' in which this 'GUI' function is being evaluated.
 askHapplet :: GUI window model (Happlet model)
@@ -451,7 +573,8 @@ class Managed window where
   -- | This event handler is evaluated when the window gains or loses focus.
   focusEvents :: (Bool -> GUI window model ()) -> GUI window model ()
   -- | This function asks the operating system or desktop environment to show or hide the window
-  -- associated with the given @window@.
+  -- associated with the given @window@. This should trigger a call to the event handler set by
+  -- 'visibleEvents'.
   windowVisible :: Bool -> GUI window model ()
 
 -- | Windows that can be resized can provide an instance of this class. Even on platforms where
@@ -459,12 +582,49 @@ class Managed window where
 -- resolutions or screen orientations can change.
 class CanResize window where
   -- | This event handler is evaluated when the window is resized. It should NOT be called when the
-  -- window is first initialized, or when it is first made visible. The 'PixSize' event value passed
-  -- to the event handler 'GUI' function you provie to this event handler will always be exactly the
-  -- same value as what is returned by 'getWindowSize'. The reason we provide the 'PixSize' via
-  -- continuation passing style here is to maintain consistency with all other event handlers which
-  -- always take one event value.
-  resizeEvents :: (PixSize -> GUI window model ()) -> GUI window model ()
+  -- window is first initialized, or when it is first made visible. The 'NewPixSize' event value
+  -- passed to the event handler 'GUI' function you provie to this event handler will always be
+  -- exactly the same value as what is returned by 'getWindowSize'.
+  resizeEvents
+    :: CanvasMode
+    -> (OldPixSize -> NewPixSize -> GUI window model ())
+    -> GUI window model ()
+
+-- | The event handler function set with 'resizeEvents' takes this parameter, which is the value of
+-- the previous canvas size.
+type OldPixSize = PixSize
+
+-- | The event handler function set with 'resizeEvents' takes this parameter, which is the value of
+-- the new canvas size.
+type NewPixSize = PixSize
+
+-- | When defining the behavior of your app for responding to window resize events (using
+-- 'resizeEvents'), you have a choice of whether or not your app copies the old image to the new
+-- canvas, or if you would prefer to just redraw everything from scratch. If you need to redraw
+-- everything on a resize, this is common when objects in the image need to move around a lot when a
+-- resize occurs, like in a text editor. If you are just going to redraw everything, then it would
+-- be a pretty significant waste of CPU resources to copy the old canvas to the new canvas buffer
+-- just before you drew over it. In this case, you would set your redraw beahvior to
+-- 'ClearCanvasMode'.
+--
+-- However, sometimes you don't need to redraw everything, maybe you want the same exact image as
+-- before, just with a new cropping frame, and if the window is larger than before you'll only
+-- redraw the part of the buffer that was recently exposed. This can be done easily by setting
+-- 'CopyCanvasMode', the Happlet back-end provider will automatically copy the old canvas buffer to
+-- the new one after a resize event and before it calls your event handler.
+--
+-- You also have the option of using 'ScaleCanvasMode', which is like 'CopyCanvasMode' but scales
+-- the image to the new buffer size. 'ScaleWidthCanvasMode' scales the image proportionally, meaning
+-- a square will always be a square even when you resize the window to a rectanglular shape, and the
+-- scaling factor is computed from the difference between the old width and the new
+-- width. 'ScaleHeightCanvasMode' is similar but sets the scaling factor based on the new height.
+data CanvasMode
+  = ClearCanvasMode -- ^ don't bother copying the old canvas to the new one, we will just
+  | CopyCanvasMode -- ^ copy the old canvas to the new before running the resize event handler.
+  | ScaleCanvasMode -- ^ copy the old canvas and scale it to fill the new canvas.
+  | ScaleWidthCanvasMode -- ^ copy the old canvas proprtionally from the new canvas width.
+  | ScaleHeightCanvasMode -- ^ copy the old canvas proportionally from the new canvas height.
+  deriving (Eq, Ord, Show, Bounded, Enum)
 
 -- | This class provides the ability to install animation event handlers which are repeatedly called
 -- at fast, regular time intervals, usually 60 frames per second.
@@ -536,17 +696,14 @@ class CanTrackpad window where
 
 ----------------------------------------------------------------------------------------------------
 
--- $OtherCapabilities
---
--- These are functions which can be called when defining a GUI function which has nothing to do with
--- reacting to events.
-
+-- | The back-end provider may provide it's own abstraction for an image buffer that satisfies the
+-- functions of this type class.
 class CanBufferImages window image render | window -> image, window -> render where
   -- | Create a new image buffer.
   newImageBuffer :: forall model a . PixSize -> render a -> GUI window model (a, image)
   -- | Resize the image buffer.
   resizeImageBuffer :: forall model a . image -> PixSize -> render a -> GUI window model a
-  -- | Draw to the image buffer using a @draw@ function.
+  -- | Draw to the image buffer using a @render@ function.
   drawImage :: forall model a . image -> render a -> GUI window model a
   -- | Blit an image buffer to the current @window@. You can offset the location of the blit
   -- operation by passing an offset value as the 'Happlets.Readraw.PixCoord'.
@@ -559,6 +716,13 @@ class CanBufferImages window image render | window -> image, window -> render wh
     -> Target image
     -> Target PixCoord
     -> GUI window model ()
+
+----------------------------------------------------------------------------------------------------
+
+-- $OtherCapabilities
+--
+-- These are functions which can be called when defining a GUI function which has nothing to do with
+-- reacting to events.
 
 -- | Some back-end providers may wish to provide force-feedback functionality along with
 -- 'CanTrackapd' event handlers.
