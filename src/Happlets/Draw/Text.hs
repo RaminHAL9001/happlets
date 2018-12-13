@@ -88,8 +88,6 @@ import           Data.Char
 import           Data.Char.WCWidth
 import           Data.String
 
-import           Linear.V2
-
 ----------------------------------------------------------------------------------------------------
 
 -- | Support a limited set of font sizes. The numbers 6, 9, 12, 15, 18, 21, and 24 do not

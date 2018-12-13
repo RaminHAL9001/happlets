@@ -13,6 +13,7 @@ module Happlets.Draw.Types2D
     MaybeSingleton2D(..), HasBoundingBox(..),
     LineWidth,
     module Happlets.Draw.SampCoord,
+    module Linear.V2,
   ) where
 
 import           Happlets.Draw.SampCoord
