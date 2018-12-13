@@ -340,10 +340,14 @@ newtype GUI window model a
 -- | A data type indicating the condition of GUI evaluation. This value is part of the 'GUIState'
 -- and is usually set when calling 'breakGUI'.
 data EventHandlerControl a
-  = GUIContinue   a -- ^ Allow the event handler to remain enabled for the next incoming event.
-  | GUIHalt         -- ^ Disable the event handler
-  | GUICancel       -- ^ Like 'GUIHalt' but does not disable the event handlers.
-  | GUIFail !String -- ^ report a failure
+  = EventHandlerContinue a
+    -- ^ Allow the event handler to remain enabled for the next incoming event.
+  | EventHandlerHalt
+    -- ^ Disable the event handler
+  | EventHandlerCancel
+    -- ^ Like 'EventHandlerHalt' but does not disable the event handlers.
+  | EventHandlerFail !String
+    -- ^ report a failure
   deriving (Eq, Show, Functor)
 
 -- | The 'GUIState' is the state that is constructed during the evaluation of a GUI function.
@@ -357,27 +361,27 @@ data GUIState window model
 instance Applicative (GUI window model) where { pure = return; (<*>) = ap; }
 
 instance Monad (GUI window model) where
-  return = GUI . return . GUIContinue
+  return = GUI . return . EventHandlerContinue
   (GUI f) >>= next = GUI $ ReaderT $ \ happlet -> StateT $ \ st ->
     runStateT (runReaderT f happlet) st >>= \ (a, st) -> case a of
-      GUIContinue a -> runStateT (runReaderT (unwrapGUI $ next a) happlet) st
-      GUIHalt       -> return (GUIHalt    , st)
-      GUICancel     -> return (GUICancel  , st)
-      GUIFail   err -> return (GUIFail err, st)
+      EventHandlerContinue a -> runStateT (runReaderT (unwrapGUI $ next a) happlet) st
+      EventHandlerHalt       -> return (EventHandlerHalt    , st)
+      EventHandlerCancel     -> return (EventHandlerCancel  , st)
+      EventHandlerFail   err -> return (EventHandlerFail err, st)
 
 instance MonadIO (GUI window model) where
-  liftIO f = GUI $ liftIO $ GUIContinue <$> f
+  liftIO f = GUI $ liftIO $ EventHandlerContinue <$> f
 
 instance MonadState model (GUI window model) where
   state f = GUI $ lift $ state $ \ st ->
-    let (a, model) = f (theGUIModel st) in (GUIContinue a, st{ theGUIModel = model })
+    let (a, model) = f (theGUIModel st) in (EventHandlerContinue a, st{ theGUIModel = model })
 
 instance MonadReader (Happlet model) (GUI window model) where
-  ask = GUI $ GUIContinue <$> ask
+  ask = GUI $ EventHandlerContinue <$> ask
   local loc = GUI . local loc . unwrapGUI
   
 instance Monad.MonadFail (GUI window model) where
-  fail = GUI . return . GUIFail
+  fail = GUI . return . EventHandlerFail
 
 instance Semigroup a => Semigroup (GUI window model a) where
   a <> b = (<>) <$> a <*> b
@@ -427,10 +431,10 @@ bracketGUI lock unlock f = GUI $ ReaderT $ \ happlet -> StateT $ \ st -> do
     (runGUI lock happlet st >>= \ (rsrc, st) -> putMVar mvar st >> return rsrc)
     (const $ modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI unlock happlet)
     (\ case
-      GUIContinue{} -> modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI f happlet
-      GUIHalt       -> return GUIHalt
-      GUICancel     -> return GUICancel
-      GUIFail err   -> return $ GUIFail err
+      EventHandlerContinue{} -> modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI f happlet
+      EventHandlerHalt       -> return EventHandlerHalt
+      EventHandlerCancel     -> return EventHandlerCancel
+      EventHandlerFail err   -> return $ EventHandlerFail err
     )
   st <- takeMVar mvar
   return (a, st)
@@ -469,15 +473,15 @@ mouseOnWidget widget evt f = use widget >>= \ w ->
 -- function call in your 'GUI' procedure. Calling this function tells your 'GUI' function to
 -- immediately halt and remove itself from the event handling loop.
 --
--- Under the hood, this function will evaluate 'breakGUI' with a 'GUIHalt' condition set in the
+-- Under the hood, this function will evaluate 'breakGUI' with a 'EventHandlerHalt' condition set in the
 -- 'guiContinue' field.
 deleteEventHandler :: GUI window model void
-deleteEventHandler = GUI $ return GUIHalt
+deleteEventHandler = GUI $ return EventHandlerHalt
 
 -- | Cancel the current event handler execution. This function is like 'disable' but does not
 -- instruct the event handler to remove itself.
 cancelNow :: GUI window model void
-cancelNow = GUI $ return GUICancel
+cancelNow = GUI $ return EventHandlerCancel
 
 -- | When an event handler evaluates this function, it is voluntarily canceling the current event
 -- handler execution if there are one or more other threads waiting for access to the 'Happlet'
@@ -491,7 +495,7 @@ cancelIfBusy = howBusy >>= flip when cancelNow . (> 0)
 -- | Return a value indicating how many pending threads there are waiting for their turn to access
 -- the 'Happlet' @model@.
 howBusy :: GUI window model Int
-howBusy = GUI (lift $ GUIContinue <$> gets theGUIHapplet) >>= liftIO . fmap fst . getWaitingThreads
+howBusy = GUI (lift $ EventHandlerContinue <$> gets theGUIHapplet) >>= liftIO . fmap fst . getWaitingThreads
 
 -- | The 'GUI' function type instantiates the 'Control.Monad.State.Class.MonadState' monad
 -- transformer so you can use functions like 'Control.Monad.State.Class.get'. However this function
@@ -532,23 +536,23 @@ modifyModel = modify
 -- | Tests if a the 'GUIState' produced after evaluating 'GUI' function with 'evalGUI' is still
 -- ready to receive further input signals.
 guiIsLive :: EventHandlerControl a -> Bool
-guiIsLive = \ case { GUIContinue{} -> True; _ -> False; }
+guiIsLive = \ case { EventHandlerContinue{} -> True; _ -> False; }
 
 -- | Obtain a copy of the entire 'GUIState' data structure set for the current 'GUI' evaluation
 -- context. This function should never be used unless you are programming a Happlet
 -- 'Happlets.Provider.Provider'.
 getGUIState :: GUI window model (GUIState window model)
-getGUIState = GUI $ lift $ GUIContinue <$> get
+getGUIState = GUI $ lift $ EventHandlerContinue <$> get
 
 -- | Update the entire copy of the 'GUIState' data structure for the current context. This
 -- function should never be used unless you are programming a Happlet 'Happlets.Provider.Provider'.
 putGUIState :: GUIState window model -> GUI window model ()
-putGUIState = GUI . lift . fmap GUIContinue . put
+putGUIState = GUI . lift . fmap EventHandlerContinue . put
 
 -- | Modify the 'GUIState' data structure for the current context. This function should never be
 -- used unless you are programming a Happlet 'Happlets.Provider.Provider'
 modifyGUIState :: (GUIState window model -> GUIState window model) -> GUI window model ()
-modifyGUIState = GUI . lift . fmap GUIContinue . modify
+modifyGUIState = GUI . lift . fmap EventHandlerContinue . modify
 
 -- | Obtain a reference to the 'Happlet' in which this 'GUI' function is being evaluated.
 askHapplet :: GUI window model (Happlet model)
