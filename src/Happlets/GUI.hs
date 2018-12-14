@@ -224,10 +224,8 @@ class HappletWindow window render | window -> render where
 
   -- | This event handler is called when 'windowChangeHapplet' is called, allowing one final event
   -- handler to be called for cleaning-up, before the current 'Happlet' is detached from the
-  -- @window@. The event handler receives a reference to the 'Happlet' that will be replacing it, so
-  -- if the old 'Happlet' needs to communicate some important message to the new 'Happlet' using
-  -- 'onHapplet' it can do so.
-  changeEvents :: (Happlet newmodel -> GUI window oldmodel ()) -> GUI window oldmodel ()
+  -- @window@.
+  changeEvents :: GUI window oldmodel () -> GUI window oldmodel ()
 
   -- | Push a clip region of the window's canvas buffer (the buffer that is drawn to by the
   -- 'onCanvas' function). The coordinates used by all drawing operations will be translated such
@@ -359,7 +357,8 @@ widgetContainsMouse (Mouse dev press mods button p@(V2 (SampCoord x) (SampCoord 
 --
 -- @
 -- -- WARNING: this code will fail to compile.
--- ('onCanvas' drawRedCircle >> cancelNow) 'Control.Applicative.<|>' ('onCanvas' drawBlueCircle >> return ())
+-- ('onCanvas' drawRedCircle >> cancelNow) 'Control.Applicative.<|>'
+--   ('onCanvas' drawBlueCircle >> return ())
 -- @
 --
 -- The above code is not allowed because once the @drawRedCircle@ is evaluated it cannot be undone
