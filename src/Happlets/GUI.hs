@@ -46,7 +46,7 @@ module Happlets.GUI
 
     -- * The GUI Function Type
     GUI, getModel, getSubModel, putModel, modifyModel,
-    cancelIfBusy, howBusy, deleteEventHandler, bracketGUI,
+    cancelNow, cancelIfBusy, howBusy, deleteEventHandler, bracketGUI,
 
     -- * Widgets
     Widget, widget, widgetState, widgetBoundingBox, onWidget, mouseOnWidget,
@@ -90,12 +90,13 @@ import           Control.Concurrent (ThreadId, myThreadId)
 import           Control.Concurrent.MVar
 import           Control.Exception
 import           Control.Lens
-import           Control.Monad.Cont
+import           Control.Monad.Except
 import qualified Control.Monad.Fail    as Monad
 import           Control.Monad.Reader
 import           Control.Monad.State
 
 import           Data.Semigroup
+import qualified Data.Text             as Strict
 import           Data.Typeable
 
 import           System.IO.Unsafe (unsafePerformIO) -- used for generating unique Happlet IDs.
@@ -330,11 +331,59 @@ widgetContainsMouse (Mouse dev press mods button p@(V2 (SampCoord x) (SampCoord 
 
 ----------------------------------------------------------------------------------------------------
 
+-- | This is the function type used to make stateful updates to your Happlet. There are 'GUI'
+-- functions that can control every single part of your GUI program state, including (but not
+-- limited to)
+--
+-- * positioning and resizing the window
+-- * installing and removing event handlers
+-- * event handlers are also 'GUI' functions, so 'GUI' is used to react to events as well
+-- * drawing to the window
+-- * altering the @model@ contained within the happlet.
+--
+-- GUI is a monad function type that instantiates the 'Control.Monad.State.Class.MonadState'
+-- allowing you to transform the value stored in the 'Happlet'. Simply use
+-- 'Control.Monad.State.Class.get' and 'Control.Monad.State.Class.put' to update your program, and
+-- then call functions like 'onCanvas' to re-draw relavent parts of the @window@.
+--
+-- The function 'deleteEventHandler' can be used to immediately halt evaluation of a 'GUI' function,
+-- and delete the current event handler, which can be useful when you write your event
+-- handlers. There is also the similar 'cancelNow' function which immediately halts evaluation but
+-- does not delete the event handler.
+--
+-- 'GUI' instantiates 'Control.Monad.Except.MonadExcept' so you can throw and catch error strings
+-- (of type 'Strict.Text'). You will notice that 'GUI' does not instantiate
+-- 'Control.Monad.Except.ExceptT', 'Control.Applicative.Alternative', or 'Control.Monad.MonadPlus',
+-- because the 'GUI' cannot promise to obey the laws of these type classes. For example: if you were
+-- to write the code:
+--
+-- @
+-- -- WARNING: this code will fail to compile.
+-- ('onCanvas' drawRedCircle >> cancelNow) 'Control.Applicative.<|>' ('onCanvas' drawBlueCircle >> return ())
+-- @
+--
+-- The above code is not allowed because once the @drawRedCircle@ is evaluated it cannot be undone
+-- even though 'cancelNow' was called. Evaluation then proceeds to @drawBlueCircle@, and the result
+-- is bothe the red and blue circles are visible on screen, even through the red circle evaluation
+-- was canceled.
+--
+-- Usually you will use a type synonym specific to the Happlets provider that you are using. For
+-- example, the Gtk+ provider for Happlets (not included in this package, must be downloaded and
+-- installed separately) creates a type synonym:
+--
+-- @
+-- type GtkGUI model a = GUI GtkWindow model a
+-- @
+--
+-- However, if you want to createa a "universal" Happlet that works with absolutely any provider,
+-- not just Gtk+, then your entire program should be written with a polymorphic @window@ type.  The
+-- @window@ type is the type specific to the operating system and the Happlet provider you use, so
+-- if you leave it blank, you will be free to call 'simpleHapplet' with any
+-- 'Happelt.Provider.Provider' at all. However, at this time, the Happlets API is a little too
+-- sparse for this to be practical, for the time being, your program may need to rely on
+-- functionality specific to a Provider like Gtk+.
 newtype GUI window model a
-  = GUI
-    { unwrapGUI ::
-        ReaderT (Happlet model) (StateT (GUIState window model) IO) (EventHandlerControl a)
-    }
+  = GUI{ unwrapGUI :: StateT (GUIState window model) IO (EventHandlerControl a)}
   deriving (Functor)
 
 -- | A data type indicating the condition of GUI evaluation. This value is part of the 'GUIState'
@@ -346,7 +395,7 @@ data EventHandlerControl a
     -- ^ Disable the event handler
   | EventHandlerCancel
     -- ^ Like 'EventHandlerHalt' but does not disable the event handlers.
-  | EventHandlerFail !String
+  | EventHandlerFail !Strict.Text
     -- ^ report a failure
   deriving (Eq, Show, Functor)
 
@@ -362,26 +411,34 @@ instance Applicative (GUI window model) where { pure = return; (<*>) = ap; }
 
 instance Monad (GUI window model) where
   return = GUI . return . EventHandlerContinue
-  (GUI f) >>= next = GUI $ ReaderT $ \ happlet -> StateT $ \ st ->
-    runStateT (runReaderT f happlet) st >>= \ (a, st) -> case a of
-      EventHandlerContinue a -> runStateT (runReaderT (unwrapGUI $ next a) happlet) st
-      EventHandlerHalt       -> return (EventHandlerHalt    , st)
-      EventHandlerCancel     -> return (EventHandlerCancel  , st)
-      EventHandlerFail   err -> return (EventHandlerFail err, st)
+  (GUI f) >>= next = GUI $ StateT $ \ st -> runStateT f st >>= \ (a, st) -> case a of
+    EventHandlerContinue a -> runStateT (unwrapGUI $ next a) st
+    EventHandlerHalt       -> return (EventHandlerHalt    , st)
+    EventHandlerCancel     -> return (EventHandlerCancel  , st)
+    EventHandlerFail   err -> return (EventHandlerFail err, st)
 
 instance MonadIO (GUI window model) where
   liftIO f = GUI $ liftIO $ EventHandlerContinue <$> f
 
 instance MonadState model (GUI window model) where
-  state f = GUI $ lift $ state $ \ st ->
+  state f = GUI $ state $ \ st ->
     let (a, model) = f (theGUIModel st) in (EventHandlerContinue a, st{ theGUIModel = model })
 
 instance MonadReader (Happlet model) (GUI window model) where
-  ask = GUI $ EventHandlerContinue <$> ask
-  local loc = GUI . local loc . unwrapGUI
+  ask = GUI $ EventHandlerContinue <$> gets theGUIHapplet
+  local loc (GUI f) = GUI $ do
+    oldst <- get
+    put $ oldst{ theGUIHapplet = loc $ theGUIHapplet oldst }
+    f <* modify (\ newst -> newst{ theGUIHapplet = theGUIHapplet oldst })
   
 instance Monad.MonadFail (GUI window model) where
-  fail = GUI . return . EventHandlerFail
+  fail = GUI . return . EventHandlerFail . Strict.pack
+
+instance MonadError Strict.Text (GUI window model) where
+  throwError = GUI . return . EventHandlerFail
+  catchError (GUI try) catch = GUI $ try >>= \ case
+    EventHandlerFail msg -> unwrapGUI $ catch msg
+    result               -> return result
 
 instance Semigroup a => Semigroup (GUI window model a) where
   a <> b = (<>) <$> a <*> b
@@ -404,20 +461,21 @@ guiWindow = lens theGUIWindow $ \ a b -> a{ theGUIWindow = b }
 -- | Evaluate a 'GUI' function on a given 'Happlet'. The 'Happlet' is __NOT__ locked during
 -- evaluation, it is expected that the 'Happlet' has already been locked with 'onHapplet', however a
 -- copy of the 'Happlet' must be passed along with it's content to this function in order to
--- evaluate it.
+-- evaluate it. This is analogous to 'Control.Monad.State.runStateT' in the "Control.Monad.State"
+-- module.
 runGUI
   :: GUI window model a -- ^ the 'GUI' function to evaluate
-  -> Happlet model
   -> GUIState window model
   -> IO (EventHandlerControl a, GUIState window model)
-runGUI (GUI f) happlet st = runStateT (runReaderT f happlet) st
+runGUI (GUI f) st = runStateT f st
 
+-- | Like 'runGUI' but discards the @a@ typed return value. This is analogous to
+-- 'Control.Monad.State.execStateT' in the "Control.Monad.State" module.
 execGUI
   :: GUI window model a -- ^ the 'GUI' function to evaluate
-  -> Happlet model
   -> GUIState window model
   -> IO (GUIState window model)
-execGUI f happlet = fmap snd . runGUI f happlet
+execGUI f = fmap snd . runGUI f
 
 -- | Like the 'Control.Exception.bracket' function, but works in the 'GUI' monad.
 bracketGUI
@@ -425,13 +483,13 @@ bracketGUI
   -> GUI window model closed
   -> GUI window model a
   -> GUI window model a
-bracketGUI lock unlock f = GUI $ ReaderT $ \ happlet -> StateT $ \ st -> do
+bracketGUI lock unlock f = GUI $ StateT $ \ st -> do
   mvar <- newEmptyMVar
   a    <- bracket
-    (runGUI lock happlet st >>= \ (rsrc, st) -> putMVar mvar st >> return rsrc)
-    (const $ modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI unlock happlet)
+    (runGUI lock st >>= \ (rsrc, st) -> putMVar mvar st >> return rsrc)
+    (const $ modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI unlock)
     (\ case
-      EventHandlerContinue{} -> modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI f happlet
+      EventHandlerContinue{} -> modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI f
       EventHandlerHalt       -> return EventHandlerHalt
       EventHandlerCancel     -> return EventHandlerCancel
       EventHandlerFail err   -> return $ EventHandlerFail err
@@ -495,7 +553,8 @@ cancelIfBusy = howBusy >>= flip when cancelNow . (> 0)
 -- | Return a value indicating how many pending threads there are waiting for their turn to access
 -- the 'Happlet' @model@.
 howBusy :: GUI window model Int
-howBusy = GUI (lift $ EventHandlerContinue <$> gets theGUIHapplet) >>= liftIO . fmap fst . getWaitingThreads
+howBusy = GUI $ fmap EventHandlerContinue $
+  gets theGUIHapplet >>= liftIO . fmap fst . getWaitingThreads
 
 -- | The 'GUI' function type instantiates the 'Control.Monad.State.Class.MonadState' monad
 -- transformer so you can use functions like 'Control.Monad.State.Class.get'. However this function
@@ -542,17 +601,17 @@ guiIsLive = \ case { EventHandlerContinue{} -> True; _ -> False; }
 -- context. This function should never be used unless you are programming a Happlet
 -- 'Happlets.Provider.Provider'.
 getGUIState :: GUI window model (GUIState window model)
-getGUIState = GUI $ lift $ EventHandlerContinue <$> get
+getGUIState = GUI $ EventHandlerContinue <$> get
 
 -- | Update the entire copy of the 'GUIState' data structure for the current context. This
 -- function should never be used unless you are programming a Happlet 'Happlets.Provider.Provider'.
 putGUIState :: GUIState window model -> GUI window model ()
-putGUIState = GUI . lift . fmap EventHandlerContinue . put
+putGUIState = GUI . fmap EventHandlerContinue . put
 
 -- | Modify the 'GUIState' data structure for the current context. This function should never be
 -- used unless you are programming a Happlet 'Happlets.Provider.Provider'
 modifyGUIState :: (GUIState window model -> GUIState window model) -> GUI window model ()
-modifyGUIState = GUI . lift . fmap EventHandlerContinue . modify
+modifyGUIState = GUI . fmap EventHandlerContinue . modify
 
 -- | Obtain a reference to the 'Happlet' in which this 'GUI' function is being evaluated.
 askHapplet :: GUI window model (Happlet model)
