@@ -52,6 +52,16 @@ module Happlets.GUI
     Widget, widget, widgetState, widgetBoundingBox, onWidget, mouseOnWidget,
     widgetContainsPoint, widgetContainsMouse, theWidgetState,
 
+    -- * Workers
+    -- $Workers
+    Worker, workerThreadId, workerHandle,
+    WorkerStatus(..), getWorkerStatus, workerNotBusy, workerNotDone, workerBusy, workerFailed,
+    WorkerTask,  govWorkStart, govWorkEnd, taskPause,
+    taskDone, taskSkip, taskFail, taskCatch,
+    WorkerUnion, newWorkerUnion, recruitWorker, guiWorker, relieveWorker,
+    WorkerSignal(..), signalAllWorkers,
+    Workspace, newWorkspace, copyWorkspace,
+
     -- * Installing Event Handlers
     -- $InstallingEventHandlers
     Managed(..),
@@ -98,6 +108,7 @@ import           Control.Monad.State
 import           Data.Semigroup
 import qualified Data.Text             as Strict
 import           Data.Typeable
+import qualified Data.Vector.Mutable as Mutable
 
 import           System.IO.Unsafe (unsafePerformIO) -- used for generating unique Happlet IDs.
 
@@ -623,6 +634,215 @@ modifyGUIState = GUI . fmap EventHandlerContinue . modify
 -- | Obtain a reference to the 'Happlet' in which this 'GUI' function is being evaluated.
 askHapplet :: GUI window model (Happlet model)
 askHapplet = ask
+
+----------------------------------------------------------------------------------------------------
+
+-- $Workers
+-- Multi-threaded Happlets made easy.
+--
+-- All worker related functions evaluate to a function of type: @forall m a . 'MonadIO' m => m a@.
+-- This means it is possible to use any of these functions to create and manage 'Worker's and
+-- 'WorkerUnions' in @IO@, 'Initialize', 'GUI', and the worker-specific 'WorkerTask' function type.
+
+-- | Obtain a 'WorkerStatus' using the 'getWorkerStatus' function. 
+data WorkerStatus
+  = WorkerInit      -- ^ is getting started
+  | WorkerWaiting   -- ^ is waiting for a lock to open
+  | WorkerPaused    -- ^ is waiting for a timer to go off
+  | WorkerBusy      -- ^ is working normally
+  | WorkerHalted    -- ^ evaluated to 'taskDone'
+  | WorkerFlagged   -- ^ signaled with 'relieveWorker'
+  | WorkerFailed  Strict.Text -- ^ worker evaluated to 'fail'
+  deriving (Eq, Show)
+
+-- | Is the 'WorkerStatus' set to 'WorkerInit', 'WorkerWaiting', or 'WorkerPaused'?
+workerNotBusy :: WorkerStatus -> Bool
+workerNotBusy = \ case
+  WorkerInit    -> True
+  WorkerWaiting -> True
+  WorkerPaused  -> True
+  _             -> False
+
+-- | Is the 'WorkerStatus' set to 'WorkerCompleted', 'WorkerCanceled', 'WorkerHalted',
+-- 'WorkerFlaggeed', or 'WorkerFailed'?
+workerNotDone :: WorkerStatus -> Bool
+workerNotDone = \ case
+  WorkerCompleted -> True
+  WorkerHalted    -> True
+  WorkerFlagged   -> True
+  WorkerFailed{}  -> True
+
+-- | Is the 'WorkerStatus' set to 'WorkerBusy'?
+workerBusy :: WorkerStatus -> Bool
+workerBusy = \ case { WorkerBusy -> True; _ -> False; }
+
+-- | Is the 'WorkerStatus' set to 'WorkerFailed'? If so, get the error message.
+workerFailed :: WorkerStatus -> Maybe Strict.Text
+workerFailed = \ case { WorkerFailed msg -> Just msg; _ -> Nothing; }
+
+-- | This data structure contains information about an individual worker. It contains a
+-- 'workerHandle' which can contain an arbitrary string you can use to identify them, although
+-- nothing prevents you from giving two different workers the same handle. The truly unique
+-- identifier is 'workerThreadId' which is assigned to each worker by the Haskell runtime system and
+-- is always unique throughout the duration of a program's process lifetime.
+data Worker
+  = Worker
+    { workerThreadId :: !ThreadId
+    , workerHandle   :: !Strict.Text
+    , workerUnion    :: !WorkerUnion
+    , workerStatus   :: !(MVar WorkerStatus)
+    }
+
+instance Eq   Worker where { a == b = workerThreadId a == workerThreadId b; }
+instance Show Worker where
+  show  worker = '(':showWorker worker++")"
+  showList lst = '[' : intersperse ',' (showWorkerId <$> lst) ++ "]"
+
+showWorker :: Worker -> String
+shwoWorker (Worker{workerThreadId=tid,workerHandle=hand}) = show tid++": "++Strict.unpack hand
+
+-- | The 'GUI' provides access to a default 'WorkerUnion' referred to as the "government" union. You
+-- can easily recruit new workers using 'govWorkStart', and relieve them using 'govWorkEnd'.
+--
+-- It is also possible to create local 'WorkerUnion's using 'newWorkerUnion', and manage work using
+-- 'recruitWorker' and 'relieveWorker'.
+data WorkerUnionState
+  = WorkerUnion
+    { unionMemberCount :: !Int
+    , uniomRoster      :: !(Mutable.IOVector Worker)
+    }
+
+newtype WorkerUnion = WorkerUnion{ unwrapWorkerUnion :: MVar WorkerUnionState }
+
+-- | A 'WorkerSignal' is a message sent to a worker when you need them to quit the task they are
+-- working on. Use 'signalAllWorkers' to inspect the 'Worker' of each worker and send them a
+-- signal of this data type.
+newtype WorkerSignal = WorkerSignal () deriving (Eq, Ord)
+instance Exception WorkerSignal
+
+-- | A 'Workspace' contains @work@ piece for a worker to work on. It is a thread-safe mutex
+-- variable.
+newtype Workspace work = Workspace{ unwrapWorkspace :: MVar work }
+
+-- | This is the worker thread type. Workers loop continuously by default, you can cancel any time
+-- by evaluating 'taskDone', you can cancel the current work item by evaluating 'taskSkip', you can
+-- report a failure with 'taskFail'.
+--
+-- Notice the 'WorkerTask' type takes a @work@ type, this is the contents of a 'Workspace'.
+newtype WorkerTask work a
+  = WorkerTask { unwrapWorkerTask :: ReaderT Worker (StateT product IO) (EventHandlerControl a) }
+
+instance Functor (WorkerTask work) where
+  fmap f (WorkerTask m) = WorkerTask $ fmap f m
+
+instance Applicative (WorkerTask work) where { pure = return; (<*>) = ap; }
+
+instance Monad (WorkerTask work) where
+  return = WorkerTask . return . EventHandlerContinue
+  (WorkerTask a) >>= f = WorkerTask $ a >>= \ case
+    EventHandlerContinue a -> unwrapWorkerTask $ f a
+    EventHandlerHalt       -> return EventHandlerHalt
+    EventHandlerCancel     -> return EventHandlerCancel
+    EventHandlerFail   msg -> return $ EventHandlerFail msg
+  fail   = taskFail
+
+-- | This function obtains status information from a given 'Worker'. The worker may update it's
+-- own status at any time, so the returned 'WorkerStatus' is only a snapshot of the status at a
+-- given time, it may even change the very moment after this function returns.
+getWorkerStatus :: MonadIO m => Worker -> m WorkerStatus
+getWorkerStatus = liftIO . readMVar . workerStatus
+
+-- | The task should stop looping and close-up shop.
+taskDone :: WorkerTask work void
+taskDone = WorkerTask $ return EventHandlerHalt
+
+-- | The task should skip this loop and wait for the next loop.
+taskSkip :: WorkerTask work void
+taskSkip = WorkerTask $ return EventHandlerCancel
+
+-- | Signal a failure occured.
+taskFail :: Strict.Text -> WorkerTask work void
+taskFail = WorkerTask . return . EventHandlerFail . Strict.pack
+
+-- | Catch a 'taskSkip' or 'taskFail' signal, or really any signal at all.
+taskCatch :: WorkerTask work a -> (EventHandlerControl a -> WorkerTask work b) -> WorkerTask work b
+taskCatch (WorkerTask f) catch = WorkerTask $ f >>= unwrapWorkerTask . catch
+
+setWorkerStatus :: Worker work -> WorkerStatus -> IO WorkerStatus
+setWorkerStatus (Worker{workerStatus=stat}) = swapMVar stat
+
+-- | Pause for some number of seconds. The pause time can be very small, but the smallest pause time
+-- is dependent on the operating system and computer hardware. Haskell's runtime system on stock
+-- computer hardware can control time to within a millionth of a second with some reliability.
+taskPause :: Double -> WorkerTask work ()
+taskPause t = WorkerTask $ ReaderT $ \ self -> liftIO $ do
+  oldStat <- setWorkerStatus self WorkerPaused
+  if t <= 0 then threadYield else threadDelay $ round $ t * 1000 * 1000
+  void $ setWorkerStatus self oldStat
+
+-- | Create a new 'Workspace' for a worker to work on, containing a initial @work@ piece.
+newWorkspace :: MonadIO m => work -> m (Workspace work)
+newWorkspace = liftIO . newMVar
+
+-- | Get a copy of the @work@ piece from the 'Workspace' without disturbing the current
+-- 'WorkerTask'.
+copyWorkspace :: MonadIO m => Workspace work -> m work
+copyWorkspace = liftIO . readMVar . unwrapWorkspace
+
+-- | This function starts a worker on a 'WorkerTask'.
+recruitWorker
+  :: MonadIO m
+  => WorkerUnion -> Workspace work -> Strict.Text -> WorkerTask work void -> m Worker
+recruitWorker wu (Workspace mvar) handl f = newWorker wu mvar handl f
+
+-- | Similar to 'recruitWorker' but works for the "government" and operates on the current @model@
+-- in of the 'GUI' function which recruits this 'Worker'.
+guiWorker :: MonadIO m => Strict.Text -> GUI window model void -> GUI window model Worker
+guiWorker handle task = error "TODO"
+
+newWorker
+  :: MonadIO m
+  => WorkerUnion -> MVar work -> Strict.Text -> WorkerTask work void -> m Worker
+newWorker wu mvar handl (WorkerTask f) = liftIO $ do
+  stat <- newMVar WorkerInit
+  let self tid = Worker
+        { workerThreadId = tid
+        , workerHandle   = handl
+        , workerUnion    = wu
+        , workerStatus   = stat
+        }
+  let workerLoop myself = do
+        swapMVar stat WorkerWaiting
+        result <- modifyMVar mvar $ \ work -> do
+          swapMVar stat WorkerBusy
+          (result, work) <- runStateT (runReaderT f myself) work
+          return (work, result)
+        case resut of
+          EventHandlerContinue{} -> threadYield >> workerLoop myself
+          EventHandlerCancel     -> threadYield >> workerLoop myself
+          EventHandlerHalt       -> void $ swapMVar stat WorkerCompleted
+          EventHandlerFail   msg -> void $ swapMVar stat $ WorkerFailed msg
+  fmap self $ forkIO $ catches
+    (self <$> myThreadId >>= \ myself -> putWorkerUnion wu myself >> workerLoop myself)
+    [ Handler $ \ (WorkerSignal ()) -> void $ swapMVar stat WorkerFlagged
+    , Handler $ \ (SomeException e) -> do
+        void (swapMVar stat $ WorkerFailed $ Strict.pack $ show e) >>= evaluate
+        throw e
+    ]
+
+-- | Signal a worker that they no longer need to perform their task.
+relieveWorker :: MonadIO m => Worker -> m ()
+relieveWorker (Worker{workerThreadId=tid}) = liftIO $ threadKill tid $ ThreadSignal ()
+
+newWorkerUnion :: MonadIO m => m WorkerUnion
+newWorkerUnion = liftIO $ do
+  vec  <- Mutable.replicate 4 JobOpening
+  mvar <- newMVar WorkerUnionState{ unionMemberCount = 0, unionRoster = vec }
+  return $ WorkerUnion mvar
+
+putWorkerUnion :: WorkerUnion -> Worker -> IO ()
+putWorkerUnion (WorkerUnion mvar) worker = do
+  error "TODO"
 
 ----------------------------------------------------------------------------------------------------
 
