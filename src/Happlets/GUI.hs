@@ -72,7 +72,7 @@ module Happlets.GUI
     -- * Low-level details
     -- $LowLevel_Details
     GUIState(..), EventHandlerControl(..),
-    guiModel, guiWindow, guiIsLive, execGUI, runGUI,
+    guiModel, guiWindow, guiIsLive, execGUI, runGUI, guiCatch,
     makeHapplet, onHapplet, peekModel, sameHapplet,
     getGUIState, putGUIState, modifyGUIState, askHapplet,
 
@@ -475,6 +475,14 @@ execGUI
   -> GUIState window model
   -> IO (GUIState window model)
 execGUI f = fmap snd . runGUI f
+
+-- | Evaluate a 'GUI' function but catch calls to 'cancelNow', 'deleteEventHandler', and
+-- 'Control.Monad.Fail.fail'.
+guiCatch
+  :: GUI window model a
+  -> (EventHandlerControl a -> GUI window model b)
+  -> GUI window model b
+guiCatch (GUI f) = ((GUI $ f >>= \ result -> return (EventHandlerContinue result)) >>=)
 
 -- | Like the 'Control.Exception.bracket' function, but works in the 'GUI' monad.
 bracketGUI
