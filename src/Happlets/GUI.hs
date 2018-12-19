@@ -56,7 +56,7 @@ module Happlets.GUI
     -- $Workers
     Worker, workerThreadId, workerHandle,
     WorkerStatus(..), getWorkerStatus, workerNotBusy, workerNotDone, workerBusy, workerFailed,
-    WorkerTask,  govWorkStart, govWorkEnd, taskPause,
+    WorkerTask,  govWorkStart, govWorkEnd, taskPause, myUnionCard,
     taskDone, taskSkip, taskFail, taskCatch,
     WorkerUnion, newWorkerUnion, recruitWorker, guiWorker, relieveWorker,
     WorkerSignal(..), signalAllWorkers,
@@ -65,6 +65,7 @@ module Happlets.GUI
     -- * Installing Event Handlers
     -- $InstallingEventHandlers
     Managed(..),
+    CanRecruitWorkers(..),
     CanResize(..), OldPixSize, NewPixSize, CanvasMode(..),
     CanAnimate(..),
     CanMouse(..), MouseEventPattern(..),
@@ -84,7 +85,7 @@ module Happlets.GUI
     GUIState(..), EventHandlerControl(..),
     guiModel, guiWindow, guiIsLive, execGUI, runGUI, guiCatch,
     makeHapplet, onHapplet, peekModel, sameHapplet,
-    getGUIState, putGUIState, modifyGUIState, askHapplet,
+    getGUIState, putGUIState, modifyGUIState, askHapplet, govWorkerUnion,
 
   ) where
 
@@ -106,9 +107,9 @@ import           Control.Monad.Reader
 import           Control.Monad.State
 
 import           Data.Semigroup
+import qualified Data.Set              as Set
 import qualified Data.Text             as Strict
 import           Data.Typeable
-import qualified Data.Vector.Mutable as Mutable
 
 import           System.IO.Unsafe (unsafePerformIO) -- used for generating unique Happlet IDs.
 
@@ -188,6 +189,9 @@ peekModel (Happlet{happletMVar=mvar}) = readMVar mvar
 -- returns the number of threads that are waiting for access.
 getWaitingThreads :: Happlet model -> IO (Int, [ThreadId])
 getWaitingThreads (Happlet{happletLock=lock}) = (threadCount &&& threadList) <$> readMVar lock
+
+modifyMVar' :: MVar st -> (st -> IO (a, st)) -> IO a
+modifyMVar' mvar f = modifyMVar mvar $ fmap (\ (a, st) -> (st, a)) . f
 
 ----------------------------------------------------------------------------------------------------
 
@@ -415,6 +419,7 @@ data GUIState window model
     { theGUIModel   :: !model
     , theGUIHapplet :: !(Happlet model)
     , theGUIWindow  :: !window
+    , theGUIWorkers :: !WorkerUnion
     }
 
 instance Applicative (GUI window model) where { pure = return; (<*>) = ap; }
@@ -635,6 +640,10 @@ modifyGUIState = GUI . fmap EventHandlerContinue . modify
 askHapplet :: GUI window model (Happlet model)
 askHapplet = ask
 
+-- | Obtain a reference to the "government" 'WorkerUnion' for this GUI.
+govWorkerUnion :: GUI window model WorkerUnion
+govWorkerUnion = GUI $ gets theGUIWorkers
+
 ----------------------------------------------------------------------------------------------------
 
 -- $Workers
@@ -685,11 +694,13 @@ workerFailed = \ case { WorkerFailed msg -> Just msg; _ -> Nothing; }
 -- nothing prevents you from giving two different workers the same handle. The truly unique
 -- identifier is 'workerThreadId' which is assigned to each worker by the Haskell runtime system and
 -- is always unique throughout the duration of a program's process lifetime.
+--
+-- This data structure is only an identity for an actual worker thread. Once the 'WorkerTask' is
+-- done, the worker leaves the 'WorkerUnion' and will never return under the same identity.
 data Worker
   = Worker
     { workerThreadId :: !ThreadId
     , workerHandle   :: !Strict.Text
-    , workerUnion    :: !WorkerUnion
     , workerStatus   :: !(MVar WorkerStatus)
     }
 
@@ -706,13 +717,7 @@ shwoWorker (Worker{workerThreadId=tid,workerHandle=hand}) = show tid++": "++Stri
 --
 -- It is also possible to create local 'WorkerUnion's using 'newWorkerUnion', and manage work using
 -- 'recruitWorker' and 'relieveWorker'.
-data WorkerUnionState
-  = WorkerUnion
-    { unionMemberCount :: !Int
-    , uniomRoster      :: !(Mutable.IOVector Worker)
-    }
-
-newtype WorkerUnion = WorkerUnion{ unwrapWorkerUnion :: MVar WorkerUnionState }
+newtype WorkerUnion = WorkerUnion{ unwrapWorkerUnion :: MVar (Set.Set Worker) }
 
 -- | A 'WorkerSignal' is a message sent to a worker when you need them to quit the task they are
 -- working on. Use 'signalAllWorkers' to inspect the 'Worker' of each worker and send them a
@@ -745,6 +750,14 @@ instance Monad (WorkerTask work) where
     EventHandlerCancel     -> return EventHandlerCancel
     EventHandlerFail   msg -> return $ EventHandlerFail msg
   fail   = taskFail
+
+instance MonadState work (WorkerTask work) where
+  state = WorkerTask . lift . state
+
+-- | When a 'WorkerTask' is being evaluated, a 'Worker' may refer to one's self by obtaining a copy
+-- of it's identification (a union membership card).
+myUnionCard :: WorkerTask work Worker
+myUnionCard = WorkerTask ask
 
 -- | This function obtains status information from a given 'Worker'. The worker may update it's
 -- own status at any time, so the returned 'WorkerStatus' is only a snapshot of the status at a
@@ -785,64 +798,81 @@ newWorkspace :: MonadIO m => work -> m (Workspace work)
 newWorkspace = liftIO . newMVar
 
 -- | Get a copy of the @work@ piece from the 'Workspace' without disturbing the current
--- 'WorkerTask'.
+-- 'WorkerTask'. The copy is just a snapshot, unless the 'Worker' has completed it's 'WorkerTask',
+-- this snapshot will likely go out of date the moment this function call returns.
 copyWorkspace :: MonadIO m => Workspace work -> m work
 copyWorkspace = liftIO . readMVar . unwrapWorkspace
 
--- | This function starts a worker on a 'WorkerTask'.
+-- | This function starts a worker on a 'WorkerTask', returning an identifier you can use to query
+-- information about the 'Worker's status. In this idylic little world, workers stay with a
+-- 'WorkerUnion' until they retire, so there are no APIs for moving a 'Worker' from one
+-- 'WorkerUnion' to another, you can only signal to them that their work is done using the
+-- 'relieveWorker' function, at which point they happily leave.
 recruitWorker
   :: MonadIO m
   => WorkerUnion -> Workspace work -> Strict.Text -> WorkerTask work void -> m Worker
-recruitWorker wu (Workspace mvar) handl f = newWorker wu mvar handl f
+recruitWorker wu (Workspace mvar) handl (WorkerTask f) =
+  newWorker wu handl $ \ worker setBusy ->
+  modifyMVar' mvar $ \ work -> setBusy >> runStateT (runReaderT f worker) work
 
 -- | Similar to 'recruitWorker' but works for the "government" and operates on the current @model@
 -- in of the 'GUI' function which recruits this 'Worker'.
-guiWorker :: MonadIO m => Strict.Text -> GUI window model void -> GUI window model Worker
-guiWorker handle task = error "TODO"
+guiWorker
+  :: CanRecruitWorkers window
+  => Strict.Text -> GUI window model void -> GUI window model Worker
+guiWorker handl task = do
+  st <- getGUIState
+  newWorker (theGUIWorkers st) handl $ \ worker setBusy -> inOtherThreadRunGUI st task
 
+-- not for export
 newWorker
   :: MonadIO m
-  => WorkerUnion -> MVar work -> Strict.Text -> WorkerTask work void -> m Worker
-newWorker wu mvar handl (WorkerTask f) = liftIO $ do
+  => WorkerUnion -> Strict.Text -> (Worker -> IO () -> IO (EventHandlerControl a)) -> m Worker
+newWorker wu handl iteration = liftIO $ do
   stat <- newMVar WorkerInit
   let self tid = Worker
         { workerThreadId = tid
         , workerHandle   = handl
-        , workerUnion    = wu
         , workerStatus   = stat
         }
   let workerLoop myself = do
         swapMVar stat WorkerWaiting
-        result <- modifyMVar mvar $ \ work -> do
-          swapMVar stat WorkerBusy
-          (result, work) <- runStateT (runReaderT f myself) work
-          return (work, result)
-        case resut of
+        iteration myself (swapMVar stat WorkerBusy) >>= \ case
           EventHandlerContinue{} -> threadYield >> workerLoop myself
           EventHandlerCancel     -> threadYield >> workerLoop myself
           EventHandlerHalt       -> void $ swapMVar stat WorkerCompleted
           EventHandlerFail   msg -> void $ swapMVar stat $ WorkerFailed msg
   fmap self $ forkIO $ catches
-    (self <$> myThreadId >>= \ myself -> putWorkerUnion wu myself >> workerLoop myself)
+    (do myself <- self <$> myThreadId
+        bracket_ (unionize wu myself) (retire wu myself) (workerLoop myself)
+    )
     [ Handler $ \ (WorkerSignal ()) -> void $ swapMVar stat WorkerFlagged
     , Handler $ \ (SomeException e) -> do
-        void (swapMVar stat $ WorkerFailed $ Strict.pack $ show e) >>= evaluate
+        void (swapMVar stat $ WorkerFailed $ Strict.pack $ show e)
         throw e
     ]
 
--- | Signal a worker that they no longer need to perform their task.
+-- | Signal a worker that they no longer need to perform their task. In this idylic little world, a
+-- worker happily leaves when there is no more work to do, and they abandon their 'Worker' identity,
+-- which is their membership in a 'WorkerUnion'. Calling 'relieveWorker' on the same 'Worker' ID
+-- that is already retired does nothing.
 relieveWorker :: MonadIO m => Worker -> m ()
 relieveWorker (Worker{workerThreadId=tid}) = liftIO $ threadKill tid $ ThreadSignal ()
 
+-- | Define a new 'WorkerUnion'. 
 newWorkerUnion :: MonadIO m => m WorkerUnion
 newWorkerUnion = liftIO $ do
   vec  <- Mutable.replicate 4 JobOpening
   mvar <- newMVar WorkerUnionState{ unionMemberCount = 0, unionRoster = vec }
   return $ WorkerUnion mvar
 
-putWorkerUnion :: WorkerUnion -> Worker -> IO ()
-putWorkerUnion (WorkerUnion mvar) worker = do
-  error "TODO"
+unionize :: WorkerUnion -> Worker -> IO ()
+unionize (WorkerUnion mvar) worker = liftIO $
+  modifyMVar_ mvar $ return . WorkerUnion . Set.insert worker
+
+retire :: WorkerUnion -> Worker -> IO ()
+retire (WorkerUnion mvar) worker = liftIO $
+  modifyMVar_ mvar $ return . WorkerUnion . Set.delete worker
 
 ----------------------------------------------------------------------------------------------------
 
@@ -866,6 +896,14 @@ class Managed window where
   -- associated with the given @window@. This should trigger a call to the event handler set by
   -- 'visibleEvents'.
   windowVisible :: Bool -> GUI window model ()
+
+-- | This class must be instantiated by the 'Happlet.Provider.Provider' to evaluate 'GUI' functions
+-- in 'Worker' threads. The 'guiWorker' makes use of this interface.
+class CanRecruitWorkers window where
+  -- | This function must assume that the given 'GUI' function will be evaluated in a new thread
+  -- with the given 'GUIState'. This function must perform all locking of mutex variables necessary
+  -- to evaluate the 'GUI' function, and update all mutexes with the results of evaluation.
+  inOtherThreadRunGUI :: GUIState window model -> GUI window model a -> IO (EventHandlerControl a)
 
 -- | Windows that can be resized can provide an instance of this class. Even on platforms where
 -- there is only one window per screen, it may be possible to change screen sizes if the screen
