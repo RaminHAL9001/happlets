@@ -69,11 +69,11 @@ module Happlets.GUI
     -- $Workers
     Workspace, newWorkspace, copyWorkspace,
     WorkerName, guiWorker, recruitWorker, relieveWorker, relieveWorkersIn,
-    WorkPost, newWorkPost, postWorkersUnion, pushWork, checkWork,
+    WorkPost, postWorkersUnion, pushWork, checkWork,
     postWorkers, postTaskWorkers, guiPostWorkers, closeWorkPost,
     WorkPostStats(..), getWorkPostStats, resetWorkPostStats, instantThroughput, totalThroughput,
     WorkerTask,  govWorker, taskPause, thisWorker, taskDone, taskSkip, taskFail, taskCatch,
-    Worker, workerThreadId, workerHandle, releiveWorkers, relieveGovWorkers,
+    Worker, workerThreadId, workerName, relieveGovWorkers,
     WorkerStatus(..), getWorkerStatus, workerNotBusy, workerNotDone, workerBusy, workerFailed,
     WorkerUnion, newWorkerUnion,
     WorkerSignal(..),
@@ -100,7 +100,8 @@ import           Happlets.Draw.Types2D
 
 import           Control.Arrow
 import           Control.Category
-import           Control.Concurrent (ThreadId, myThreadId)
+import           Control.Concurrent (ThreadId, myThreadId, yield, forkIO, threadDelay, throwTo)
+import           Control.Concurrent.Chan
 import           Control.Concurrent.MVar
 import           Control.Exception
 import           Control.Lens
@@ -109,6 +110,7 @@ import qualified Control.Monad.Fail    as Monad
 import           Control.Monad.Reader
 import           Control.Monad.State
 
+import           Data.List             (intercalate)
 import           Data.Semigroup
 import qualified Data.Set              as Set
 import qualified Data.Text             as Strict
@@ -646,7 +648,7 @@ askHapplet = ask
 
 -- | Obtain a reference to the "government" 'WorkerUnion' for this GUI.
 govWorkerUnion :: GUI window model WorkerUnion
-govWorkerUnion = GUI $ gets theGUIWorkers
+govWorkerUnion = GUI $ EventHandlerContinue <$> gets theGUIWorkers
 
 ----------------------------------------------------------------------------------------------------
 
@@ -685,10 +687,10 @@ workerNotBusy = \ case
 -- 'WorkerFlaggeed', or 'WorkerFailed'?
 workerNotDone :: WorkerStatus -> Bool
 workerNotDone = \ case
-  WorkerCompleted -> True
   WorkerHalted    -> True
   WorkerFlagged   -> True
   WorkerFailed{}  -> True
+  _               -> False
 
 -- | Is the 'WorkerStatus' set to 'WorkerBusy'?
 workerBusy :: WorkerStatus -> Bool
@@ -718,12 +720,15 @@ data Worker
     }
 
 instance Eq   Worker where { a == b = workerThreadId a == workerThreadId b; }
+instance Ord  Worker where
+  compare a b = compare (workerThreadId a) (workerThreadId b) <>
+    compare (workerName a) (workerName b)
 instance Show Worker where
   show  worker = '(':showWorker worker++")"
-  showList lst = '[' : intersperse ',' (showWorkerId <$> lst) ++ "]"
+  showList lst = ('[' :) . ((intercalate "," (showWorker <$> lst)) ++) . (']' :)
 
 showWorker :: Worker -> String
-shwoWorker (Worker{workerThreadId=tid,workerName=name}) = show tid++": "++Strict.unpack name
+showWorker (Worker{workerThreadId=tid,workerName=name}) = show tid++": "++Strict.unpack name
 
 -- | The 'GUI' provides access to a default 'WorkerUnion' referred to as the "government" union. You
 -- can easily recruit new workers using 'govWorker'. Government workers are equal to any other
@@ -731,12 +736,12 @@ shwoWorker (Worker{workerThreadId=tid,workerName=name}) = show tid++": "++Strict
 --
 -- It is also possible to create local 'WorkerUnion's using 'newWorkerUnion', and manage work using
 -- 'recruitWorker' and 'relieveWorker'.
-newtype WorkerUnion = WorkerUnion{ unwrapWorkerUnion :: MVar (Set.Set Worker) }
+newtype WorkerUnion = WorkerUnion (MVar (Set.Set Worker))
 
 -- | A 'WorkerSignal' is a message sent to a worker when you need them to quit the task they are
 -- working on. Use 'relieveWorkersIn' or 'relieveGovWorkers' to inspect the 'Worker' of each worker
 -- and send them a signal of this data type.
-newtype WorkerSignal = WorkerSignal () deriving (Eq, Ord)
+newtype WorkerSignal = WorkerSignal () deriving (Eq, Ord, Show)
 instance Exception WorkerSignal
 
 -- | A 'Workspace' contains @work@ piece for a worker to work on. It is a thread-safe mutex
@@ -749,7 +754,7 @@ newtype Workspace work = Workspace{ unwrapWorkspace :: MVar work }
 --
 -- Notice the 'WorkerTask' type takes a @work@ type, this is the contents of a 'Workspace'.
 newtype WorkerTask work a
-  = WorkerTask { unwrapWorkerTask :: ReaderT Worker (StateT product IO) (EventHandlerControl a) }
+  = WorkerTask { unwrapWorkerTask :: ReaderT Worker (StateT work IO) (EventHandlerControl a) }
 
 -- | A 'WorkPost' is an area where 'Worker's waits to recieve work. Send work to the post using the
 -- 'postWork' function, and check on the result using 'postCheck' function. 'Worker's are assigned
@@ -765,7 +770,7 @@ newtype WorkerTask work a
 data WorkPost inWork outWork
   = WorkPost
     { postWorkersUnion :: !WorkerUnion
-    , workPostStats    :: !MVar
+    , workPostStats    :: !(MVar WorkPostStats)
     , workPostInbox    :: !(Chan inWork)
     , workPostOutbox   :: !(Chan outWork)
     }
@@ -796,7 +801,7 @@ data WorkPostStats
     }
 
 instance Functor (WorkerTask work) where
-  fmap f (WorkerTask m) = WorkerTask $ fmap f m
+  fmap f (WorkerTask m) = WorkerTask $ fmap (fmap f) m
 
 instance Applicative (WorkerTask work) where { pure = return; (<*>) = ap; }
 
@@ -807,15 +812,15 @@ instance Monad (WorkerTask work) where
     EventHandlerHalt       -> return EventHandlerHalt
     EventHandlerCancel     -> return EventHandlerCancel
     EventHandlerFail   msg -> return $ EventHandlerFail msg
-  fail   = taskFail
+  fail   = taskFail . Strict.pack
 
 instance MonadState work (WorkerTask work) where
-  state = WorkerTask . lift . state
+  state = WorkerTask . fmap EventHandlerContinue . lift . state
 
 -- | When a 'WorkerTask' is being evaluated, a 'Worker' may refer to one's self by obtaining a copy
 -- of it's identification (a union membership card).
 thisWorker :: WorkerTask work Worker
-thisWorker = WorkerTask ask
+thisWorker = WorkerTask $ EventHandlerContinue <$> ask
 
 -- | This function obtains status information from a given 'Worker'. The worker may update it's
 -- own status at any time, so the returned 'WorkerStatus' is only a snapshot of the status at a
@@ -833,13 +838,13 @@ taskSkip = WorkerTask $ return EventHandlerCancel
 
 -- | Signal a failure occured.
 taskFail :: Strict.Text -> WorkerTask work void
-taskFail = WorkerTask . return . EventHandlerFail . Strict.pack
+taskFail = WorkerTask . return . EventHandlerFail
 
 -- | Catch a 'taskSkip' or 'taskFail' signal, or really any signal at all.
 taskCatch :: WorkerTask work a -> (EventHandlerControl a -> WorkerTask work b) -> WorkerTask work b
 taskCatch (WorkerTask f) catch = WorkerTask $ f >>= unwrapWorkerTask . catch
 
-setWorkerStatus :: Worker work -> WorkerStatus -> IO WorkerStatus
+setWorkerStatus :: Worker -> WorkerStatus -> IO WorkerStatus
 setWorkerStatus (Worker{workerStatus=stat}) = swapMVar stat
 
 -- | Pause for some number of seconds. The pause time can be very small, but the smallest pause time
@@ -848,12 +853,13 @@ setWorkerStatus (Worker{workerStatus=stat}) = swapMVar stat
 taskPause :: Double -> WorkerTask work ()
 taskPause t = WorkerTask $ ReaderT $ \ self -> liftIO $ do
   oldStat <- setWorkerStatus self WorkerPaused
-  if t <= 0 then threadYield else threadDelay $ round $ t * 1000 * 1000
-  void $ setWorkerStatus self oldStat
+  if t <= 0 then yield else threadDelay $ round $ t * 1000 * 1000
+  setWorkerStatus self oldStat
+  return $ EventHandlerContinue ()
 
 -- | Create a new 'Workspace' for a worker to work on, containing a initial @work@ piece.
 newWorkspace :: MonadIO m => work -> m (Workspace work)
-newWorkspace = liftIO . newMVar
+newWorkspace = liftIO . fmap Workspace . newMVar
 
 -- | Get a copy of the @work@ piece from the 'Workspace' without disturbing the current
 -- 'WorkerTask'. The copy is just a snapshot, unless the 'Worker' has completed it's 'WorkerTask',
@@ -898,8 +904,29 @@ guiWorker handl f = getGUIState >>= \ st ->
 -- 'Worker'-related functions here which can be evaluated to any function type of the 'MonadIO' type
 -- class. The default "government" 'WorkerUnion' is only available during 'GUI' evaluation.
 govWorker :: Workspace work -> WorkerName -> WorkerTask work void -> GUI window model Worker
-govWorker workspace handl f task =
-  govWorkerUnion >>= \ gov -> recruitWorker gov workspace handl task
+govWorker workspace handl f =
+  govWorkerUnion >>= \ gov -> recruitWorker gov workspace handl f
+
+-- | Relieve every worker in the 'postWorkersUnion' using the 'relieveWorkersIn' function, where the
+-- filter given to 'relieveWorkersIn' is @('const' 'True')@, resulting in all workers being
+-- relieved.
+closeWorkPost :: MonadIO m => WorkPost inWork outWork -> m ()
+closeWorkPost = flip relieveWorkersIn (const True) . postWorkersUnion
+
+-- | Get a statistical snapshot of the current state of a given 'WorkPost'. With this you can
+-- evaluate 'totalThroughput' or 'instantThroughput', or compute your own statistics.
+getWorkPostStats :: MonadIO m => WorkPost inWork outWork -> m WorkPostStats
+getWorkPostStats = liftIO . readMVar . workPostStats
+
+-- | Like 'getWorkPostStats', but after this function returns, some of the 'WorkPostStats' will be
+-- reset, namely the 'workPostRecentInput', 'workPostRecentOutput', and 'workPostResetTime' fields.
+resetWorkPostStats :: MonadIO m => WorkPost inWork outWork -> m WorkPostStats
+resetWorkPostStats post = liftIO $ do
+  t <- getCurrentTime
+  modifyMVar (workPostStats post) $ \ st -> return $ flip (,) st $ st
+    & (_workPostRecentInput  .~ 0)
+    & (_workPostRecentOutput .~ 0)
+    & (_workPostResetTime    .~ t)
 
 -- | Construct a group of 'WorkPost' workers, each running the same 'WorkerTask'. Pass a list of
 -- 'workerName's, one 'Worker' will be created for each name, all workers will wait on the same
@@ -911,10 +938,10 @@ govWorker workspace handl f task =
 -- value.
 postWorkers
   :: MonadIO m
-  => WorkPost inWork outWork -> [WorkerName] -> (inWork -> WorkerTask () outWork)
-  -> m WorkerUnion
-postWorkers post handls f =
-  postal post handls $ \ (SetWaiting _) (SetBusy _) self work ->
+  => [WorkerName] -> (inWork -> WorkerTask () outWork)
+  -> m (WorkPost inWork outWork)
+postWorkers names f =
+  postal names $ \ (SetWaiting _) (SetBusy _) self work ->
   evalStateT (runReaderT (unwrapWorkerTask $ f work) self) ()
 
 -- | Similar to 'postWorkers' but also allows the workers access to a 'Workspace'. The content of
@@ -922,11 +949,11 @@ postWorkers post handls f =
 -- is recieved.
 postTaskWorkers
   :: MonadIO m
-  -> Workspace fold -> WorkPost inWork outWork -> [WorkerName]
+  => Workspace fold -> [WorkerName]
   -> (inWork -> WorkerTask fold outWork)
-  -> m WorkerUnion
-postTaskWorkers (Workspace mvar) post handls (WorkerTask f) =
-  postal post handls $ \ (SetWaiting waiting) (SetBusy busy) self work -> do
+  -> m (WorkPost inWork outWork)
+postTaskWorkers (Workspace mvar) handls f =
+  postal handls $ \ (SetWaiting waiting) (SetBusy busy) self work -> do
     waiting
     modifyMVar' mvar $ (>>) busy . runStateT (runReaderT (unwrapWorkerTask $ f work) self)
 
@@ -934,25 +961,34 @@ postTaskWorkers (Workspace mvar) post handls (WorkerTask f) =
 -- 'GUI's state as each work item is posted.
 guiPostWorkers
   :: CanRecruitWorkers window
-  => WorkPost inWork outWork -> [WorkerName]
+  => [WorkerName]
   -> (inWork -> GUI window model outWork)
-  -> GUI window model WorkerUnion
-guiPostWorkers post handls f =
-  postal post handls $ \ (SetWaiting waiting) (SetBusy busy) self work -> do
+  -> GUI window model (WorkPost inWork outWork)
+guiPostWorkers names f = getGUIState >>= \ st ->
+  postal names $ \ (SetWaiting waiting) (SetBusy busy) _self work -> do
     waiting
     inOtherThreadRunGUI st (liftIO busy >> f work)
 
 -- not for export
 postal
   :: MonadIO m
-  => WorkPost inWork outWork -> [WorkerName]
+  => [WorkerName]
   -> (SetWaiting -> SetBusy -> Worker -> inWork -> IO (EventHandlerControl outWork))
-  -> m WorkerUnion
-postal post handls f = do
+  -> m (WorkPost inWork outWork)
+postal names f = liftIO $ do
+  stats  <- newWorkPostStats >>= newMVar
+  inbox  <- newChan
+  outbox <- newChan
   unmvar <- newMVar Set.empty
-  let un = WorkerUnion unmvar
-  let make handl = newWorker un handl $ \ self sw@(SetWaiting waiting) sb@(SetBusy busy) -> do
-        work <- waiting >> chanRead (workPostInbox post)
+  let un   = WorkerUnion unmvar
+  let post = WorkPost
+        { postWorkersUnion = WorkerUnion unmvar
+        , workPostStats    = stats
+        , workPostInbox    = inbox
+        , workPostOutbox   = outbox
+        }
+  let make handl = newWorker un handl $ \ sw@(SetWaiting waiting) sb@(SetBusy busy) self -> do
+        work <- waiting >> readChan inbox
         postStats post
           $ (_workPostWaitingInput %~ subtract 1)
           . (_workPostTotalInput   %~ (+ 1))
@@ -960,20 +996,21 @@ postal post handls f = do
         result <- busy >> f sw sb self work
         case result of
           EventHandlerContinue result -> do
-            chanWrite (workPostOutbox post) result
+            writeChan outbox result
             postStats post
               $ (_workPostWaitingOutput %~ (+ 1))
               . (_workPostTotalOutput   %~ (+ 1))
               . (_workPostRecentOutput  %~ (+ 1))
           _                           -> return ()
         return result
-  mapM make handls >>= fmap WorkerUnion . Set.fromList
+  Set.fromList <$> mapM make names >>= swapMVar unmvar
+  return post
 
 -- not for export
 newWorker
   :: MonadIO m
   => WorkerUnion -> WorkerName
-  -> (IO () -> IO () -> Worker -> IO (EventHandlerControl a))
+  -> (SetWaiting -> SetBusy -> Worker -> IO (EventHandlerControl a))
   -> m Worker
 newWorker wu handl f = liftIO $ do
   stat <- newMVar WorkerInit
@@ -982,16 +1019,16 @@ newWorker wu handl f = liftIO $ do
         , workerName     = handl
         , workerStatus   = stat
         }
-  let waiting    = SetWaiting $ swapMVar stat WorkerWaiting
-  let busy       = SetBusy    $ swapMVar stat WorkerBusy
-  let workerLoop = f waiting busy >=> \ case
-        EventHandlerContinue{} -> threadYield >> workerLoop myself
-        EventHandlerCancel     -> threadYield >> workerLoop myself
-        EventHandlerHalt       -> void $ swapMVar stat WorkerCompleted
+  let waiting    = SetWaiting $ void $ swapMVar stat WorkerWaiting
+  let busy       = SetBusy    $ void $ swapMVar stat WorkerBusy
+  let workerLoop self = f waiting busy self >>= \ case
+        EventHandlerContinue{} -> yield >> workerLoop self
+        EventHandlerCancel     -> yield >> workerLoop self
+        EventHandlerHalt       -> void $ swapMVar stat WorkerHalted
         EventHandlerFail   msg -> void $ swapMVar stat $ WorkerFailed msg
   fmap myself $ forkIO $ catches
-    (do myself <- self <$> myThreadId
-        bracket_ (unionize wu myself) (retire wu myself) (workerLoop myself)
+    (do self <- myself <$> myThreadId
+        bracket_ (unionize wu self) (retire wu self) (workerLoop self)
     )
     [ Handler $ \ (WorkerSignal ()) -> void $ swapMVar stat WorkerFlagged
     , Handler $ \ (SomeException e) -> do
@@ -1004,7 +1041,7 @@ newWorker wu handl f = liftIO $ do
 -- which is their membership in a 'WorkerUnion'. Calling 'relieveWorker' on the same 'Worker' ID
 -- that is already retired does nothing.
 relieveWorker :: MonadIO m => Worker -> m ()
-relieveWorker (Worker{workerThreadId=tid}) = liftIO $ threadKill tid $ ThreadSignal ()
+relieveWorker (Worker{workerThreadId=tid}) = liftIO $ throwTo tid $ WorkerSignal ()
 
 -- | Relieve members in a given 'WorkerUnion' which match a given predicate.
 relieveWorkersIn :: MonadIO m => WorkerUnion -> (Worker -> Bool) -> m ()
@@ -1020,23 +1057,20 @@ relieveGovWorkers toBeRelieved = govWorkerUnion >>= liftIO . flip relieveWorkers
 
 -- | Define a new 'WorkerUnion'. 
 newWorkerUnion :: MonadIO m => m WorkerUnion
-newWorkerUnion = liftIO $ do
-  vec  <- Mutable.replicate 4 JobOpening
-  mvar <- newMVar WorkerUnionState{ unionMemberCount = 0, unionRoster = vec }
-  return $ WorkerUnion mvar
+newWorkerUnion = liftIO $ WorkerUnion <$> newMVar Set.empty
 
 -- not for export
 unionize :: WorkerUnion -> Worker -> IO ()
 unionize (WorkerUnion mvar) worker = liftIO $
-  modifyMVar_ mvar $ return . WorkerUnion . Set.insert worker
+  modifyMVar_ mvar $ return . Set.insert worker
 
 -- not for export
 retire :: WorkerUnion -> Worker -> IO ()
 retire (WorkerUnion mvar) worker = liftIO $
-  modifyMVar_ mvar $ return . WorkerUnion . Set.delete worker
+  modifyMVar_ mvar $ return . Set.delete worker
 
 -- not for export
-postStats :: WorkPost -> (WorkPostStats -> WorkPostStats) -> IO ()
+postStats :: WorkPost inWork outWork -> (WorkPostStats -> WorkPostStats) -> IO ()
 postStats (WorkPost{workPostStats=mvar}) = modifyMVar_ mvar . (return .)
 
 -- | Place @work@ into the 'WorkPost' for it to be processed by 'Worker's. This function is
@@ -1046,9 +1080,9 @@ postStats (WorkPost{workPostStats=mvar}) = modifyMVar_ mvar . (return .)
 -- result in a "space leak", a situation in which unprocessed work piles up taking more and more
 -- memory until your program is forcibly halted by the operating system.
 pushWork :: MonadIO m => WorkPost inWork outWork -> inWork -> m ()
-pushWork post work = do
+pushWork post work = liftIO $ do
   writeChan (workPostInbox post) work
-  postStas post $ _workPostWaitingInput %~ (+ 1)
+  postStats post $ _workPostWaitingInput %~ (+ 1)
 
 -- | Check if @work@ being processed in a 'WorkPost' has completed. This function is
 -- asynchronous. If there is no @work@ completed yet, 'Prelude.Nothing' is returned.
@@ -1068,7 +1102,7 @@ instantThroughput stats = realToFrac (workPostRecentOutput stats) /
 
 -- | 'WorkPost' total throughput measured in elements per second. "Total" means the number of
 -- elements processed (taken from the output by 'checkPost') since the 'WorkPost' was created.
-totalThroughput :: WorkPostStas -> Double
+totalThroughput :: WorkPostStats -> Double
 totalThroughput stats = realToFrac (workPostTotalOutput stats) /
   realToFrac (workPostCheckTime stats `diffUTCTime` workPostStartTime stats)
 
@@ -1098,6 +1132,21 @@ _workPostResetTime     = lens workPostResetTime $ \ a b -> a{ workPostResetTime 
 
 _workPostCheckTime     :: Lens' WorkPostStats UTCTime
 _workPostCheckTime     = lens workPostCheckTime $ \ a b -> a{ workPostCheckTime = b }
+
+newWorkPostStats :: IO WorkPostStats
+newWorkPostStats = do
+  t <- getCurrentTime
+  return WorkPostStats
+    { workPostTotalOutput   = 0
+    , workPostTotalInput    = 0
+    , workPostRecentOutput  = 0
+    , workPostRecentInput   = 0
+    , workPostWaitingOutput = 0
+    , workPostWaitingInput  = 0
+    , workPostStartTime     = t
+    , workPostResetTime     = t
+    , workPostCheckTime     = t
+    }
 
 ----------------------------------------------------------------------------------------------------
 
