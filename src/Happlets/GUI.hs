@@ -961,7 +961,7 @@ resetWorkPostStats post = liftIO $ do
 -- value.
 postWorkers
   :: MonadIO m
-  => [(WorkerName, WorkCycleTime)] -> (inWork -> WorkerTask () outWork)
+  => [WorkerName] -> (inWork -> WorkerTask () outWork)
   -> m (WorkPost inWork outWork)
 postWorkers names f =
   postal names $ \ (SetWaiting _) (SetBusy _) self work ->
@@ -972,8 +972,7 @@ postWorkers names f =
 -- is recieved.
 postTaskWorkers
   :: MonadIO m
-  => Workspace fold -> [(WorkerName, WorkCycleTime)]
-  -> (inWork -> WorkerTask fold outWork)
+  => Workspace fold -> [WorkerName] -> (inWork -> WorkerTask fold outWork)
   -> m (WorkPost inWork outWork)
 postTaskWorkers (Workspace mvar) handls f =
   postal handls $ \ (SetWaiting waiting) (SetBusy busy) self work -> do
@@ -984,8 +983,7 @@ postTaskWorkers (Workspace mvar) handls f =
 -- 'GUI's state as each work item is posted.
 guiPostWorkers
   :: CanRecruitWorkers window
-  => [(WorkerName, WorkCycleTime)]
-  -> (inWork -> GUI window model outWork)
+  => [WorkerName] -> (inWork -> GUI window model outWork)
   -> GUI window model (WorkPost inWork outWork)
 guiPostWorkers names f = getGUIState >>= \ st ->
   postal names $ \ (SetWaiting waiting) (SetBusy busy) _self work -> do
@@ -995,7 +993,7 @@ guiPostWorkers names f = getGUIState >>= \ st ->
 -- not for export
 postal
   :: MonadIO m
-  => [(WorkerName, WorkCycleTime)]
+  => [WorkerName]
   -> (SetWaiting -> SetBusy -> Worker -> inWork -> IO (EventHandlerControl outWork))
   -> m (WorkPost inWork outWork)
 postal names f = liftIO $ do
@@ -1012,8 +1010,8 @@ postal names f = liftIO $ do
         , workPostInbox    = inbox
         , workPostOutbox   = outbox
         }
-  let make (handl, cycle) =
-        newWorker un handl cycle $ \ sw@(SetWaiting waiting) sb@(SetBusy busy) self -> do
+  let make handl =
+        newWorker un handl WorkCycleASAP $ \ sw@(SetWaiting waiting) sb@(SetBusy busy) self -> do
           waiting >> (waitQSem insema <* busy)
           work <- modifyMVar inbox $ return . \ case
             a Seq.:<| ax -> (ax, a)
