@@ -1048,12 +1048,14 @@ newWorker wu handl cycle f = liftIO $ do
         , workerName     = handl
         , workerStatus   = stat
         }
-  let waiting    = SetWaiting $ void $ swapMVar stat WorkerWaiting
-  let busy       = SetBusy    $ void $ swapMVar stat WorkerBusy
+  let waiting = SetWaiting $ void $ swapMVar stat WorkerWaiting
+  let busy    = SetBusy    $ void $ swapMVar stat WorkerBusy
+  let pause   = void $ swapMVar stat WorkerPaused
+  let delay t = threadDelay $ round $ t * 1000 * 1000
   let workerLoop self = do
-        let delay t = threadDelay $ round $ t * 1000 * 1000
-        case cycle of { WorkWaitCycle t -> delay t; _ -> return (); }
-        let loop = case cycle of { WorkCycleWait t -> delay t; _ -> yield >> workerLoop self; }
+        let loop = pause >>
+              (case cycle of { WorkCycleWait t -> delay t; _ -> yield; }) >>
+              workerLoop self
         result <- f waiting busy self
         case result of
           EventHandlerContinue{} -> loop
@@ -1062,7 +1064,9 @@ newWorker wu handl cycle f = liftIO $ do
           EventHandlerFail   msg -> void $ swapMVar stat $ WorkerFailed msg
   fmap myself $ forkIO $ catches
     (do self <- myself <$> myThreadId
-        bracket_ (unionize wu self) (retire wu self) (workerLoop self)
+        bracket_ (unionize wu self) (retire wu self) $
+          (case cycle of { WorkWaitCycle t -> pause >> delay t; _ -> return (); }) >>
+          workerLoop self
     )
     [ Handler $ \ (WorkerSignal ()) -> void $ swapMVar stat WorkerFlagged
     , Handler $ \ (SomeException e) -> do
