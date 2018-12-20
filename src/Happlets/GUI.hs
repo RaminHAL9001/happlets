@@ -101,8 +101,8 @@ import           Happlets.Draw.Types2D
 import           Control.Arrow
 import           Control.Category
 import           Control.Concurrent (ThreadId, myThreadId, yield, forkIO, threadDelay, throwTo)
-import           Control.Concurrent.Chan
 import           Control.Concurrent.MVar
+import           Control.Concurrent.QSem
 import           Control.Exception
 import           Control.Lens
 import           Control.Monad.Except
@@ -112,6 +112,7 @@ import           Control.Monad.State
 
 import           Data.List             (intercalate)
 import           Data.Semigroup
+import qualified Data.Sequence         as Seq
 import qualified Data.Set              as Set
 import qualified Data.Text             as Strict
 import           Data.Time.Clock
@@ -771,8 +772,9 @@ data WorkPost inWork outWork
   = WorkPost
     { postWorkersUnion :: !WorkerUnion
     , workPostStats    :: !(MVar WorkPostStats)
-    , workPostInbox    :: !(Chan inWork)
-    , workPostOutbox   :: !(Chan outWork)
+    , workPostInSema   :: !QSem -- inbox semaphore
+    , workPostInbox    :: !(MVar (Seq.Seq inWork))
+    , workPostOutbox   :: !(MVar (Seq.Seq outWork))
     }
 
 -- | Statistics on a 'WorkPost'.
@@ -930,7 +932,8 @@ resetWorkPostStats post = liftIO $ do
 
 -- | Construct a group of 'WorkPost' workers, each running the same 'WorkerTask'. Pass a list of
 -- 'workerName's, one 'Worker' will be created for each name, all workers will wait on the same
--- 'WorkPost'.
+-- 'WorkPost'. The 'closeWorkPost' function does this and halts all workers, at which point the
+-- 'WorkPost' can no longer be used.
 --
 -- Notice the type of the 'WorkerTask': it takes an @inWork@ type, is stateful over the @()@ type
 -- (is stateless), and returns an @outWork@ type. This means to yield output, this function merely
@@ -977,26 +980,33 @@ postal
   -> m (WorkPost inWork outWork)
 postal names f = liftIO $ do
   stats  <- newWorkPostStats >>= newMVar
-  inbox  <- newChan
-  outbox <- newChan
+  insema <- newQSem 0
+  inbox  <- newMVar Seq.empty
+  outbox <- newMVar Seq.empty
   unmvar <- newMVar Set.empty
   let un   = WorkerUnion unmvar
   let post = WorkPost
         { postWorkersUnion = WorkerUnion unmvar
         , workPostStats    = stats
+        , workPostInSema   = insema
         , workPostInbox    = inbox
         , workPostOutbox   = outbox
         }
   let make handl = newWorker un handl $ \ sw@(SetWaiting waiting) sb@(SetBusy busy) self -> do
-        work <- waiting >> readChan inbox
+        waiting >> (waitQSem insema <* busy)
+        work <- modifyMVar inbox $ return . \ case
+          a Seq.:<| ax -> (ax, a)
+          Seq.Empty    -> (,) Seq.empty $ error $ "Worker "++show handl++
+            " discovered PostWork semaphore signalled without"++
+            " having first inserted an element in the inbox."
         postStats post
           $ (_workPostWaitingInput %~ subtract 1)
           . (_workPostTotalInput   %~ (+ 1))
           . (_workPostRecentInput  %~ (+ 1))
-        result <- busy >> f sw sb self work
+        result <- f sw sb self work
         case result of
           EventHandlerContinue result -> do
-            writeChan outbox result
+            modifyMVar_ outbox $ pure . (Seq.|> result)
             postStats post
               $ (_workPostWaitingOutput %~ (+ 1))
               . (_workPostTotalOutput   %~ (+ 1))
@@ -1081,17 +1091,21 @@ postStats (WorkPost{workPostStats=mvar}) = modifyMVar_ mvar . (return .)
 -- memory until your program is forcibly halted by the operating system.
 pushWork :: MonadIO m => WorkPost inWork outWork -> inWork -> m ()
 pushWork post work = liftIO $ do
-  writeChan (workPostInbox post) work
+  modifyMVar_ (workPostInbox post) $ pure . (Seq.|> work)
   postStats post $ _workPostWaitingInput %~ (+ 1)
+  signalQSem $ workPostInSema post
 
 -- | Check if @work@ being processed in a 'WorkPost' has completed. This function is
 -- asynchronous. If there is no @work@ completed yet, 'Prelude.Nothing' is returned.
 checkWork :: MonadIO m => WorkPost inWork outWork -> m (Maybe outWork)
 checkWork post = liftIO $ do
-  empty <- isEmptyChan $ workPostOutbox post
-  if empty then return Nothing else
-    Just <$> readChan (workPostOutbox post) <*
-    postStats post (_workPostWaitingOutput %~ subtract 1)
+  a <- modifyMVar (workPostOutbox post) $ return . \ case
+    Seq.Empty    -> (Seq.empty, Nothing)
+    a Seq.:<| ax -> (ax, Just a)
+  case a of
+    Nothing -> return ()
+    Just{}  -> postStats post $ _workPostWaitingOutput %~ subtract 1
+  return a
 
 -- | 'WorkPost' instantaneous throughput measured in elements per second. "Instantaneous" means the
 -- number of elements processed (taken from the output by 'checkPost') since the last time the
