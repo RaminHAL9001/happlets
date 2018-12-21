@@ -60,6 +60,9 @@ DESCRIPTION:
     .
     https://hackage.haskell.org/package/happlets-lib-gtk
     .
+    *NOTE:* Happlets uses OS bound threads ('Control.Concurrent.forkOS')
+    to provide multithreading capabilities, when building an executable
+    application, be sure to use the -threaded option in GHC-OPTIONS.
 
 Library {
 

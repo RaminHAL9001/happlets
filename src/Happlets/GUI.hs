@@ -101,7 +101,7 @@ import           Happlets.Draw.Types2D
 
 import           Control.Arrow
 import           Control.Category
-import           Control.Concurrent (ThreadId, myThreadId, yield, forkIO, threadDelay, throwTo)
+import           Control.Concurrent (ThreadId, myThreadId, yield, forkOS, threadDelay, throwTo)
 import           Control.Concurrent.MVar
 import           Control.Concurrent.QSem
 import           Control.Exception
@@ -666,6 +666,10 @@ govWorkerUnion = GUI $ EventHandlerContinue <$> gets theGUIWorkers
 -- 'Happlet.Provider.Provider's must provide a government 'WorkerUnion' as an element of the
 -- 'GUIState'. To recruit government 'Worker's, evaluate 'guiWorker' or 'govWorker'.
 
+-- Is either 'Control.Concurrent.Yield' or @return ()@, whichever one has the expected behavior.
+blink :: IO ()
+blink = yield
+
 -- | Obtain a 'WorkerStatus' using the 'getWorkerStatus' function. 
 data WorkerStatus
   = WorkerInit      -- ^ is getting started
@@ -721,6 +725,7 @@ data WorkCycleTime
   | WorkWaitCycle !Double
     -- ^ Like 'WorkCycle' but rests before work begins, rather than after each cycle ends. The
     -- difference is whether the first cycle occurs immediately or not after a worker is recruited.
+  deriving (Eq, Ord, Show)
 
 -- | This data structure contains information about an individual worker. It contains a 'workerName'
 -- which can contain an arbitrary string you can use to identify them, although nothing prevents you
@@ -872,7 +877,7 @@ setWorkerStatus (Worker{workerStatus=stat}) = swapMVar stat
 taskPause :: Double -> WorkerTask work ()
 taskPause t = WorkerTask $ ReaderT $ \ self -> liftIO $ do
   oldStat <- setWorkerStatus self WorkerPaused
-  if t <= 0 then yield else threadDelay $ round $ t * 1000 * 1000
+  if t <= 0 then blink else threadDelay $ round $ t * 1000 * 1000
   setWorkerStatus self oldStat
   return $ EventHandlerContinue ()
 
@@ -1054,15 +1059,15 @@ newWorker wu handl cycle f = liftIO $ do
   let delay t = threadDelay $ round $ t * 1000 * 1000
   let workerLoop self = do
         let loop = pause >>
-              (case cycle of { WorkCycleWait t -> delay t; _ -> yield; }) >>
+              (case cycle of { WorkCycleWait t -> delay t; _ -> blink; }) >>
               workerLoop self
         result <- f waiting busy self
         case result of
           EventHandlerContinue{} -> loop
           EventHandlerCancel     -> loop
-          EventHandlerHalt       -> void $ swapMVar stat WorkerHalted
-          EventHandlerFail   msg -> void $ swapMVar stat $ WorkerFailed msg
-  fmap myself $ forkIO $ catches
+          EventHandlerHalt       -> void (swapMVar stat WorkerHalted)
+          EventHandlerFail   msg -> void (swapMVar stat $ WorkerFailed msg)
+  fmap myself $ forkOS $ catches
     (do self <- myself <$> myThreadId
         bracket_ (unionize wu self) (retire wu self) $
           (case cycle of { WorkWaitCycle t -> pause >> delay t; _ -> return (); }) >>
