@@ -1100,17 +1100,18 @@ newWorker
   -> (Worker -> IO (EventHandlerControl void))
   -> m Worker
 newWorker fork wu handl cycle f = liftIO $ do
-  mvar <- newEmptyMVar
   stat <- newMVar WorkerInit
   wid  <- newWorkerID
-  halt <- fork wu cycle (readMVar mvar) f
-  putMVar mvar $ Worker
+  mvar <- newMVar Worker
     { workerThreadId = wid
-    , workerHalt     = halt
     , workerName     = handl
     , workerStatus   = stat
+    , workerHalt     = return ()
     }
-  readMVar mvar
+  halt <- fork wu cycle (readMVar mvar) f
+  modifyMVar mvar $ \ worker' -> do
+    let worker = worker'{ workerHalt = halt }
+    return (worker, worker)
 
 -- | This function can be used as a default instance of 'launchWorkerThread'. This function makes
 -- use of Haskell's own runtime threading system, namely 'Control.Concurrent.forkOS' to launch a
