@@ -55,7 +55,7 @@ module Happlets.GUI
     -- * Installing Event Handlers
     -- $InstallingEventHandlers
     Managed(..),
-    CanRecruitWorkers(..),
+    CanRecruitWorkers(..), ForkWorkerThread, defaultLaunchWorkerThread,
     CanResize(..), OldPixSize, NewPixSize, CanvasMode(..),
     CanAnimate(..),
     CanMouse(..), MouseEventPattern(..),
@@ -77,7 +77,9 @@ module Happlets.GUI
     Worker, workerThreadId, workerName, relieveGovWorkers,
     WorkerStatus(..), getWorkerStatus, workerNotBusy, workerNotDone, workerBusy, workerFailed,
     WorkerUnion, newWorkerUnion,
-    WorkerSignal(..),
+    -- ** Worker Providers
+    WorkerSignal(..), WorkerNotification(..), setWorkerStatus, runWorkerTask,
+    WorkerID, workerIDtoInt,
 
     -- * Other Capabilities
     -- $OtherCapabilities
@@ -518,9 +520,9 @@ bracketGUI lock unlock f = GUI $ StateT $ \ st -> do
   mvar <- newEmptyMVar
   a    <- bracket
     (runGUI lock st >>= \ (rsrc, st) -> putMVar mvar st >> return rsrc)
-    (const $ modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI unlock)
+    (const $ modifyMVar' mvar $ runGUI unlock)
     (\ case
-      EventHandlerContinue{} -> modifyMVar mvar $ fmap (\ (a,b)->(b,a)) . runGUI f
+      EventHandlerContinue{} -> modifyMVar' mvar $ runGUI f
       EventHandlerHalt       -> return EventHandlerHalt
       EventHandlerCancel     -> return EventHandlerCancel
       EventHandlerFail err   -> return $ EventHandlerFail err
@@ -737,7 +739,8 @@ data WorkCycleTime
 -- done, the worker leaves the 'WorkerUnion' and will never return under the same identity.
 data Worker
   = Worker
-    { workerThreadId :: !ThreadId
+    { workerThreadId :: !WorkerID
+    , workerHalt     :: !(IO ())
     , workerName     :: !WorkerName
     , workerStatus   :: !(MVar WorkerStatus)
     }
@@ -749,6 +752,15 @@ instance Ord  Worker where
 instance Show Worker where
   show  worker = '(':showWorker worker++")"
   showList lst = ('[' :) . ((intercalate "," (showWorker <$> lst)) ++) . (']' :)
+
+newtype WorkerID = WorkerID{ workerIDtoInt :: Int } deriving (Eq, Ord, Show)
+
+_workerIDMVar :: MVar Int
+_workerIDMVar = unsafePerformIO $ newMVar 0
+{-# NOINLINE _workerIDMVar #-}
+
+newWorkerID :: IO WorkerID
+newWorkerID = modifyMVar _workerIDMVar $ \ a -> return (a+1, WorkerID $ a+1)
 
 showWorker :: Worker -> String
 showWorker (Worker{workerThreadId=tid,workerName=name}) = show tid++": "++Strict.unpack name
@@ -779,6 +791,12 @@ newtype Workspace work = Workspace{ unwrapWorkspace :: MVar work }
 newtype WorkerTask work a
   = WorkerTask { unwrapWorkerTask :: ReaderT Worker (StateT work IO) (EventHandlerControl a) }
 
+-- | Evaluae a 'WorkerTask' using a given 'Worker' by locking an 'Control.Concurrent.MVar.MVar' and
+-- evaluating the 'WorkerTask' function to work on the content of this
+-- 'Control.Concurrent.MVar.MVar'.
+runWorkerTask :: Worker -> WorkerTask work a -> MVar work -> IO (EventHandlerControl a)
+runWorkerTask worker (WorkerTask f) mvar = modifyMVar' mvar $ runStateT (runReaderT f worker)
+
 -- | A 'WorkPost' is an area where 'Worker's waits to recieve work. Send work to the post using the
 -- 'postWork' function, and check on the result using 'postCheck' function. 'Worker's are assigned
 -- to a post using 'postWorkers' or 'guiPostWorkers'. 'Worker's working in a 'WorkPost' will form
@@ -787,7 +805,7 @@ newtype WorkerTask work a
 --
 -- Be warned that posting too much work faster than the 'Worker's can handle it will result in a
 -- "space leak", a situation in which unprocessed work piles up taking more and more memory until
--- your program is forcibly haltd by the operating system.
+-- your program is forcibly halted by the operating system.
 --
 -- You can check throughput statistics on a 'WorkPost' as well.
 data WorkPost inWork outWork
@@ -868,8 +886,11 @@ taskFail = WorkerTask . return . EventHandlerFail
 taskCatch :: WorkerTask work a -> (EventHandlerControl a -> WorkerTask work b) -> WorkerTask work b
 taskCatch (WorkerTask f) catch = WorkerTask $ f >>= unwrapWorkerTask . catch
 
-setWorkerStatus :: Worker -> WorkerStatus -> IO WorkerStatus
-setWorkerStatus (Worker{workerStatus=stat}) = swapMVar stat
+-- | This function is used by Happlet 'Happlets.Initialize.Provider's when creating 'Worker'
+-- threads, namely in instances of 'launchWorkerThread', to notify the outside world of the status
+-- of the 'Worker' as it is evaluated in the parallel thread.
+setWorkerStatus :: MonadIO m => Worker -> WorkerStatus -> m WorkerStatus
+setWorkerStatus (Worker{workerStatus=mvar}) = liftIO . swapMVar mvar
 
 -- | Pause for some number of seconds. The pause time can be very small, but the smallest pause time
 -- is dependent on the operating system and computer hardware. Haskell's runtime system on stock
@@ -891,9 +912,10 @@ newWorkspace = liftIO . fmap Workspace . newMVar
 copyWorkspace :: MonadIO m => Workspace work -> m work
 copyWorkspace = liftIO . readMVar . unwrapWorkspace
 
--- not for export
-newtype SetWaiting = SetWaiting (IO ())
-newtype SetBusy    = SetBusy    (IO ())
+-- | Happlet 'Happlet.Initialize.Provider's should instantiate the 'launchWorkerThread' function
+-- such that the 'Worker' threads correctly report on their status. Use the functions provided by
+-- this data structure to notify whether they are waiting, busy, halted, or failed.
+newtype WorkerNotification = WorkerNotification (WorkerStatus -> IO ())
 
 -- | This function starts a worker on a 'WorkerTask', returning an identifier you can use to query
 -- information about the 'Worker's status. In this idylic little world, workers stay with a
@@ -904,9 +926,19 @@ recruitWorker
   :: MonadIO m
   => WorkerUnion -> Workspace work
   -> WorkerName -> WorkCycleTime -> WorkerTask work void -> m Worker
-recruitWorker wu (Workspace mvar) handl cycle (WorkerTask f) =
-  newWorker wu handl cycle $ \ (SetWaiting waiting) (SetBusy busy) self ->
-  waiting >> modifyMVar' mvar ((>>) busy . runStateT (runReaderT f self))
+recruitWorker = _recruitWorker defaultLaunchWorkerThread
+
+_recruitWorker
+  :: MonadIO m
+  => ForkWorkerThread void
+  -> WorkerUnion -> Workspace work
+  -> WorkerName -> WorkCycleTime -> WorkerTask work void -> m Worker
+_recruitWorker fork wu (Workspace mvar) handl cycle (WorkerTask f) =
+  newWorker fork wu handl cycle $ \ worker -> do
+    setWorkerStatus worker WorkerWaiting
+    modifyMVar' mvar $ \ work -> do
+      setWorkerStatus worker WorkerBusy
+      runStateT (runReaderT f worker) work
 
 -- | Similar to 'recruitWorker' but works for the "government" and operates on the current @model@
 -- in of the 'GUI' function which recruits this 'Worker'. This function is also similar to
@@ -914,14 +946,17 @@ recruitWorker wu (Workspace mvar) handl cycle (WorkerTask f) =
 -- but a 'GUI' function. This allows the worker to update the GUI directly, as if there were an
 -- event handler constantly responding to a stream of events being generated in a parallel process.
 --
--- The 'Happlet.Provider.Provider' must instantiate 'CanRecruitWorker' in order for this function to
--- be usable -- we hope that all 'Happlet.Provider.Provider's will do this.
+-- The 'Happlet.Provider.Provider' must instantiate 'CanRecruitWorkers' in order for this function
+-- to be usable -- we hope that all 'Happlet.Provider.Provider's will do this.
 guiWorker
   :: CanRecruitWorkers window
-  => WorkerName -> WorkCycleTime -> GUI window model void -> GUI window model Worker
-guiWorker handl cycle f = getGUIState >>= \ st ->
-  newWorker (theGUIWorkers st) handl cycle $ \ (SetWaiting waiting) (SetBusy busy) _self ->
-  waiting >> inOtherThreadRunGUI st (liftIO busy >> f)
+  => WorkerName -> WorkCycleTime
+  -> GUI window model void -> GUI window model Worker
+guiWorker handl cycle f = do
+  guist <- getGUIState
+  newWorker (launchWorkerThread guist) (theGUIWorkers guist) handl cycle $ \ worker -> do
+    setWorkerStatus worker WorkerWaiting
+    inOtherThreadRunGUI guist (liftIO (setWorkerStatus worker WorkerBusy) >> f)
 
 -- | Similar to 'recruitWorker' but works in the "government" 'WorkerUnion'.
 --
@@ -929,10 +964,13 @@ guiWorker handl cycle f = getGUIState >>= \ st ->
 -- 'Worker'-related functions here which can be evaluated to any function type of the 'MonadIO' type
 -- class. The default "government" 'WorkerUnion' is only available during 'GUI' evaluation.
 govWorker
-  :: Workspace work -> WorkerName -> WorkCycleTime
+  :: CanRecruitWorkers window
+  => Workspace work -> WorkerName -> WorkCycleTime
   -> WorkerTask work void -> GUI window model Worker
-govWorker workspace handl cycle f =
-  govWorkerUnion >>= \ gov -> recruitWorker gov workspace handl cycle f
+govWorker workspace handl cycle f = do
+  st  <- getGUIState
+  gov <- govWorkerUnion
+  _recruitWorker (launchWorkerThread st) gov workspace handl cycle f
 
 -- | Relieve every worker in the 'postWorkersUnion' using the 'relieveWorkersIn' function, where the
 -- filter given to 'relieveWorkersIn' is @('const' 'True')@, resulting in all workers being
@@ -969,7 +1007,7 @@ postWorkers
   => [WorkerName] -> (inWork -> WorkerTask () outWork)
   -> m (WorkPost inWork outWork)
 postWorkers names f =
-  postal names $ \ (SetWaiting _) (SetBusy _) self work ->
+  postal defaultLaunchWorkerThread names $ \ self work ->
   evalStateT (runReaderT (unwrapWorkerTask $ f work) self) ()
 
 -- | Similar to 'postWorkers' but also allows the workers access to a 'Workspace'. The content of
@@ -980,9 +1018,11 @@ postTaskWorkers
   => Workspace fold -> [WorkerName] -> (inWork -> WorkerTask fold outWork)
   -> m (WorkPost inWork outWork)
 postTaskWorkers (Workspace mvar) handls f =
-  postal handls $ \ (SetWaiting waiting) (SetBusy busy) self work -> do
-    waiting
-    modifyMVar' mvar $ (>>) busy . runStateT (runReaderT (unwrapWorkerTask $ f work) self)
+  postal defaultLaunchWorkerThread handls $ \ self work -> do
+    setWorkerStatus self WorkerWaiting
+    modifyMVar' mvar $ \ fold -> do
+      setWorkerStatus self WorkerBusy
+      runStateT (runReaderT (unwrapWorkerTask $ f work) self) fold
 
 -- | Similar to 'postWorkers', but the task evaluated is of type 'GUI', allowing full access to the
 -- 'GUI's state as each work item is posted.
@@ -991,17 +1031,18 @@ guiPostWorkers
   => [WorkerName] -> (inWork -> GUI window model outWork)
   -> GUI window model (WorkPost inWork outWork)
 guiPostWorkers names f = getGUIState >>= \ st ->
-  postal names $ \ (SetWaiting waiting) (SetBusy busy) _self work -> do
-    waiting
-    inOtherThreadRunGUI st (liftIO busy >> f work)
+  postal (launchWorkerThread st) names $ \ self work -> do
+    setWorkerStatus self WorkerWaiting
+    inOtherThreadRunGUI st (setWorkerStatus self WorkerBusy >> f work)
 
 -- not for export
 postal
   :: MonadIO m
-  => [WorkerName]
-  -> (SetWaiting -> SetBusy -> Worker -> inWork -> IO (EventHandlerControl outWork))
+  => ForkWorkerThread outWork
+  -> [WorkerName]
+  -> (Worker -> inWork -> IO (EventHandlerControl outWork))
   -> m (WorkPost inWork outWork)
-postal names f = liftIO $ do
+postal launch names f = liftIO $ do
   stats  <- newWorkPostStats >>= newMVar
   insema <- newQSem 0
   inbox  <- newMVar Seq.empty
@@ -1015,76 +1056,107 @@ postal names f = liftIO $ do
         , workPostInbox    = inbox
         , workPostOutbox   = outbox
         }
-  let make handl =
-        newWorker un handl WorkCycleASAP $ \ sw@(SetWaiting waiting) sb@(SetBusy busy) self -> do
-          waiting >> (waitQSem insema <* busy)
-          work <- modifyMVar inbox $ return . \ case
-            a Seq.:<| ax -> (ax, a)
-            Seq.Empty    -> (,) Seq.empty $ error $ "Worker "++show handl++
-              " discovered PostWork semaphore signalled without"++
-              " having first inserted an element in the inbox."
-          postStats post
-            $ (_workPostWaitingInput %~ subtract 1)
-            . (_workPostTotalInput   %~ (+ 1))
-            . (_workPostRecentInput  %~ (+ 1))
-          result <- f sw sb self work
-          case result of
-            EventHandlerContinue result -> do
-              modifyMVar_ outbox $ pure . (Seq.|> result)
-              postStats post
-                $ (_workPostWaitingOutput %~ (+ 1))
-                . (_workPostTotalOutput   %~ (+ 1))
-                . (_workPostRecentOutput  %~ (+ 1))
-            _                           -> return ()
-          return result
+  let make handl = newWorker launch un handl WorkCycleASAP $ \ self -> do
+        setWorkerStatus self WorkerWaiting
+        waitQSem insema
+        setWorkerStatus self WorkerBusy
+        work <- modifyMVar inbox $ return . \ case
+          a Seq.:<| ax -> (ax, a)
+          Seq.Empty    -> (,) Seq.empty $ error $ "Worker "++show handl++
+            " discovered PostWork semaphore signalled without"++
+            " having first inserted an element in the inbox."
+        postStats post
+          $ (_workPostWaitingInput %~ subtract 1)
+          . (_workPostTotalInput   %~ (+ 1))
+          . (_workPostRecentInput  %~ (+ 1))
+        result <- f self work >>= evaluate
+        case result of
+          EventHandlerContinue result -> seq result $! do
+            modifyMVar_ outbox $ pure . (Seq.|> result)
+            postStats post
+              $ (_workPostWaitingOutput %~ (+ 1))
+              . (_workPostTotalOutput   %~ (+ 1))
+              . (_workPostRecentOutput  %~ (+ 1))
+          _                           -> return ()
+        return result
   Set.fromList <$> mapM make names >>= swapMVar unmvar
   return post
+
+-- | This is a type of function used to fork a thread for a 'Worker'.
+type ForkWorkerThread a
+  =  WorkerUnion   -- ^ use to call 'unionize' when thread begins and 'retire' when thread ends.
+  -> WorkCycleTime -- ^ requests the cycle time of the work thread that is forked here.
+  -> IO Worker     -- ^ used to obtain a copy of the 'Worker' which represents thread forked here.
+  -> (Worker -> IO (EventHandlerControl a))
+     -- ^ the task to be perofmred during each work cycle.
+  -> IO (IO ())    -- ^ returns a function that can be used to halt the thread that is forked here.
 
 -- not for export
 newWorker
   :: MonadIO m
-  => WorkerUnion -> WorkerName -> WorkCycleTime
-  -> (SetWaiting -> SetBusy -> Worker -> IO (EventHandlerControl a))
+  => ForkWorkerThread void
+  -> WorkerUnion -> WorkerName -> WorkCycleTime
+  -> (Worker -> IO (EventHandlerControl void))
   -> m Worker
-newWorker wu handl cycle f = liftIO $ do
+newWorker fork wu handl cycle f = liftIO $ do
+  mvar <- newEmptyMVar
   stat <- newMVar WorkerInit
-  let myself tid = Worker
-        { workerThreadId = tid
-        , workerName     = handl
-        , workerStatus   = stat
-        }
-  let waiting = SetWaiting $ void $ swapMVar stat WorkerWaiting
-  let busy    = SetBusy    $ void $ swapMVar stat WorkerBusy
-  let pause   = void $ swapMVar stat WorkerPaused
+  wid  <- newWorkerID
+  halt <- fork wu cycle (readMVar mvar) f
+  putMVar mvar $ Worker
+    { workerThreadId = wid
+    , workerHalt     = halt
+    , workerName     = handl
+    , workerStatus   = stat
+    }
+  readMVar mvar
+
+-- | This function can be used as a default instance of 'launchWorkerThread'. This function makes
+-- use of Haskell's own runtime threading system, namely 'Control.Concurrent.forkOS' to launch a
+-- thread. Not all 'Happlet.Initialize.Provider's should use this function, however, especially
+-- those which cannot provide thread safety when evaluating functions of type @GUI@.
+defaultLaunchWorkerThread
+  :: WorkerUnion
+  -> WorkCycleTime
+  -> IO Worker
+  -> (Worker -> IO (EventHandlerControl void))
+  -> IO (IO ())
+defaultLaunchWorkerThread wu cycle getWorker f = do
   let delay t = threadDelay $ round $ t * 1000 * 1000
   let workerLoop self = do
-        let loop = pause >>
+        let loop   = setWorkerStatus self WorkerPaused >>
               (case cycle of { WorkCycleWait t -> delay t; _ -> blink; }) >>
               workerLoop self
-        result <- f waiting busy self
+        result <- f self
         case result of
           EventHandlerContinue{} -> loop
           EventHandlerCancel     -> loop
-          EventHandlerHalt       -> void (swapMVar stat WorkerHalted)
-          EventHandlerFail   msg -> void (swapMVar stat $ WorkerFailed msg)
-  fmap myself $ forkOS $ catches
-    (do self <- myself <$> myThreadId
-        bracket_ (unionize wu self) (retire wu self) $
-          (case cycle of { WorkWaitCycle t -> pause >> delay t; _ -> return (); }) >>
+          EventHandlerHalt       -> void $ setWorkerStatus self WorkerHalted
+          EventHandlerFail   msg -> void $ setWorkerStatus self $ WorkerFailed msg
+  tid <- forkOS $ catches
+    (do self <- getWorker
+        bracket_ (unionize wu self) (retire wu self) $ do
+          case cycle of
+            WorkWaitCycle t -> setWorkerStatus self WorkerPaused >> delay t
+            _               -> return ()
           workerLoop self
     )
-    [ Handler $ \ (WorkerSignal ()) -> void $ swapMVar stat WorkerFlagged
+    [ Handler $ \ (WorkerSignal ()) -> do
+        self <- getWorker
+        void $ setWorkerStatus self WorkerFlagged
     , Handler $ \ (SomeException e) -> do
-        void (swapMVar stat $ WorkerFailed $ Strict.pack $ show e)
+        self <- getWorker
+        setWorkerStatus self $ WorkerFailed $ Strict.pack $ show e
         throw e
     ]
+  return $ throwTo tid $ WorkerSignal ()
 
 -- | Signal a worker that they no longer need to perform their task. In this idylic little world, a
 -- worker happily leaves when there is no more work to do, and they abandon their 'Worker' identity,
 -- which is their membership in a 'WorkerUnion'. Calling 'relieveWorker' on the same 'Worker' ID
 -- that is already retired does nothing.
 relieveWorker :: MonadIO m => Worker -> m ()
-relieveWorker (Worker{workerThreadId=tid}) = liftIO $ throwTo tid $ WorkerSignal ()
+relieveWorker = liftIO . workerHalt
 
 -- | Relieve members in a given 'WorkerUnion' which match a given predicate.
 relieveWorkersIn :: MonadIO m => WorkerUnion -> (Worker -> Bool) -> m ()
@@ -1225,6 +1297,27 @@ class CanRecruitWorkers window where
   -- with the given 'GUIState'. This function must perform all locking of mutex variables necessary
   -- to evaluate the 'GUI' function, and update all mutexes with the results of evaluation.
   inOtherThreadRunGUI :: GUIState window model -> GUI window model a -> IO (EventHandlerControl a)
+  -- | Launch a worker thread that can safely interact with the GUI. Many GUI libraries do not
+  -- provide thread safety, instead using a cooperative mutlithreading model, and so launching
+  -- worker threads must make use of the GUI's own cooperative multithread functionality. In Gtk+
+  -- trying to use Haskell threads all but guarantees deadlocks, or race conditions which lead to
+  -- segmentation faults.
+  --
+  -- This function takes a delay time, an @IO ('EventHandlerControl' void)@ (usually a function
+  -- evaluated by 'inOtherThreadRunGUI' above) which is called repeatedly and returns a control
+  -- value that can optionally stop it's own thread loop, and returns an @IO ()@ function that can
+  -- be used to halt the thread.
+  launchWorkerThread
+    :: GUIState window model -- ^ provides access to the @window@
+    -> WorkerUnion
+       -- ^ use to call 'unionize' when thread begins and 'retire' when thread ends. Usually this
+       -- union is the same as 'theGUIWorkers' ("government" union), but not necessarily, therefore
+       -- it is passed as an argument to this function.
+    -> WorkCycleTime -- ^ requests the cycle time of the work thread that is forked here.
+    -> IO Worker     -- ^ used to obtain a copy of the 'Worker' which represents thread forked here.
+    -> (Worker -> IO (EventHandlerControl void))
+        -- ^ the task to be perofmred during each work cycle.
+    -> IO (IO ())    -- ^ returns a function that used to halt the thread that is forked here.
 
 -- | Windows that can be resized can provide an instance of this class. Even on platforms where
 -- there is only one window per screen, it may be possible to change screen sizes if the screen
