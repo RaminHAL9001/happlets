@@ -76,7 +76,7 @@ module Happlets.GUI
     WorkerTask,  govWorker, taskPause, thisWorker, taskDone, taskSkip, taskFail, taskCatch,
     Worker, workerThreadId, workerName, relieveGovWorkers,
     WorkerStatus(..), getWorkerStatus, workerNotBusy, workerNotDone, workerBusy, workerFailed,
-    WorkerUnion, newWorkerUnion,
+    WorkerUnion, newWorkerUnion, unionizeWorker, retireWorker,
     -- ** Worker Providers
     WorkerSignal(..), WorkerNotification(..), setWorkerStatus, runWorkerTask,
     WorkerID, workerIDtoInt,
@@ -1084,7 +1084,8 @@ postal launch names f = liftIO $ do
 
 -- | This is a type of function used to fork a thread for a 'Worker'.
 type ForkWorkerThread a
-  =  WorkerUnion   -- ^ use to call 'unionize' when thread begins and 'retire' when thread ends.
+  =  WorkerUnion
+      -- ^ use to call 'unionizeWorker' when thread begins and 'retireWorker' when thread ends.
   -> WorkCycleTime -- ^ requests the cycle time of the work thread that is forked here.
   -> IO Worker     -- ^ used to obtain a copy of the 'Worker' which represents thread forked here.
   -> (Worker -> IO (EventHandlerControl a))
@@ -1135,7 +1136,7 @@ defaultLaunchWorkerThread wu cycle getWorker f = do
           EventHandlerFail   msg -> void $ setWorkerStatus self $ WorkerFailed msg
   tid <- forkOS $ catches
     (do self <- getWorker
-        bracket_ (unionize wu self) (retire wu self) $ do
+        bracket_ (unionizeWorker wu self) (retireWorker wu self) $ do
           case cycle of
             WorkWaitCycle t -> setWorkerStatus self WorkerPaused >> delay t
             _               -> return ()
@@ -1174,14 +1175,16 @@ relieveGovWorkers toBeRelieved = govWorkerUnion >>= liftIO . flip relieveWorkers
 newWorkerUnion :: MonadIO m => m WorkerUnion
 newWorkerUnion = liftIO $ WorkerUnion <$> newMVar Set.empty
 
--- not for export
-unionize :: WorkerUnion -> Worker -> IO ()
-unionize (WorkerUnion mvar) worker = liftIO $
+-- | This function must only be called by Happlet 'Happlets.Initialize.Provider's when instantiating
+-- the 'launchWorkerThread' function.
+unionizeWorker :: WorkerUnion -> Worker -> IO ()
+unionizeWorker (WorkerUnion mvar) worker = liftIO $
   modifyMVar_ mvar $ return . Set.insert worker
 
--- not for export
-retire :: WorkerUnion -> Worker -> IO ()
-retire (WorkerUnion mvar) worker = liftIO $
+-- | This function must only be called by Happlet 'Happlets.Initialize.Provider's when instantiating
+-- the 'launchWorkerThread' function.
+retireWorker :: WorkerUnion -> Worker -> IO ()
+retireWorker (WorkerUnion mvar) worker = liftIO $
   modifyMVar_ mvar $ return . Set.delete worker
 
 -- not for export
@@ -1310,11 +1313,12 @@ class CanRecruitWorkers window where
   launchWorkerThread
     :: GUIState window model -- ^ provides access to the @window@
     -> WorkerUnion
-       -- ^ use to call 'unionize' when thread begins and 'retire' when thread ends. Usually this
-       -- union is the same as 'theGUIWorkers' ("government" union), but not necessarily, therefore
-       -- it is passed as an argument to this function.
+       -- ^ use to call 'unionizeWorker' when thread begins and 'retireWorker' when thread
+       -- ends. Usually this union is the same as 'theGUIWorkers' ("government" union), but not
+       -- necessarily, therefore it is passed as an argument to this function.
     -> WorkCycleTime -- ^ requests the cycle time of the work thread that is forked here.
-    -> IO Worker     -- ^ used to obtain a copy of the 'Worker' which represents thread forked here.
+    -> IO Worker
+        -- ^ used to obtain a copy of the 'Worker' which represents thread forked here.
     -> (Worker -> IO (EventHandlerControl void))
         -- ^ the task to be perofmred during each work cycle.
     -> IO (IO ())    -- ^ returns a function that used to halt the thread that is forked here.
