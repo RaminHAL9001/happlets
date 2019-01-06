@@ -57,14 +57,11 @@
 -- The default text mode is 'normalSize' black text on white
 module Happlets.Draw.Text
   ( ScreenPrinter(..), screenPrinter, fontStyle,
-    textCursor, cursorCharRule, renderOffset, printerFontStyle,
+    textCursor, cursorCharRule, renderOffset,
     HasTextGridLocation(..),
     -- * Font Styles
-    FontStyle(..), IsUnderlined(..), IsStriken(..), defaultFontStyle,
+    FontStyle(..), FontSize, IsUnderlined(..), IsStriken(..), defaultFontStyle,
     fontForeColor, fontBackColor, fontSize, fontBold, fontItalic, fontUnderline, fontStriken,
-    -- * Font Sizes
-    FontSize(..), fontSizeStep, fontSizeMultiple,
-    tinySize, smallSize, normalSize, mediumSize, largeSize, superSize, doubleSize,
     -- * Cursor Advance Mechanism
     CursorCharRule, cursorCharRuleLangC, cursorCharRuleLangDOS,
     -- * Text Grid Location
@@ -72,7 +69,6 @@ module Happlets.Draw.Text
     TextGridLocation(..), TextGridSize, textGridLocation,
     -- * Character Printing Machine
     RenderText(..), displayChar, displayString,
-    getWindowTextGridSize, gridTextLocationToPoint, getPixSizeOfChar,
     ScreenPrinterState(..), screenPrinterState, runScreenPrinter,
     module Data.Char,
     module Data.Char.WCWidth
@@ -81,6 +77,7 @@ module Happlets.Draw.Text
 import           Happlets.Draw.Color
 import           Happlets.Draw.Types2D
 
+import           Control.Applicative
 import           Control.Lens
 import           Control.Monad.State
 
@@ -90,60 +87,11 @@ import           Data.String
 
 ----------------------------------------------------------------------------------------------------
 
--- | Support a limited set of font sizes. The numbers 6, 9, 12, 15, 18, 21, and 24 do not
--- necessarily indicate the pixel height of the font used. The Happlets back-end provider needs to
--- provide a single default monospace font and choose reasonable default sizes to correspond to
--- these 'FontSize' values.
-data FontSize
-  = FontSize06 | FontSize09 | FontSize12 | FontSize15 | FontSize18 | FontSize21 | FontSize24
-  deriving (Eq, Ord, Show, Bounded)
-
--- | Font widths are defined as multiples of 3, starting with 6. This function returns the multiple,
--- so 'FontSize06' returns 1 (6/3 - 1), 'fontSize24' returns 7 (24/3 - 1).
-fontSizeStep :: FontSize -> Int
-fontSizeStep = \ case
-  FontSize06 -> 1
-  FontSize09 -> 2
-  FontSize12 -> 3
-  FontSize15 -> 4
-  FontSize18 -> 5
-  FontSize21 -> 6
-  FontSize24 -> 7
-
--- | Return a multiplier value for the 'FontSize' which, when multiplied by a minimum font size
--- value for your back-end Happlets provider, produces a reasonable font size scalar value.
-fontSizeMultiple :: FontSize -> Float
-fontSizeMultiple size = 1.0 + (0.5 * (realToFrac (fontSizeStep size) - 1.0))
-
--- | Synonym for 'FontSize06', smallest font size
-tinySize :: FontSize
-tinySize = FontSize06
-
--- | Synonym for 'FontSize09'
-smallSize :: FontSize
-smallSize = FontSize09
-
--- | Synonym for 'FontSize12'
-normalSize :: FontSize
-normalSize = FontSize12
-
--- | Synonym for 'FontSize15'
-mediumSize :: FontSize
-mediumSize = FontSize15
-
--- | Synonym for 'FontSize18'
-largeSize :: FontSize
-largeSize = FontSize18
-
--- | Synonym for 'FontSize21'
-superSize :: FontSize
-superSize = FontSize21
-
--- | Synomym for 'FontSize24', largest font size (double the 'normalSize')
-doubleSize :: FontSize
-doubleSize = FontSize24
-
-----------------------------------------------------------------------------------------------------
+-- | Not all font sizes may be possible, depending on the 'Happlets.Initializ.Provider'. Happlet
+-- programmers specify their requested 'FontSize' to the 'theFontSize' field of the 'FontStyle' data
+-- structure, the provider will accept any 'FontSize' and set the actual font size nearest to the
+-- requested size that is possible, returning the possible value.
+type FontSize = Float
 
 -- | A value indicating whether the text should be underlined.
 data IsUnderlined = NoUnderline | Underline | DoubleUnderline deriving (Eq, Ord, Show)
@@ -169,7 +117,7 @@ defaultFontStyle :: FontStyle
 defaultFontStyle = FontStyle
   { theFontForeColor = black
   , theFontBackColor = white
-  , theFontSize      = normalSize
+  , theFontSize      = 16.0
   , theFontBold      = False
   , theFontItalic    = False
   , theFontUnderline = NoUnderline
@@ -230,8 +178,8 @@ instance HasTextGridLocation TextGridLocation where
 textGridLocation :: TextGridLocation
 textGridLocation = TextGridLocation 0 0
 
-rowInt    :: Iso' TextGridRow Int
-rowInt    = iso (\ (TextGridRow i) -> i) TextGridRow
+rowInt :: Iso' TextGridRow Int
+rowInt = iso (\ (TextGridRow i) -> i) TextGridRow
 
 columnInt :: Iso' TextGridColumn Int
 columnInt = iso (\ (TextGridColumn i) -> i) TextGridColumn
@@ -255,30 +203,21 @@ columnInt = iso (\ (TextGridColumn i) -> i) TextGridColumn
 -- @
 data ScreenPrinterState
   = ScreenPrinterState
-    { thePrinterFontStyle :: !FontStyle
-    , theTextCursor       :: !TextGridLocation
+    { theTextCursor       :: !TextGridLocation
     , theRenderOffset     :: !(V2 Double)
     , theCursorCharRule   :: CursorCharRule
     }
 
 screenPrinterState :: ScreenPrinterState
 screenPrinterState = ScreenPrinterState
-  { thePrinterFontStyle = defaultFontStyle
-  , theTextCursor       = textGridLocation
+  { theTextCursor       = textGridLocation
   , theRenderOffset     = V2 (0.0) (0.0)
   , theCursorCharRule   = cursorCharRuleLangC
   }
 
--- | The current font style. Use this function to force the font to change without using
--- 'fontStyle'. If this function is called within a 'fontStyle' @do@ block, any changes made by this
--- function are lost and the font style that was set before the parent 'fontStyle' function @do@
--- block will be restored.
-printerFontStyle :: Lens' ScreenPrinterState FontStyle
-printerFontStyle = lens thePrinterFontStyle $ \ a b -> a{ thePrinterFontStyle = b }
-
 -- | The current 'gridRow' and 'gridColumn' of the text cursor.
-textCursor       :: Lens' ScreenPrinterState TextGridLocation
-textCursor       = lens theTextCursor $ \ a b -> a{ theTextCursor = b }
+textCursor :: Lens' ScreenPrinterState TextGridLocation
+textCursor = lens theTextCursor $ \ a b -> a{ theTextCursor = b }
 
 instance HasTextGridLocation ScreenPrinterState where
   gridColumn = textCursor . gridColumn
@@ -287,12 +226,12 @@ instance HasTextGridLocation ScreenPrinterState where
 -- | Determines how far from the left and top of the screen a character will be positioned when it
 -- is rendered at the cursor location @('gridRow' 'Control.Lens..=' 1)@ @('gridColumn'
 -- 'Cursor.Lens..=' 1)@.
-renderOffset     :: Lens' ScreenPrinterState (V2 Double)
-renderOffset     = lens theRenderOffset $ \ a b -> a{ theRenderOffset = b }
+renderOffset :: Lens' ScreenPrinterState (V2 Double)
+renderOffset = lens theRenderOffset $ \ a b -> a{ theRenderOffset = b }
 
 -- | This function is called to advance the cursor every time the 'displayChar' function is called.
-cursorCharRule   :: Lens' ScreenPrinterState CursorCharRule
-cursorCharRule   = lens theCursorCharRule $ \ a b -> a{ theCursorCharRule = b }
+cursorCharRule :: Lens' ScreenPrinterState CursorCharRule
+cursorCharRule = lens theCursorCharRule $ \ a b -> a{ theCursorCharRule = b }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -301,11 +240,9 @@ type CursorCharRule = ScreenPrinterState -> Char -> TextGridLocation -> TextGrid
 
 -- not for export
 cursorCharWCWidth :: CursorCharRule
-cursorCharWCWidth st c = execState $ do
+cursorCharWCWidth _st c = execState $ do
   let w = wcwidth c
-  unless (w <= 0) $ do
-    let size = st ^. printerFontStyle . fontSize
-    gridColumn += TextGridColumn (w * fontSizeStep size)
+  unless (w <= 0) $ gridColumn += TextGridColumn w
 
 -- | This is the default text cursor behavior. If the given character is @('\\LF')@, the
 -- 'gridColumn' is set to 1 and the 'gridRow' is incremented. For all other characters, the
@@ -318,10 +255,7 @@ cursorCharWCWidth st c = execState $ do
 -- country, meaning C (the language of the computer) is the default locale.
 cursorCharRuleLangC :: CursorCharRule
 cursorCharRuleLangC st c = execState $ case c of
-  '\n'-> do
-    let size = st ^. printerFontStyle . fontSize
-    gridRow += TextGridRow (2 * fontSizeStep size)
-    gridColumn .= 0
+  '\n'-> gridRow += TextGridRow 2 >> gridColumn .= 0
   c   -> modify $ cursorCharWCWidth st c
 
 -- | Similar to 'cursorCharLangC' with one difference: the new line character @('\\LF')@ simply
@@ -347,7 +281,8 @@ instance Monad render => MonadState ScreenPrinterState (ScreenPrinter render) wh
 instance MonadTrans ScreenPrinter where
   lift = ScreenPrinter . lift
 
-instance RenderText render => IsString (ScreenPrinter render ()) where { fromString = displayString; }
+instance RenderText render => IsString (ScreenPrinter render ()) where
+  fromString = void . displayString
 
 -- | Instantiate this class into a monadic @render@ing function by
 -- 'Control.Monad.Trans.Class.lift'ing the @render@ function type into the 'ScreenPrinter' type. Use
@@ -355,31 +290,45 @@ instance RenderText render => IsString (ScreenPrinter render ()) where { fromStr
 -- 'gridRow' and 'gridColumn' values, and render these value according to the rules defined in
 -- comments in this module.
 class Monad render => RenderText render where
-  -- | A grid cell is equal to the width of the 'smallSize'd monospaced font for an ASCII
-  -- character. Monospaced means the width of an @w@ character is the same as the width of an @i@
-  -- character. It is also assumed that the height of a monospace font is always double its width.
-  -- If (for example) your @render@ function type is defined such that the 'FontSize06' is indeed a
-  -- font with a height of 6 pixels (thought it doesn't necessarily have to be 6 pixels), the value
-  -- returned by 'getGridCellSize' should be @3.0@, because the height of the 'smallSize'd font is 6
-  -- and the width is half the height. This function always returns the same value, regardless of
-  -- the 'FontSize' currently set in the 'ScreenPrinterState'.
-  getGridCellSize :: render Double
+  getGridCellSize :: render (Size2D SampCoord)
 
   -- | Get the size of the current window in terms of
   -- @(windowWidth\/cellSize, windowHeight\/cellSize)@ 
-  getWindowGridCellSize :: render (Size2D Double)
+  getWindowTextGridSize :: render TextGridSize
 
   -- | Render a single character to the window buffer according to the 'ScreenPrinterState',
   -- including the row and column position.
-  screenPrintCharNoAdvance  :: ScreenPrinterState -> Char -> render ()
+  screenPrintCharNoAdvance  :: ScreenPrinterState -> Char -> render (Rect2D SampCoord)
 
-  -- | Preserve a single 'ScreenPrinterState' in the @render@ state.
+  -- | Preserve a single 'ScreenPrinterState' in the @render@ state. This function is called by the
+  -- 'screenPrinter' function to retrieve the state from the @render@ evaluation context.
   saveScreenPrinterState :: ScreenPrinterState -> render ()
 
   -- | Produce a copy of the laste 'ScreenPrinterState' that was called with
   -- 'saveScreenPrinterState', or return 'screenPrinterState' if 'saveScreenPrinterState' was never
-  -- called.
+  -- called. This function is called by the 'screenPrinter' function to store the screen printer
+  -- state with the given @render@ evaluation context.
   recallSavedScreenPrinterState :: render ScreenPrinterState
+
+  -- | Convert a 'GridTextLocation' to a 'Happlets.Types2D.Point2D'. 
+  gridLocationOfPoint :: Point2D SampCoord -> render TextGridLocation
+
+  -- | Get the pixel size of a character given the current 'fontStyle'. This value is entirely
+  -- dependent on just three values: the result of 'getGridSizeOfWindow' and the current 'FontSize',
+  -- and the width of the character returned by 'Data.Char.WCWidth.wcwidth'.
+  getPixSizeOfChar :: FontSize -> Char -> render (Size2D SampCoord)
+
+  -- | Set the 'FontStyle' used by the 'ScreenPrinter'. You can pass in any 'FontStyle' value, but
+  -- not all 'FontStyle' values may be possible, for example the requested font size might not be
+  -- available or a bold-italic monospaced font may not be available. The actual 'FontStyle' value
+  -- that is set is returned, which is the nearest possible 'FontStyle' to the requested
+  -- 'FontStyle.'
+  setPrinterFontStyle :: FontStyle -> ScreenPrinter render FontStyle
+
+  -- | Get the 'FontStyle' that was most recently set by the 'setPrinterFontStyle' function. This is
+  -- the 'FontStyle' that was nearest to the requested 'FontStyle' that was possible to set, and the
+  -- same value returned by the 'setPrinterFontStyle' function.
+  getPrinterFontStyle :: ScreenPrinter render FontStyle
 
 -- | Evaluate the 'Control.Monad.State.Class.MonadState' 'ScreenPrinter'. Use this function within a
 -- @do@ block passed to the 'Happlets.GUI.onCanvas' or 'Happlets.GUI.onOSBuffer' function in order
@@ -395,43 +344,16 @@ screenPrinter f = do
 runScreenPrinter :: ScreenPrinter render a -> ScreenPrinterState -> render (a, ScreenPrinterState)
 runScreenPrinter = runStateT . unwrapScreenPrinter
 
--- | Evaluates 'getWindowGridCellSize', 'Prelude.floor's the grid cell width to a 'TextGridColumn'
--- value, 'Prelude.floor's the grid cell height to a 'TextGridRow' value, and returns these values
--- as a 'TextGridSize' value.
-getWindowTextGridSize :: RenderText render => render TextGridSize
-getWindowTextGridSize = do
-  (V2 w h) <- getWindowGridCellSize
-  return $ TextGridLocation (TextGridRow $ floor h) (TextGridColumn $ floor w)
-
--- | Convert a 'GridTextLocation' to a 'Happlets.Types2D.Point2D'.
-gridTextLocationToPoint :: RenderText render => TextGridLocation -> render (Point2D Double)
-gridTextLocationToPoint (TextGridLocation (TextGridRow row) (TextGridColumn col)) = do
-  cellsize       <- getGridCellSize
-  (V2 winW winH) <- getWindowGridCellSize
-  return $ V2
-    ((if col < 0 then (+ (realToFrac winW)) else id) $ realToFrac col * cellsize)
-    ((if row < 0 then (+ (realToFrac winH)) else id) $ realToFrac row * cellsize)
-
--- | Get the pixel size of a character given the current 'fontStyle'. This value is entirely
--- dependent on just three values: the result of 'getGridSizeOfWindow' and the current 'FontSize',
--- and the width of the character returned by 'Data.Char.WCWidth.wcwidth'.
-getPixSizeOfChar :: RenderText render => FontSize -> Char -> render (Size2D Double)
-getPixSizeOfChar size c = do
-  let cw = wcwidth c
-  cellsize <- getGridCellSize
-  let fs = fontSizeStep size
-  return $ V2 (cellsize * realToFrac (fs * cw)) (cellsize * realToFrac (fs * 2))
-
 -- | This function renders a single character, then advances the 'gridColumn' or 'gridRow'.
-displayChar :: RenderText render => Char -> ScreenPrinter render ()
-displayChar c = do
-  st <- get
-  lift $ screenPrintCharNoAdvance st c
-  textCursor %= theCursorCharRule st st c
+displayChar :: RenderText render => Char -> ScreenPrinter render (Rect2D SampCoord)
+displayChar c = get >>= \ st -> 
+  (lift $ screenPrintCharNoAdvance st c) <*
+  (textCursor %= theCursorCharRule st st c)
 
--- | Render a string by repeatedly calling 'displayChar' repeatedly. The 
-displayString :: RenderText render => String -> ScreenPrinter render ()
-displayString = mapM_ displayChar
+-- | Render a string by calling 'displayChar' repeatedly.
+displayString :: RenderText render => String -> ScreenPrinter render (Maybe (Rect2D SampCoord))
+displayString = fmap (foldl f Nothing . fmap Just) . mapM displayChar where
+  f a b = rect2DMinBoundOf <$> a <*> b <|> a <|> b
 
 -- | This function takes a function which temporarily changes the font style used by the
 -- printer. The function used to modify the 'printerFontStyle' is a pure 'Control.Monad.State.State'
@@ -439,15 +361,18 @@ displayString = mapM_ displayChar
 -- the font style. For example:
 --
 -- @
--- "This text is printed in the default font.\n"
+-- "This text is printed in the default font style.\\n"
 -- 'fontStyle' (do 'fontForeColor' 'Control.Lens..=' 'Happlets.Draw.Color.blue'; 'fontBold' 'Control.Lens..=' True) $ do
---     "This text is bold and blue."
--- "This text is the 
+--     "This text is bold and blue.\\n"
+-- "This text is printed in the default font style.\\n"
 -- @
+--
+-- This function is usually makes use of 'setPrinterFontStyle' and 'getPrinterFontStyle', but it
+-- tends to be much more convenient to use this function instead.
 fontStyle
   :: RenderText render
   => State FontStyle () -> ScreenPrinter render a -> ScreenPrinter render a
 fontStyle changeFont print = do
-  oldStyle <- use printerFontStyle
-  printerFontStyle %= execState changeFont
-  print <* (printerFontStyle .= oldStyle)
+  oldStyle <- getPrinterFontStyle
+  setPrinterFontStyle $ execState changeFont oldStyle
+  print <* setPrinterFontStyle oldStyle
