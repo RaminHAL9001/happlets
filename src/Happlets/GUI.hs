@@ -1060,9 +1060,9 @@ postal launch names f = liftIO $ do
         setWorkerStatus self WorkerWaiting
         waitQSem insema
         setWorkerStatus self WorkerBusy
-        work <- modifyMVar inbox $ return . \ case
-          a Seq.:<| ax -> (ax, a)
-          Seq.Empty    -> (,) Seq.empty $ error $ "Worker "++show handl++
+        work <- modifyMVar inbox $ \ worker -> return $ case Seq.viewl worker of
+          a Seq.:< ax -> (ax, a)
+          Seq.EmptyL  -> (,) Seq.empty $ error $ "Worker "++show handl++
             " discovered PostWork semaphore signalled without"++
             " having first inserted an element in the inbox."
         postStats post
@@ -1208,9 +1208,9 @@ pushWork post work = liftIO $ do
 -- asynchronous. If there is no @work@ completed yet, 'Prelude.Nothing' is returned.
 checkWork :: MonadIO m => WorkPost inWork outWork -> m (Maybe outWork)
 checkWork post = liftIO $ do
-  a <- modifyMVar (workPostOutbox post) $ return . \ case
-    Seq.Empty    -> (Seq.empty, Nothing)
-    a Seq.:<| ax -> (ax, Just a)
+  a <- modifyMVar (workPostOutbox post) $ \ workers -> return $ case Seq.viewl workers of
+    Seq.EmptyL  -> (Seq.empty, Nothing)
+    a Seq.:< ax -> (ax, Just a)
   case a of
     Nothing -> return ()
     Just{}  -> postStats post $ _workPostWaitingOutput %~ subtract 1
