@@ -204,7 +204,7 @@ columnInt = iso (\ (TextGridColumn i) -> i) TextGridColumn
 data ScreenPrinterState
   = ScreenPrinterState
     { theTextCursor       :: !TextGridLocation
-    , theRenderOffset     :: !(V2 Double)
+    , theRenderOffset     :: !(V2 Float)
     , theCursorCharRule   :: CursorCharRule
     }
 
@@ -226,7 +226,7 @@ instance HasTextGridLocation ScreenPrinterState where
 -- | Determines how far from the left and top of the screen a character will be positioned when it
 -- is rendered at the cursor location @('gridRow' 'Control.Lens..=' 1)@ @('gridColumn'
 -- 'Cursor.Lens..=' 1)@.
-renderOffset :: Lens' ScreenPrinterState (V2 Double)
+renderOffset :: Lens' ScreenPrinterState (V2 Float)
 renderOffset = lens theRenderOffset $ \ a b -> a{ theRenderOffset = b }
 
 -- | This function is called to advance the cursor every time the 'displayChar' function is called.
@@ -290,10 +290,11 @@ instance RenderText render => IsString (ScreenPrinter render ()) where
 -- 'gridRow' and 'gridColumn' values, and render these value according to the rules defined in
 -- comments in this module.
 class Monad render => RenderText render where
-  getGridCellSize :: render (Size2D SampCoord)
+  getGridCellSize :: render (Size2D Float)
 
-  -- | Get the size of the current window in terms of
-  -- @(windowWidth\/cellSize, windowHeight\/cellSize)@ 
+  -- | Get the size of the current window in terms of @(cailing (windowWidth/cellSize), ceiling
+  -- (windowHeight/cellSize))@. This means the maximum number of grid cells visible, even a grid
+  -- cell has only a single pixel visible in the window, it is counted in the size.
   getWindowTextGridSize :: render TextGridSize
 
   -- | Render a single character to the window buffer according to the 'ScreenPrinterState',
@@ -304,7 +305,7 @@ class Monad render => RenderText render where
   -- 'screenPrinter' function to retrieve the state from the @render@ evaluation context.
   saveScreenPrinterState :: ScreenPrinterState -> render ()
 
-  -- | Produce a copy of the laste 'ScreenPrinterState' that was called with
+  -- | Produce a copy of the last 'ScreenPrinterState' that was called with
   -- 'saveScreenPrinterState', or return 'screenPrinterState' if 'saveScreenPrinterState' was never
   -- called. This function is called by the 'screenPrinter' function to store the screen printer
   -- state with the given @render@ evaluation context.
@@ -323,12 +324,12 @@ class Monad render => RenderText render where
   -- available or a bold-italic monospaced font may not be available. The actual 'FontStyle' value
   -- that is set is returned, which is the nearest possible 'FontStyle' to the requested
   -- 'FontStyle.'
-  setPrinterFontStyle :: FontStyle -> ScreenPrinter render FontStyle
+  setRendererFontStyle :: FontStyle -> render FontStyle
 
   -- | Get the 'FontStyle' that was most recently set by the 'setPrinterFontStyle' function. This is
   -- the 'FontStyle' that was nearest to the requested 'FontStyle' that was possible to set, and the
   -- same value returned by the 'setPrinterFontStyle' function.
-  getPrinterFontStyle :: ScreenPrinter render FontStyle
+  getRendererFontStyle :: render FontStyle
 
 -- | Evaluate the 'Control.Monad.State.Class.MonadState' 'ScreenPrinter'. Use this function within a
 -- @do@ block passed to the 'Happlets.GUI.onCanvas' or 'Happlets.GUI.onOSBuffer' function in order
@@ -373,6 +374,6 @@ fontStyle
   :: RenderText render
   => State FontStyle () -> ScreenPrinter render a -> ScreenPrinter render a
 fontStyle changeFont print = do
-  oldStyle <- getPrinterFontStyle
-  setPrinterFontStyle $ execState changeFont oldStyle
-  print <* setPrinterFontStyle oldStyle
+  oldStyle <- lift getRendererFontStyle
+  lift $ setRendererFontStyle $ execState changeFont oldStyle
+  print <* lift (setRendererFontStyle oldStyle)
