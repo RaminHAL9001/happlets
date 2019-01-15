@@ -255,10 +255,10 @@ class Monad render => RenderText render where
 
   -- | Get the 'TextBoundingBox' size of a character without changing anything visible on the
   -- display.
-  getCharBoundingBox :: Char -> render (Maybe TextBoundingBox)
+  getCharBoundingBox :: ScreenPrinterState -> Char -> render (Maybe TextBoundingBox)
 
   -- | Get the 'TextBoundingBox' size of a string without changing anything visible on the display.
-  getStringBoundingBox :: String -> render (Maybe TextBoundingBox)
+  getStringBoundingBox :: ScreenPrinterState -> String -> render (Maybe TextBoundingBox)
 
   -- | Set the 'FontStyle' used by the 'ScreenPrinter'. You can pass in any 'FontStyle' value, but
   -- not all 'FontStyle' values may be possible, for example the requested font size might not be
@@ -335,8 +335,8 @@ instance RenderText render => RenderText (ScreenPrinter render) where
   recallSavedScreenPrinterState = lift recallSavedScreenPrinterState
   gridLocationOfPoint           = lift . gridLocationOfPoint
   gridLocationToPoint           = lift . gridLocationToPoint
-  getCharBoundingBox            = lift . getCharBoundingBox
-  getStringBoundingBox          = lift . getStringBoundingBox
+  getCharBoundingBox          a = lift . getCharBoundingBox a
+  getStringBoundingBox        a = lift . getStringBoundingBox a
   setRendererFontStyle          = lift . setRendererFontStyle
   getRendererFontStyle          = lift getRendererFontStyle
 
