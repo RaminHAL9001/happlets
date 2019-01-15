@@ -72,7 +72,7 @@ module Happlets.Draw.Text
     -- * Character Printing Machine
     ScreenPrinterState(..), screenPrinterState, runScreenPrinter,
     CursorAdvanceInput(..),
-    RenderText(..), takePrintable, 
+    RenderText(..), spanPrintable,
     module Data.Char,
   ) where
 
@@ -219,8 +219,10 @@ class Monad render => RenderText render where
   getWindowTextGridSize :: render TextGridSize
 
   -- | Render a single character to the window buffer according to the 'ScreenPrinterState',
-  -- including the row and column position, without modifying the 'ScreenPrinterState'.
-  screenPrintCharNoAdvance  :: ScreenPrinterState -> Char -> render TextBoundingBox
+  -- including the row and column position, without modifying the 'ScreenPrinterState'. This
+  -- function may return 'Prelude.Nothing' if the character is non-printable ('Data.Char.isPrint'
+  -- evaluates the character as 'Prelude.False').
+  screenPrintCharNoAdvance  :: ScreenPrinterState -> Char -> render (Maybe TextBoundingBox)
 
   -- | This function __must__ pass the given 'Prelude.String' to the 'takePrintable' function and
   -- then render the characters according to the given 'ScreenPrinterState' without modifying the
@@ -242,8 +244,14 @@ class Monad render => RenderText render where
   -- state with the given @render@ evaluation context.
   recallSavedScreenPrinterState :: render ScreenPrinterState
 
-  -- | Convert a 'GridTextLocation' to a 'Happlets.Types2D.Point2D'. 
-  gridLocationOfPoint :: Point2D SampCoord -> render TextGridLocation
+  -- | Convert a 'Happlets.Types2D.Point2D' to a 'GridTextLocation'. This is useful for computing
+  -- the grid locaiton of where a mouse event occurs.
+  gridLocationOfPoint :: Point2D Double -> render TextGridLocation
+
+  -- | Convert a 'GridTextLocation' to a 'Happlets.Types2D.Point2D'. This is useful for determining
+  -- where in the drawable canvas a text point will be drawn if the cursor is at a particular
+  -- 'TextGridLocation'.
+  gridLocationToPoint :: TextGridLocation -> render (Point2D Double)
 
   -- | Get the 'TextBoundingBox' size of a character without changing anything visible on the
   -- display.
@@ -326,6 +334,7 @@ instance RenderText render => RenderText (ScreenPrinter render) where
   saveScreenPrinterState        = lift . saveScreenPrinterState
   recallSavedScreenPrinterState = lift recallSavedScreenPrinterState
   gridLocationOfPoint           = lift . gridLocationOfPoint
+  gridLocationToPoint           = lift . gridLocationToPoint
   getCharBoundingBox            = lift . getCharBoundingBox
   getStringBoundingBox          = lift . getStringBoundingBox
   setRendererFontStyle          = lift . setRendererFontStyle
@@ -403,8 +412,8 @@ cursorAdvanceRules = lens theCursorAdvanceRules $ \ a b -> a{ theCursorAdvanceRu
 -- non-printing characters after the first run of printing characters. This means if you have any
 -- tabs, newlines, line breaks, or anything that isn't printable in the given 'Prelude.String', only
 -- the characters up to those non-printing characters are taken.
-takePrintable :: String -> String
-takePrintable = takeWhile isPrint . dropWhile (not . isPrint)
+spanPrintable :: String -> (String, String)
+spanPrintable = span isPrint . dropWhile (not . isPrint)
 
 -- | Given a 'TextBoundingBox' (a value typically returned by 'displayString' or 'displayChar'),
 -- evaluate 'gridCellSize' with 'gridBoundingBox' to obtain a 'TextGridSize' value that bounds the
@@ -431,26 +440,24 @@ runScreenPrinter = runStateT . unwrapScreenPrinter
 displayInput
   :: RenderText render
   => (input -> CursorAdvanceInput)
-  -> (box -> Maybe TextBoundingBox)
-  -> (ScreenPrinterState -> input -> ScreenPrinter render box)
-  -> input -> ScreenPrinter render box
-displayInput constr getGrid display input = do
+  -> (ScreenPrinterState -> input -> ScreenPrinter render (Maybe TextBoundingBox))
+  -> input -> ScreenPrinter render (Maybe TextBoundingBox)
+displayInput constr display input = do
   st   <- get
-  bnds <- display st input
-  case getGrid bnds of
-    Nothing   -> return ()
-    Just grid -> do
-      grid <- asGridSize grid
+  display st input >>= \ case
+    Nothing   -> return Nothing
+    Just bnds -> do
+      grid <- asGridSize bnds
       textCursor %= theCursorAdvanceRules st (constr input) grid
-  return bnds
+      return $ Just bnds
 
 -- | This function renders a single character, then advances the 'gridColumn' or 'gridRow'.
-displayChar :: RenderText render => Char -> ScreenPrinter render TextBoundingBox
-displayChar = displayInput CursorAdvanceChar Just screenPrintCharNoAdvance
+displayChar :: RenderText render => Char -> ScreenPrinter render (Maybe TextBoundingBox)
+displayChar = displayInput CursorAdvanceChar screenPrintCharNoAdvance
 
 -- | Render a string by calling 'displayChar' repeatedly.
 displayString :: RenderText render => String -> ScreenPrinter render (Maybe TextBoundingBox)
-displayString = displayInput CursorAdvanceString id screenPrintNoAdvance
+displayString = displayInput CursorAdvanceString screenPrintNoAdvance
 
 -- | This function takes a continuation which temporarily changes the font style used by the
 -- printer. The function used to modify the 'printerFontStyle' is a pure 'Control.Monad.State.State'
