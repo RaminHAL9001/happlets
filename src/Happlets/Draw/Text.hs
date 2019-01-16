@@ -26,35 +26,32 @@
 -- @
 --
 -- The 'ScreenPrinter' function type lifts a @render@ function type that /should/ be defined by the
--- Happlets back-end provider to be the same @render@ type as that of the
+-- Happlets 'Happlets.Initialize.Provider' to be the same @render@ type as that of the
 -- 'Happlets.GUI.HappletWindow' class. In order to display text in a Happlet window, evaluate a
--- 'ScreenPrinter' using the 'screenPrinter' function, which produces a @render@ function. Then
--- use either the 'Happlets.GUI.onCanvas' or 'Happlets.GUI.onOSBuffer' function to evaluate the
--- @render@ function to a 'GUI' function that can be evaluate from within any Happlet event handler.
+-- 'ScreenPrinter' using the 'screenPrinter' function, which produces a @render@ function. Then use
+-- either the 'Happlets.GUI.onCanvas' or 'Happlets.GUI.onOSBuffer' function to evaluate the @render@
+-- function to a 'GUI' function that can be evaluate from within any Happlet event handler.
 --
 -- It is also possible to display text with the 'Happlets.GUI.display' function, however you cannot
 -- pass overloaded strings to the 'display' function because Haskell's type inference will not be
 -- able to deduce that the type you intend for 'display' to evaluate is of the 'ScreenPrinter' type
 -- from a polymorphic string literal alone.
 --
+-- Characters are placed into the grid, and each character advances a cursor. Characters may be of
+-- varying width but the cursor always advances by an integer multiple of the 'UnitGridSize'.
+--
+-- The 'CursorAdvanceRules' APIs make it possible to define character advance modes for
+-- right-to-left (used by Arabic and Persian languages) or top-to-botton settings (used by Chinese
+-- and Japanese languages). Even more complicated rules, like for ancient Hebrew, can be
+-- defined. The default cursor behavior is 'cursorAdvanceRuleLangC'.
+--
 -- The functions and data types in this module model a virtual dumb terminal device, all font styles
--- are assumed to be monospace fonts with a limited range of font sizes. The font sizes are integer
--- multiples of a minimum text grid size. The way this virtual device basically works is that the
--- visible window contains a layer of text that is always on top of the graphics layer. The window
--- is sub-divided into rows and columns, and the cursor (by default) advances from left to right,
--- and on a carriage return advnaces downward. The text grid increases and decreases with the window
--- size, but the cells of the text grid are always a value of 03 by 03.
---
--- Characters are placed into the grid, and each character advances a cursor. Characters can be
--- half-width which advances the column count by 1 times the 'fontSizeMultiplier' or full-width,
--- which advances the column count by 2 times the 'fontWidthMultiplier'. When advancing rows, the
--- default behavior is to advance downward by 2 times the 'fontWidthMultiplier'.
---
--- It is also possible to set character advance modes for right-to-left (used by Arabic and Persian
--- languages) or top-to-botton settings (used by Chinese and Japanese languages). Even more
--- complicated rules, like for ancient Hebrew, can be defined.
---
--- The default text mode is 'normalSize' black text on white
+-- are assumed to be monospace fonts with a limited range of font sizes, although any font face may
+-- be configured by the operating system. There are no (and __never will be any__) APIs for working
+-- with a variety of font faces, as listing faces is a known source of entropy for identifying and
+-- tracking clients over a network. All font configurations must be performed by the operating
+-- system, and the Happlet 'Happlets.Initialize.Provider' must always select the default monospace
+-- font.
 module Happlets.Draw.Text
   ( ScreenPrinter(..),
     screenPrinter, fontStyle, textCursor, renderOffset, asGridSize, displayChar, displayString,
@@ -199,7 +196,7 @@ gridBoundingBox :: UnitGridSize -> TextBoundingBox -> TextGridSize
 gridBoundingBox (V2 uW uH) = rect2DSize >>> \ (V2 tW tH) ->
   TextGridLocation (TextGridRow $ ceiling $ tH / uH) (TextGridColumn $ ceiling $ tW / uW)
 
-------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------
 
 -- | Instantiate this class into a monadic @render@ing function by
 -- 'Control.Monad.Trans.Class.lift'ing the @render@ function type into the 'ScreenPrinter' type. Use
@@ -211,29 +208,6 @@ gridBoundingBox (V2 uW uH) = rect2DSize >>> \ (V2 tW tH) ->
 -- functions within the 'ScreenPrinter' without having to use the 'Control.Monad.Trans.Class.lift'
 -- function.
 class Monad render => RenderText render where
-  getGridCellSize :: render UnitGridSize
-
-  -- | Get the size of the current window in terms of @(cailing (windowWidth/cellSize), ceiling
-  -- (windowHeight/cellSize))@. This means the maximum number of grid cells visible, even a grid
-  -- cell has only a single pixel visible in the window, it is counted in the size.
-  getWindowTextGridSize :: render TextGridSize
-
-  -- | Render a single character to the window buffer according to the 'ScreenPrinterState',
-  -- including the row and column position, without modifying the 'ScreenPrinterState'. This
-  -- function may return 'Prelude.Nothing' if the character is non-printable ('Data.Char.isPrint'
-  -- evaluates the character as 'Prelude.False').
-  screenPrintCharNoAdvance  :: ScreenPrinterState -> Char -> render (Maybe TextBoundingBox)
-
-  -- | This function __must__ pass the given 'Prelude.String' to the 'takePrintable' function and
-  -- then render the characters according to the given 'ScreenPrinterState' without modifying the
-  -- 'ScreenPrinterState'. The bounding box of the printed 'Prelude.String' is returned. The
-  -- returned bounding box need not align with the text grid, but it is expected that the
-  -- 'ScreenPrinterState' can be updated with a new 'GridLocation' according to the returned
-  -- bounding box.
-  --
-  -- If the given string is empty, this function shall return 'Prelude.Nothing'.
-  screenPrintNoAdvance :: ScreenPrinterState -> String -> render (Maybe TextBoundingBox)
-
   -- | Preserve a single 'ScreenPrinterState' in the @render@ state. This function is called by the
   -- 'screenPrinter' function to retrieve the state from the @render@ evaluation context.
   saveScreenPrinterState :: ScreenPrinterState -> render ()
@@ -242,24 +216,8 @@ class Monad render => RenderText render where
   -- 'saveScreenPrinterState', or return 'screenPrinterState' if 'saveScreenPrinterState' was never
   -- called. This function is called by the 'screenPrinter' function to store the screen printer
   -- state with the given @render@ evaluation context.
+
   recallSavedScreenPrinterState :: render ScreenPrinterState
-
-  -- | Convert a 'Happlets.Types2D.Point2D' to a 'GridTextLocation'. This is useful for computing
-  -- the grid locaiton of where a mouse event occurs.
-  gridLocationOfPoint :: Point2D Double -> render TextGridLocation
-
-  -- | Convert a 'GridTextLocation' to a 'Happlets.Types2D.Point2D'. This is useful for determining
-  -- where in the drawable canvas a text point will be drawn if the cursor is at a particular
-  -- 'TextGridLocation'.
-  gridLocationToPoint :: TextGridLocation -> render (Point2D Double)
-
-  -- | Get the 'TextBoundingBox' size of a character without changing anything visible on the
-  -- display.
-  getCharBoundingBox :: ScreenPrinterState -> Char -> render (Maybe TextBoundingBox)
-
-  -- | Get the 'TextBoundingBox' size of a string without changing anything visible on the display.
-  getStringBoundingBox :: ScreenPrinterState -> String -> render (Maybe TextBoundingBox)
-
   -- | Set the 'FontStyle' used by the 'ScreenPrinter'. You can pass in any 'FontStyle' value, but
   -- not all 'FontStyle' values may be possible, for example the requested font size might not be
   -- available or a bold-italic monospaced font may not be available. The actual 'FontStyle' value
@@ -271,6 +229,47 @@ class Monad render => RenderText render where
   -- the 'FontStyle' that was nearest to the requested 'FontStyle' that was possible to set, and the
   -- same value returned by the 'setPrinterFontStyle' function.
   getRendererFontStyle :: render FontStyle
+
+  -- | Obtain 'UnitGridSize' value, which is a rectangle boundary that can contain hold a single
+  -- half-width character of the current system font.
+  getGridCellSize :: render UnitGridSize
+
+  -- | Get the size of the current window in terms of @(cailing (windowWidth/cellSize), ceiling
+  -- (windowHeight/cellSize))@. This means the maximum number of grid cells visible, even a grid
+  -- cell has only a single pixel visible in the window, it is counted in the size.
+  getWindowTextGridSize :: render TextGridSize
+
+  -- | Render a single character to the window buffer according to the 'ScreenPrinterState',
+  -- including the row and column position, without modifying the 'ScreenPrinterState'. This
+  -- function may return 'Prelude.Nothing' if the character is non-printable ('Data.Char.isPrint'
+  -- evaluates the character as 'Prelude.False').
+  screenPrintCharNoAdvance :: ScreenPrinterState -> Char -> render (Maybe TextBoundingBox)
+
+  -- | This function __must__ pass the given 'Prelude.String' to the 'takePrintable' function and
+  -- then render the characters according to the given 'ScreenPrinterState' without modifying the
+  -- 'ScreenPrinterState'. The bounding box of the printed 'Prelude.String' is returned. The
+  -- returned bounding box need not align with the text grid, but it is expected that the
+  -- 'ScreenPrinterState' can be updated with a new 'GridLocation' according to the returned
+  -- bounding box.
+  --
+  -- If the given string is empty, this function shall return 'Prelude.Nothing'.
+  screenPrintNoAdvance :: ScreenPrinterState -> String -> render (Maybe TextBoundingBox)
+
+  -- | Get the 'TextBoundingBox' size of a character without changing anything visible on the
+  -- display.
+  getCharBoundingBox :: ScreenPrinterState -> Char -> render (Maybe TextBoundingBox)
+
+  -- | Get the 'TextBoundingBox' size of a string without changing anything visible on the display.
+  getStringBoundingBox :: ScreenPrinterState -> String -> render (Maybe TextBoundingBox)
+
+  -- | Convert a 'Happlets.Types2D.Point2D' to a 'GridTextLocation'. This is useful for computing
+  -- the grid locaiton of where a mouse event occurs.
+  gridLocationOfPoint :: Point2D Double -> render TextGridLocation
+
+  -- | Convert a 'GridTextLocation' to a 'Happlets.Types2D.Point2D'. This is useful for determining
+  -- where in the drawable canvas a text point will be drawn if the cursor is at a particular
+  -- 'TextGridLocation'.
+  gridLocationToPoint :: TextGridLocation -> render (Point2D Double)
 
 ----------------------------------------------------------------------------------------------------
 
