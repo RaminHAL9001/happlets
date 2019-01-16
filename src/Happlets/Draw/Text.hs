@@ -55,6 +55,7 @@
 module Happlets.Draw.Text
   ( ScreenPrinter(..),
     screenPrinter, fontStyle, textCursor, renderOffset, asGridSize, displayChar, displayString,
+    gridLocationOfMouse,
     HasTextGridLocation(..),
     -- * Font Styles
     FontStyle(..), FontSize, IsUnderlined(..), IsStriken(..), defaultFontStyle,
@@ -109,7 +110,7 @@ data FontStyle
     , theFontUnderline :: !IsUnderlined
     , theFontStriken   :: !IsStriken
     }
-  deriving Eq
+  deriving (Eq, Show)
 
 defaultFontStyle :: FontStyle
 defaultFontStyle = FontStyle
@@ -216,8 +217,8 @@ class Monad render => RenderText render where
   -- 'saveScreenPrinterState', or return 'screenPrinterState' if 'saveScreenPrinterState' was never
   -- called. This function is called by the 'screenPrinter' function to store the screen printer
   -- state with the given @render@ evaluation context.
-
   recallSavedScreenPrinterState :: render ScreenPrinterState
+
   -- | Set the 'FontStyle' used by the 'ScreenPrinter'. You can pass in any 'FontStyle' value, but
   -- not all 'FontStyle' values may be possible, for example the requested font size might not be
   -- available or a bold-italic monospaced font may not be available. The actual 'FontStyle' value
@@ -270,6 +271,13 @@ class Monad render => RenderText render where
   -- where in the drawable canvas a text point will be drawn if the cursor is at a particular
   -- 'TextGridLocation'.
   gridLocationToPoint :: TextGridLocation -> render (Point2D Double)
+
+-- | A convenient function to call 'gridLocationOfPoint' using a 'PixCoord' value. This function
+-- simply coverts the 'PixCoord' to a @'Point2D' 'Double'@. This function is more useful than
+-- 'gridLocationOfPoint' when programming mouse event handlers which receive mouse event locations
+-- as 'PixCoords'.
+gridLocationOfMouse :: RenderText render => PixCoord -> render TextGridLocation
+gridLocationOfMouse = gridLocationOfPoint . fmap realToFrac
 
 ----------------------------------------------------------------------------------------------------
 
