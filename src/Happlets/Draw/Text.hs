@@ -54,8 +54,8 @@
 -- font.
 module Happlets.Draw.Text
   ( ScreenPrinter(..),
-    screenPrinter, fontStyle, textCursor, renderOffset, asGridSize, displayChar, displayString,
-    gridLocationOfMouse,
+    screenPrinter, fontStyle, textCursor, printerFontStyle, renderOffset,
+    asGridSize, displayChar, displayString, gridLocationOfMouse,
     HasTextGridLocation(..),
     -- * Font Styles
     FontStyle(..), FontSize, IsUnderlined(..), IsStriken(..), defaultFontStyle,
@@ -312,6 +312,7 @@ instance RenderText render => IsString (ScreenPrinter render ()) where
 data ScreenPrinterState
   = ScreenPrinterState
     { theTextCursor         :: !TextGridLocation
+    , thePrinterFontStyle   :: !FontStyle
     , theRenderOffset       :: !(V2 Double)
     , theCursorAdvanceRules :: CursorAdvanceRules
     }
@@ -384,6 +385,7 @@ cursorCharRuleLangDOS input (TextGridLocation _ col) = case input of
 screenPrinterState :: ScreenPrinterState
 screenPrinterState = ScreenPrinterState
   { theTextCursor         = textGridLocation
+  , thePrinterFontStyle   = defaultFontStyle
   , theRenderOffset       = V2 (0.0) (0.0)
   , theCursorAdvanceRules = defaultCursorAdvanceRules
   }
@@ -391,6 +393,10 @@ screenPrinterState = ScreenPrinterState
 -- | The current 'gridRow' and 'gridColumn' of the text cursor.
 textCursor :: Lens' ScreenPrinterState TextGridLocation
 textCursor = lens theTextCursor $ \ a b -> a{ theTextCursor = b }
+
+-- | The text style set for this printer.
+printerFontStyle :: Lens' ScreenPrinterState FontStyle
+printerFontStyle = lens thePrinterFontStyle $ \ a b -> a{ thePrinterFontStyle = b }
 
 -- | Determines how far from the left and top of the screen a character will be positioned when it
 -- is rendered at the cursor location @('gridRow' 'Control.Lens..=' 1)@ @('gridColumn'
