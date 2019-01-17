@@ -54,7 +54,7 @@
 -- font.
 module Happlets.Draw.Text
   ( ScreenPrinter(..),
-    screenPrinter, fontStyle, textCursor, printerFontStyle, renderOffset,
+    screenPrinter, withFontStyle, fontStyle, textCursor, renderOffset,
     asGridSize, displayChar, displayString, gridLocationOfMouse,
     HasTextGridLocation(..),
     -- * Font Styles
@@ -100,6 +100,24 @@ data IsStriken = NotStriken | Striken | DoubleStriken deriving (Eq, Ord, Show)
 
 ----------------------------------------------------------------------------------------------------
 
+-- | This is the data structure containing the style information for 'ScreenPrinter' functions. All
+-- of these fields are accessible with lenses, so you can perform stateful updates to the
+-- 'ScreenPrinter's rendering context using the @('Control.Lens..=')@ family of operators. For
+-- example:
+--
+-- @
+-- writeHello :: 'ScreenPrinter' ()
+-- writeHello = do
+--     'fontForeColor' .= 'white'
+--     'fontBackColor' .= 'black'
+--     'fontSize'      .= 48.0
+--     'fontItalic'    .= 'True'
+--     "Hello, world!"               -- Don't forget the "OverloadedStrings" compiler flag.
+-- @
+--
+-- You can also use the 'withFontStyle' function to define a kind of markup, in which a sub
+-- 'ScreenPrinter' within a 'ScreenPrinter' that uses modified 'FontStyle' parameters for the
+-- evaluation of the sub 'ScreenPrinter' is evaluated.
 data FontStyle
   = FontStyle
     { theFontForeColor :: !Color
@@ -112,6 +130,7 @@ data FontStyle
     }
   deriving (Eq, Show)
 
+-- | This is the default font style set by all 'Happlets.Initialize.Provider's.
 defaultFontStyle :: FontStyle
 defaultFontStyle = FontStyle
   { theFontForeColor = black
@@ -123,24 +142,33 @@ defaultFontStyle = FontStyle
   , theFontStriken   = NotStriken
   }
 
+-- | The foreground 'Color' of the font.
 fontForeColor     :: Lens' FontStyle Color
 fontForeColor = lens theFontForeColor $ \ a b -> a{ theFontForeColor = b }
 
+-- | The background 'Color' of the font.
 fontBackColor     :: Lens' FontStyle Color
 fontBackColor = lens theFontBackColor $ \ a b -> a{ theFontBackColor = b }
 
+-- | The size of the font.
 fontSize      :: Lens' FontStyle FontSize
 fontSize = lens theFontSize $ \ a b -> a{ theFontSize = b }
 
+-- | Whether or not the font should be bold -- not all fonts provide bold faces for their default
+-- monospace typeface.
 fontBold      :: Lens' FontStyle Bool
 fontBold = lens theFontBold $ \ a b -> a{ theFontBold = b }
 
+-- | Whether or not the font should be italic -- not all fonts provide italic faces for their
+-- default monospace typeface.
 fontItalic    :: Lens' FontStyle Bool
 fontItalic = lens theFontItalic $ \ a b -> a{ theFontItalic = b }
 
+-- | Whether or not the text should be underlined.
 fontUnderline :: Lens' FontStyle IsUnderlined
 fontUnderline = lens theFontUnderline $ \ a b -> a{ theFontUnderline = b }
 
+-- | Whether or not the text should be striken-through with a line down the middle.
 fontStriken   :: Lens' FontStyle IsStriken
 fontStriken = lens theFontStriken $ \ a b -> a{ theFontStriken = b }
 
@@ -171,6 +199,8 @@ type UnitGridSize    = Size2D Double
 -- bounding box of the text.
 type TextBoundingBox = Rect2D Double
 
+-- | A class of lenses, allowing for multiple data types to provide 'gridRow' and 'gridColumn'
+-- information.
 class HasTextGridLocation a where
   gridRow    :: Lens' a TextGridRow
   gridColumn :: Lens' a TextGridColumn
@@ -181,12 +211,20 @@ instance HasTextGridLocation TextGridLocation where
   gridColumn = lens (\ (TextGridLocation   _ b) -> b)
                     (\ (TextGridLocation a _) b -> TextGridLocation a b)
 
+-- | The initial 'TextGridLocation' which is set to @(0, 0)@. This value is intended to be used with
+-- lenses.
 textGridLocation :: TextGridLocation
 textGridLocation = TextGridLocation 0 0
 
+-- | A lens that can obtain the integer within the 'TextGridRow', although this is almost never
+-- necessary since 'TextGridRow' instantiates the 'Num' class and can be initialized with an integer
+-- literal.
 rowInt :: Iso' TextGridRow Int
 rowInt = iso (\ (TextGridRow i) -> i) TextGridRow
 
+-- | A lens that can obtain the integer within the 'TextGridColumn', although this is almost never
+-- necessary since 'TextGridColumn' instantiates the 'Num' class and can be initialized with an
+-- integer literal.
 columnInt :: Iso' TextGridColumn Int
 columnInt = iso (\ (TextGridColumn i) -> i) TextGridColumn
 
@@ -312,7 +350,7 @@ instance RenderText render => IsString (ScreenPrinter render ()) where
 data ScreenPrinterState
   = ScreenPrinterState
     { theTextCursor         :: !TextGridLocation
-    , thePrinterFontStyle   :: !FontStyle
+    , theFontStyle   :: !FontStyle
     , theRenderOffset       :: !(V2 Double)
     , theCursorAdvanceRules :: CursorAdvanceRules
     }
@@ -385,7 +423,7 @@ cursorCharRuleLangDOS input (TextGridLocation _ col) = case input of
 screenPrinterState :: ScreenPrinterState
 screenPrinterState = ScreenPrinterState
   { theTextCursor         = textGridLocation
-  , thePrinterFontStyle   = defaultFontStyle
+  , theFontStyle   = defaultFontStyle
   , theRenderOffset       = V2 (0.0) (0.0)
   , theCursorAdvanceRules = defaultCursorAdvanceRules
   }
@@ -395,8 +433,8 @@ textCursor :: Lens' ScreenPrinterState TextGridLocation
 textCursor = lens theTextCursor $ \ a b -> a{ theTextCursor = b }
 
 -- | The text style set for this printer.
-printerFontStyle :: Lens' ScreenPrinterState FontStyle
-printerFontStyle = lens thePrinterFontStyle $ \ a b -> a{ thePrinterFontStyle = b }
+fontStyle :: Lens' ScreenPrinterState FontStyle
+fontStyle = lens theFontStyle $ \ a b -> a{ theFontStyle = b }
 
 -- | Determines how far from the left and top of the screen a character will be positioned when it
 -- is rendered at the cursor location @('gridRow' 'Control.Lens..=' 1)@ @('gridColumn'
@@ -473,23 +511,23 @@ displayString :: RenderText render => String -> ScreenPrinter render (Maybe Text
 displayString = displayInput CursorAdvanceString screenPrintNoAdvance
 
 -- | This function takes a continuation which temporarily changes the font style used by the
--- printer. The function used to modify the 'printerFontStyle' is a pure 'Control.Monad.State.State'
--- function, meaning you can make use of the 'Control.Lens.Lens'es like @('Control.Lens..=')@ to set
--- the font style. For example:
+-- printer, which acts as a sort-of markup function. The function used to modify the 'fontStyle' is
+-- a pure 'Control.Monad.State.State' function, meaning you can make use of the
+-- 'Control.Lens.Lens'es like @('Control.Lens..=')@ to set the font style. For example:
 --
 -- @
 -- "This text is printed in the default font style.\\n"
--- 'fontStyle' (do 'fontForeColor' 'Control.Lens..=' 'Happlets.Draw.Color.blue'; 'fontBold' 'Control.Lens..=' True) $ do
+-- 'withFontStyle' (do 'fontForeColor' 'Control.Lens..=' 'Happlets.Draw.Color.blue'; 'fontBold' 'Control.Lens..=' True) $ do
 --     "This text is bold and blue.\\n"
 -- "This text is printed in the default font style.\\n"
 -- @
 --
 -- This function is usually makes use of 'setPrinterFontStyle' and 'getPrinterFontStyle', but it
 -- tends to be much more convenient to use this function instead.
-fontStyle
+withFontStyle
   :: RenderText render
   => State FontStyle () -> ScreenPrinter render a -> ScreenPrinter render a
-fontStyle changeFont print = do
+withFontStyle changeFont print = do
   oldStyle <- lift getRendererFontStyle
   lift $ setRendererFontStyle $ execState changeFont oldStyle
   print <* lift (setRendererFontStyle oldStyle)
