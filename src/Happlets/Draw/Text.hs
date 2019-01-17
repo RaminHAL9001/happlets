@@ -54,10 +54,11 @@
 -- font.
 module Happlets.Draw.Text
   ( ScreenPrinter(..),
-    screenPrinter, withFontStyle, fontStyle, textCursor, renderOffset,
+    screenPrinter, fontStyle, textCursor, renderOffset,
     asGridSize, displayChar, displayString, gridLocationOfMouse,
     HasTextGridLocation(..),
     -- * Font Styles
+    withFontStyle, updateFontStyle,
     FontStyle(..), FontSize, IsUnderlined(..), IsStriken(..), defaultFontStyle,
     fontForeColor, fontBackColor, fontSize, fontBold, fontItalic, fontUnderline, fontStriken,
     -- * Text Grid Location
@@ -501,6 +502,13 @@ displayInput constr display input = do
       grid <- asGridSize bnds
       textCursor %= theCursorAdvanceRules st (constr input) grid
       return $ Just bnds
+
+-- | After setting the 'fontStyle' with lens operators like @('Control.Lens..=')@, the state is
+-- modified but the changed state has not yet been applied. Use this function to apply the updated
+-- font style state. Note that the 'withFontStyle' function does this automatically, so it is
+-- usually better to use that unless performance is a concern.
+updateFontStyle :: RenderText render => ScreenPrinter render FontStyle
+updateFontStyle = use fontStyle >>= setRendererFontStyle
 
 -- | This function renders a single character, then advances the 'gridColumn' or 'gridRow'.
 displayChar :: RenderText render => Char -> ScreenPrinter render (Maybe TextBoundingBox)
