@@ -283,7 +283,7 @@ class Monad render => RenderText render where
   -- including the row and column position, without modifying the 'ScreenPrinterState'. This
   -- function may return 'Prelude.Nothing' if the character is non-printable ('Data.Char.isPrint'
   -- evaluates the character as 'Prelude.False').
-  screenPrintCharNoAdvance :: ScreenPrinterState -> Char -> render (Maybe TextBoundingBox)
+  screenPrintCharNoAdvance :: Char -> render (Maybe TextBoundingBox)
 
   -- | This function __must__ pass the given 'Prelude.String' to the 'takePrintable' function and
   -- then render the characters according to the given 'ScreenPrinterState' without modifying the
@@ -293,14 +293,14 @@ class Monad render => RenderText render where
   -- bounding box.
   --
   -- If the given string is empty, this function shall return 'Prelude.Nothing'.
-  screenPrintNoAdvance :: ScreenPrinterState -> String -> render (Maybe TextBoundingBox)
+  screenPrintNoAdvance :: String -> render (Maybe TextBoundingBox)
 
   -- | Get the 'TextBoundingBox' size of a character without changing anything visible on the
   -- display.
-  getCharBoundingBox :: ScreenPrinterState -> Char -> render (Maybe TextBoundingBox)
+  getCharBoundingBox :: Char -> render (Maybe TextBoundingBox)
 
   -- | Get the 'TextBoundingBox' size of a string without changing anything visible on the display.
-  getStringBoundingBox :: ScreenPrinterState -> String -> render (Maybe TextBoundingBox)
+  getStringBoundingBox :: String -> render (Maybe TextBoundingBox)
 
   -- | Convert a 'Happlets.Types2D.Point2D' to a 'GridTextLocation'. This is useful for computing
   -- the grid locaiton of where a mouse event occurs.
@@ -376,14 +376,14 @@ instance HasTextGridLocation ScreenPrinterState where
 instance RenderText render => RenderText (ScreenPrinter render) where
   getGridCellSize = lift getGridCellSize
   getWindowTextGridSize         = lift getWindowTextGridSize
-  screenPrintCharNoAdvance    a = lift . screenPrintCharNoAdvance a
-  screenPrintNoAdvance        a = lift . screenPrintNoAdvance a
+  screenPrintCharNoAdvance      = lift . screenPrintCharNoAdvance
+  screenPrintNoAdvance          = lift . screenPrintNoAdvance
   saveScreenPrinterState        = lift . saveScreenPrinterState
   recallSavedScreenPrinterState = lift recallSavedScreenPrinterState
   gridLocationOfPoint           = lift . gridLocationOfPoint
   gridLocationToPoint           = lift . gridLocationToPoint
-  getCharBoundingBox          a = lift . getCharBoundingBox a
-  getStringBoundingBox        a = lift . getStringBoundingBox a
+  getCharBoundingBox            = lift . getCharBoundingBox
+  getStringBoundingBox          = lift . getStringBoundingBox
   setRendererFontStyle          = lift . setRendererFontStyle
   getRendererFontStyle          = lift getRendererFontStyle
 
@@ -492,16 +492,15 @@ runScreenPrinter = runStateT . unwrapScreenPrinter
 displayInput
   :: RenderText render
   => (input -> CursorAdvanceInput)
-  -> (ScreenPrinterState -> input -> ScreenPrinter render (Maybe TextBoundingBox))
+  -> (input -> ScreenPrinter render (Maybe TextBoundingBox))
   -> input -> ScreenPrinter render (Maybe TextBoundingBox)
-displayInput constr display input = do
-  st   <- get
-  display st input >>= \ case
-    Nothing   -> return Nothing
-    Just bnds -> do
-      grid <- asGridSize bnds
-      textCursor %= theCursorAdvanceRules st (constr input) grid
-      return $ Just bnds
+displayInput constr display input = display input >>= \ case
+  Nothing   -> return Nothing
+  Just bnds -> do
+    grid <- asGridSize bnds
+    st   <- lift recallSavedScreenPrinterState
+    textCursor %= theCursorAdvanceRules st (constr input) grid
+    return $ Just bnds
 
 -- | After setting the 'fontStyle' with lens operators like @('Control.Lens..=')@, the state is
 -- modified but the changed state has not yet been applied. Use this function to apply the updated
