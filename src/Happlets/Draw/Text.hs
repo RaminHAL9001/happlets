@@ -250,13 +250,13 @@ gridBoundingBox (V2 uW uH) = rect2DSize >>> \ (V2 tW tH) ->
 class Monad render => RenderText render where
   -- | Preserve a single 'ScreenPrinterState' in the @render@ state. This function is called by the
   -- 'screenPrinter' function to retrieve the state from the @render@ evaluation context.
-  saveScreenPrinterState :: ScreenPrinterState -> render ()
+  setScreenPrinterState :: ScreenPrinterState -> render ()
 
   -- | Produce a copy of the last 'ScreenPrinterState' that was called with
-  -- 'saveScreenPrinterState', or return 'screenPrinterState' if 'saveScreenPrinterState' was never
+  -- 'setScreenPrinterState', or return 'screenPrinterState' if 'setScreenPrinterState' was never
   -- called. This function is called by the 'screenPrinter' function to store the screen printer
   -- state with the given @render@ evaluation context.
-  recallSavedScreenPrinterState :: render ScreenPrinterState
+  getScreenPrinterState :: render ScreenPrinterState
 
   -- | Set the 'FontStyle' used by the 'ScreenPrinter'. You can pass in any 'FontStyle' value, but
   -- not all 'FontStyle' values may be possible, for example the requested font size might not be
@@ -351,7 +351,7 @@ instance RenderText render => IsString (ScreenPrinter render ()) where
 data ScreenPrinterState
   = ScreenPrinterState
     { theTextCursor         :: !TextGridLocation
-    , theFontStyle   :: !FontStyle
+    , theFontStyle          :: !FontStyle
     , theRenderOffset       :: !(V2 Double)
     , theCursorAdvanceRules :: CursorAdvanceRules
     }
@@ -375,17 +375,17 @@ instance HasTextGridLocation ScreenPrinterState where
 
 instance RenderText render => RenderText (ScreenPrinter render) where
   getGridCellSize = lift getGridCellSize
-  getWindowTextGridSize         = lift getWindowTextGridSize
-  screenPrintCharNoAdvance      = lift . screenPrintCharNoAdvance
-  screenPrintNoAdvance          = lift . screenPrintNoAdvance
-  saveScreenPrinterState        = lift . saveScreenPrinterState
-  recallSavedScreenPrinterState = lift recallSavedScreenPrinterState
-  gridLocationOfPoint           = lift . gridLocationOfPoint
-  gridLocationToPoint           = lift . gridLocationToPoint
-  getCharBoundingBox            = lift . getCharBoundingBox
-  getStringBoundingBox          = lift . getStringBoundingBox
-  setRendererFontStyle          = lift . setRendererFontStyle
-  getRendererFontStyle          = lift getRendererFontStyle
+  getWindowTextGridSize    = lift getWindowTextGridSize
+  screenPrintCharNoAdvance = lift . screenPrintCharNoAdvance
+  screenPrintNoAdvance     = lift . screenPrintNoAdvance
+  setScreenPrinterState    = lift . setScreenPrinterState
+  getScreenPrinterState    = lift getScreenPrinterState
+  gridLocationOfPoint      = lift . gridLocationOfPoint
+  gridLocationToPoint      = lift . gridLocationToPoint
+  getCharBoundingBox       = lift . getCharBoundingBox
+  getStringBoundingBox     = lift . getStringBoundingBox
+  setRendererFontStyle     = lift . setRendererFontStyle
+  getRendererFontStyle     = lift getRendererFontStyle
 
 -- | The 'defaultCursorAdvanceRules' are set to 'cursorAdvanceRuleLangC'.
 defaultCursorAdvanceRules :: CursorAdvanceRules
@@ -424,7 +424,7 @@ cursorCharRuleLangDOS input (TextGridLocation _ col) = case input of
 screenPrinterState :: ScreenPrinterState
 screenPrinterState = ScreenPrinterState
   { theTextCursor         = textGridLocation
-  , theFontStyle   = defaultFontStyle
+  , theFontStyle          = defaultFontStyle
   , theRenderOffset       = V2 (0.0) (0.0)
   , theCursorAdvanceRules = defaultCursorAdvanceRules
   }
@@ -479,12 +479,13 @@ asGridSize box = flip gridBoundingBox box <$> getGridCellSize
 -- to to place text on screen.
 screenPrinter :: RenderText render => ScreenPrinter render a -> render a
 screenPrinter f = do
-  (a, st) <- recallSavedScreenPrinterState >>= runScreenPrinter f
-  saveScreenPrinterState st
+  (a, st) <- getScreenPrinterState >>= runScreenPrinter f
+  setScreenPrinterState st
   return a
 
 -- | Wrapper around the 'Control.Monad.State.runStateT' function for evaluating a 'ScreenPrinter'
--- function.
+-- function. Usually it is better to use 'screenPrinter', which evaluates this function and
+-- automatically retrieving the 'ScreenPrinterState' from the 'getScreenPrinterState' function.
 runScreenPrinter :: ScreenPrinter render a -> ScreenPrinterState -> render (a, ScreenPrinterState)
 runScreenPrinter = runStateT . unwrapScreenPrinter
 
@@ -494,13 +495,15 @@ displayInput
   => (input -> CursorAdvanceInput)
   -> (input -> ScreenPrinter render (Maybe TextBoundingBox))
   -> input -> ScreenPrinter render (Maybe TextBoundingBox)
-displayInput constr display input = display input >>= \ case
-  Nothing   -> return Nothing
-  Just bnds -> do
-    grid <- asGridSize bnds
-    st   <- lift recallSavedScreenPrinterState
-    textCursor %= theCursorAdvanceRules st (constr input) grid
-    return $ Just bnds
+displayInput constr display input = do
+  st <- get
+  setScreenPrinterState st
+  display input >>= \ case
+    Nothing   -> return Nothing
+    Just bnds -> do
+      grid <- asGridSize bnds
+      textCursor %= theCursorAdvanceRules st (constr input) grid
+      return $ Just bnds
 
 -- | After setting the 'fontStyle' with lens operators like @('Control.Lens..=')@, the state is
 -- modified but the changed state has not yet been applied. Use this function to apply the updated
