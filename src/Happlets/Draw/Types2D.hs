@@ -8,7 +8,8 @@ module Happlets.Draw.Types2D
   ( RealApprox(..), realApprox,
     Point2D, Size2D, point2D, size2D, pointX, pointY, pointXY,
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
-    Rect2D(..), rect2D, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
+    Rect2D(..), rect2D, rect2DSize, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
+    rect2DCenter, rect2DCentre,
     canonicalRect2D, rect2DMinBoundOf, rect2DIntersect, rect2DDiagonal,
     MaybeSingleton2D(..), HasBoundingBox(..),
     LineWidth,
@@ -105,6 +106,19 @@ rect2DHead = lens (\ (Rect2D a _) -> a) $ \ (Rect2D a _) b -> Rect2D a b
 -- | The point at which drawing of a bounding rectangle ends.
 rect2DTail :: Lens' (Rect2D n) (Point2D n)
 rect2DTail = lens (\ (Rect2D _ b) -> b) $ \ (Rect2D _ b) a -> Rect2D a b
+
+-- | The width and height of a 'Rect2D'. Note that this is not a lens, since there are multiple
+-- possible ways to "set" the size of a 'Rect2D'.
+rect2DSize :: Num n => Rect2D n -> Size2D n
+rect2DSize (Rect2D a b) = b - a
+
+-- | Computes the center point of the given 'Rect2D'.
+rect2DCenter :: Fractional n => Rect2D n -> Point2D n
+rect2DCenter r = ((/ 2) <$> rect2DSize r) + (r ^. rect2DHead)
+
+-- | British spelling of 'rect2DCenter'.
+rect2DCentre :: Fractional n => Rect2D n -> Point2D n
+rect2DCentre = rect2DCenter
 
 -- | Expresses a 'Rect2D' as a tuple of 'Point2D' values.
 rect2DPoints :: Iso' (Rect2D n) (Point2D n, Point2D n)
