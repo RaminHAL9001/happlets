@@ -115,10 +115,10 @@ type Moment    = AudioRealApprox
 -- | Units of this value are used to count the number of samples, e.g. the number of samples that
 -- exist in some unit of time 'Duration', or the number of samples that can fit into a buffer in
 -- memory.
-type SampleCount = Int
+type SampleCount n = n
 
 -- | Units of this value are used as indicies into buffers in memory containing 'Sample' values.
-type SampleIndex = Int
+type SampleIndex n = n
 
 -- | The universal sample rate used by all Happlets. Whether or not the hardware PCM device runs at
 -- this rate is not generally of any concern Happlet programmers.
@@ -162,28 +162,28 @@ toSample = (/ (0.5 + realToFrac (maxBound :: PulseCode))) . realToFrac
 -- "modulus" value (the remainder of an arithmetic division) indicating the 'Moment' in time where
 -- the given 'Moment' lies relative to the returned 'SampleIndex' is returned paird with the
 -- 'SampleIndex' value. This value can be used to antialias.
-modTimeIndex :: Moment -> (SampleIndex, Moment)
-modTimeIndex t = let { d = t * audioSampleRate; r = floor d :: Int; } in (r, d - realToFrac r)
+modTimeIndex :: forall n . Integral n => Moment -> (SampleIndex n, Moment)
+modTimeIndex t = let { d = t * audioSampleRate; r = floor d :: n; } in (r, d - realToFrac r)
 
 -- | Like 'modTimeIndex' but discards the modulus 'Moment' value.
-timeIndex :: Moment -> SampleIndex
+timeIndex :: Integral n => Moment -> SampleIndex n
 timeIndex = fst . modTimeIndex
 
 -- | When converting some index of a 'Data.Vector.Vector' of 'Sample's in a quantized time domain
 -- function, this function converts that index value into the point in time at which that sample
 -- exists. This function is actually identical to 'sampleCountDuration'.
-indexToTime :: SampleIndex -> Moment
+indexToTime :: Integral n => SampleIndex n -> Moment
 indexToTime = (/ audioSampleRate) . realToFrac
 
 -- | Convert a 'SampleCount' (the number of samples in a quantized time domain function) to a time
 -- 'Duration' measured in seconds. This function is actually identical to 'indexToTime'.
-sampleCountDuration :: SampleCount -> Duration
+sampleCountDuration :: Integral n => SampleCount n -> Duration
 sampleCountDuration = indexToTime
 
 -- | Convert a 'Duration' measured in seconds to a 'SampleCount' (the number of samples in a
 -- quantized time domain function), and round up so the value returned represents the minimum number
 -- of samples required to span the given time 'Duration'.
-durationSampleCount :: Duration -> SampleCount
+durationSampleCount :: Integral n => Duration -> SampleCount n
 durationSampleCount = ceiling . (* audioSampleRate)
 
 ----------------------------------------------------------------------------------------------------
@@ -222,7 +222,7 @@ data PCMRecorder pcm st
 -- moment in time. We assume the PCM device operates at 44,000 samples per second, therefore a
 -- single frame describes the state of the PCM as it exists for 1/44,100th of a second. The
 -- information in the frame depends on how many output channels there are, and the bit depth
-type FrameCounter = Int
+type FrameCounter = Int64
 
 mapPair :: (a -> fa) -> (a, a) -> (fa, fa)
 mapPair f = f *** f
