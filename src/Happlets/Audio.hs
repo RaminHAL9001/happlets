@@ -22,11 +22,13 @@
 -- to you over the internet), and some audio providers may not want to provide any audio recording
 -- at all.
 module Happlets.Audio
-  ( -- * Audio Output
+  ( -- * The PCM Function Type
+    PCMControl, newPCMControl, signalPCMControl, checkPCMControl,
+    PCM, runPCM,
+    -- * Audio Output
     AudioOutput(..), PCMGenerator(..),
     -- ** PCMGenerator Constructors
     mapTimeToStereo, mapTimeToMono, foldMapTimeToStereo, foldMapTimeToMono,
-    stateMapStereo, stateMapMono,
     -- * Audio Input
     AudioInput(..), PCMRecorder(..),
     -- * Common data types
@@ -40,11 +42,48 @@ module Happlets.Audio
   ) where
 
 import           Control.Arrow
+import           Control.Concurrent
 import           Control.Monad.IO.Class
 import           Control.Monad.State
 
 import qualified Data.Text as Strict
 import           Data.Int
+
+----------------------------------------------------------------------------------------------------
+
+-- | Functions of type indicate a callback that is used to produce samples for a PCM 'AudioOutput'
+-- device, or to consume samples for a PCM 'AudioInput' device. Callback functions of this type are
+-- called repeatedly and rapidly in real time. To prevent other parts of the Happlets library from
+-- interfearing too much with the operation of a PCM callback, communicating with a PCM is
+-- restricted to sending signals via a mutex called the 'PCMControl'. A 'PCM' callback function will
+-- poll a 'PCMControl' and decide how to behave on every iteration.
+newtype PCM st a = PCM (StateT st IO a)
+  deriving (Functor, Applicative, Monad)
+
+instance MonadState st (PCM st) where { state = PCM . state; }
+
+-- | This data type is essentially a mutex that can only be written in from within the 'GUI'
+-- function, and can only be read out from within a 'PCM' function.
+newtype PCMControl signal = PCMControl (MVar ([signal] -> [signal]))
+
+-- | This function should only be used by Happlet 'Happlets.Initialize.Provider's.
+runPCM :: PCM st a -> st -> IO (a, st)
+runPCM (PCM f) = runStateT f
+
+-- | Create a new 'PCMControl'. Every call to 'checkPCMSignal' will return 'Nothing' until
+-- 'signalPCM' is called with a value, at which point, the value will be returned by
+-- 'checkPCMSignal' once and removed on every call after it.
+newPCMControl :: IO (PCMControl signal)
+newPCMControl = PCMControl <$> newMVar id
+
+-- | Poll a 'PCMControl' for whether @signal@ value has been stored into the 'PCMControl' via the
+-- 'signalPCM' function.
+checkPCMControl :: PCMControl signal -> PCM st [signal]
+checkPCMControl (PCMControl mvar) = PCM $ liftIO $ modifyMVar mvar $ return . (,) id . ($ [])
+
+-- | Send a signal to a 'PCM' function via a 'PCMControl'.
+signalPCMControl :: MonadIO m => PCMControl signal -> signal -> m ()
+signalPCMControl (PCMControl mvar) signal = liftIO $ modifyMVar_ mvar $ return . (. (signal :))
 
 ----------------------------------------------------------------------------------------------------
 
@@ -199,9 +238,9 @@ durationSampleCount = ceiling . (* audioSampleRate)
 -- Along with the state value @st@, a 'FrameCounter' is also passed to the callback. The frame
 -- counter can reliably be used to compute the amount of time that has traversed since the PCM
 -- thread was first launched.
-data PCMGenerator pcm st
-  = PCMGenerateMono   (st -> FrameCounter -> pcm (PulseCode, st))
-  | PCMGenerateStereo (st -> FrameCounter -> pcm ((LeftPulseCode, RightPulseCode), st))
+data PCMGenerator st
+  = PCMGenerateMono   (FrameCounter -> PCM st PulseCode)
+  | PCMGenerateStereo (FrameCounter -> PCM st (LeftPulseCode, RightPulseCode))
 
 -- | A 'PCMRecorder' is a callback function for consuming samples recieved from a PCM
 -- device. Functions of this type are passed to the 'setPCMRecorder' function. There are two modes
@@ -214,9 +253,9 @@ data PCMGenerator pcm st
 -- Along with the state value @st@, a 'FrameCounter' is also passed to the callback. The frame
 -- counter can reliably be used to compute the amount of time that has traversed since the PCM
 -- thread was first launched.
-data PCMRecorder pcm st
-  = PCMRecordMono     (st -> FrameCounter -> PulseCode -> pcm st)
-  | PCMRecordStereo   (st -> FrameCounter -> LeftPulseCode -> RightPulseCode -> pcm st)
+data PCMRecorder st
+  = PCMRecordMono     (FrameCounter -> PulseCode -> PCM st ())
+  | PCMRecordStereo   (FrameCounter -> LeftPulseCode -> RightPulseCode -> PCM st ())
 
 -- | A frame is an information packet that describes the state of the hardware PCM device at single
 -- moment in time. We assume the PCM device operates at 44,000 samples per second, therefore a
@@ -228,62 +267,38 @@ mapPair :: (a -> fa) -> (a, a) -> (fa, fa)
 mapPair f = f *** f
 
 mapTimePure
-  :: Monad pcm
-  => ((() -> FrameCounter -> pcm (b, ())) -> PCMGenerator pcm ()) -> (a -> b)
-  -> (Moment -> a) -> PCMGenerator pcm ()
-mapTimePure constr toPC f = constr $ \ () -> return . flip (,) () . toPC . f . indexToTime
+  :: ((FrameCounter -> PCM () b) -> PCMGenerator ()) -> (a -> b)
+  -> (Moment -> a) -> PCMGenerator ()
+mapTimePure constr toPC f = constr $ return . toPC . f . indexToTime
 
 foldMapTimePure
-  :: Monad pcm
-  => ((st -> FrameCounter -> pcm (b, st)) -> PCMGenerator pcm st) -> (a -> b)
-  -> (st -> Moment -> (a, st)) -> PCMGenerator pcm st
-foldMapTimePure constr toPC f = constr $ \ st -> return . first toPC . f st . indexToTime
-
-stateMap
-  :: Monad pcm
-  => ((st -> FrameCounter -> pcm (b, st)) -> PCMGenerator pcm st) -> (a -> b)
-  -> (Moment -> StateT st pcm a) -> PCMGenerator pcm st
-stateMap constr toPC f = constr $ flip $ runStateT . liftM toPC . f . indexToTime
+  :: ((FrameCounter -> PCM st b) -> PCMGenerator st) -> (a -> b)
+  -> (st -> Moment -> (a, st)) -> PCMGenerator st
+foldMapTimePure constr toPC f = constr $ state . fmap (first toPC) . flip f . indexToTime
 
 -- | Construct a 'PCMGenerator' from a pure function that generates stereo PCM 'Sample's using only
 -- each 'Moment' in time as input.
-mapTimeToStereo :: Monad pcm => (Moment -> (LeftSample, RightSample)) -> PCMGenerator pcm ()
+mapTimeToStereo :: (Moment -> (LeftSample, RightSample)) -> PCMGenerator ()
 mapTimeToStereo = mapTimePure PCMGenerateStereo (mapPair toPulseCode)
 
 -- | Construct a 'PCMGenerator' from a pure function that generates mono PCM 'Sample's using only
 -- each 'Moment' in time as input.
-mapTimeToMono :: Monad pcm => (Moment -> Sample) -> PCMGenerator pcm ()
+mapTimeToMono :: (Moment -> Sample) -> PCMGenerator ()
 mapTimeToMono = mapTimePure PCMGenerateMono toPulseCode
 
 -- | Like 'mapTimeToStereo' but also allows one to fold a value as samples are generated.
-foldMapTimeToStereo
-  :: Monad pcm
-  => (st -> Moment -> ((LeftSample, RightSample), st)) -> PCMGenerator pcm st
+foldMapTimeToStereo :: (st -> Moment -> ((LeftSample, RightSample), st)) -> PCMGenerator st
 foldMapTimeToStereo = foldMapTimePure PCMGenerateStereo (mapPair toPulseCode)
 
 -- | Like 'mapTimeToStereo' but also allows one to fold a value as samples are generated.
-foldMapTimeToMono :: Monad pcm => (st -> Moment -> (Sample, st)) -> PCMGenerator pcm st
+foldMapTimeToMono :: (st -> Moment -> (Sample, st)) -> PCMGenerator st
 foldMapTimeToMono = foldMapTimePure PCMGenerateMono toPulseCode
-
--- | Construct a 'PCMGenerator' using a 'Control.Monad.State.StateT' function type, where you can
--- update the state value using 'Control.Monad.State.put' or 'Control.Monad.State.modify', or the
--- state lenses like @('Control.Lens..=')@ or @('Control.Lens.%=').
-stateMapStereo
-  :: Monad pcm
-  => (Moment -> StateT st pcm (LeftSample, RightSample)) -> PCMGenerator pcm st
-stateMapStereo = stateMap PCMGenerateStereo (mapPair toPulseCode)
-
--- | Construct a 'PCMGenerator' using a 'Control.Monad.State.StateT' function type, where you can
--- update the state value using 'Control.Monad.State.put' or 'Control.Monad.State.modify', or the
--- state lenses like @('Control.Lens..=')@ or @('Control.Lens.%=').
-stateMapMono :: Monad pcm => (Moment -> StateT st pcm Sample) -> PCMGenerator pcm st
-stateMapMono = stateMap PCMGenerateMono toPulseCode
 
 ----------------------------------------------------------------------------------------------------
 
 -- | The typeclass of monadic functions which include stateful information for communicating with
 -- an audio output PCM device.
-class (Functor pcm, Applicative pcm, Monad pcm, MonadIO pcm) => AudioOutput pcm where
+class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioOutput gui where
   -- | The PCM signal generator is a callback function which produces pulse code samples to be sent
   -- to a pulse code modulator (PCM). This function can be called at any time, the @pcm@ function is
   -- expected to keep a reference to the given callback. When 'activatePCMOutput' is executed, a
@@ -300,7 +315,7 @@ class (Functor pcm, Applicative pcm, Monad pcm, MonadIO pcm) => AudioOutput pcm 
   --
   -- The 'PCMGenerator' takes an arbitrary state value @st@, and this state value may be updated
   -- over the course of sample generation.
-  setPCMGenerator     :: PCMGenerator pcm st -> st -> pcm ()
+  setPCMGenerator     :: PCMGenerator st -> st -> gui ()
 
   -- | This function must request of the operating system to begin sending information to the
   -- hardware PCM device, and launch a thread that loops over calling the 'PCMGenerator' callback
@@ -312,16 +327,16 @@ class (Functor pcm, Applicative pcm, Monad pcm, MonadIO pcm) => AudioOutput pcm 
   -- 'PCMGenerator' and the time the hardware PCM device receives these changes, however the audio
   -- 'Happlets.Initialize.Provider' is not required to honor your request, or report to you on how
   -- big the buffer actually is.
-  activatePCMOutput   :: BufferSizeRequest -> pcm PCMActivation
+  activatePCMOutput   :: BufferSizeRequest -> gui PCMActivation
 
   -- | This function checks if the PCM output device is active, and if so, it kills the
   -- 'PCMGenerator' thread and informs the operating system that the Happlet shall no longer use the
   -- harware PCM device.
-  deactivatePCMOutput :: pcm PCMActivation
+  deactivatePCMOutput :: gui PCMActivation
 
   -- | Enquire as to whether the the PCM output device is active or not, or whether an error has
   -- occurred.
-  queryPCMOutputState :: pcm PCMActivation
+  queryPCMOutputState :: gui PCMActivation
 
 ----------------------------------------------------------------------------------------------------
 
@@ -333,7 +348,7 @@ class (Functor pcm, Applicative pcm, Monad pcm, MonadIO pcm) => AudioOutput pcm 
 -- end user's computer. Not all Happlet 'Happlets.Initialize.Provider's will instantiate this
 -- typeclass, and if so, there will hopefully be security measures in place to allow use of
 -- 'AudioInput' only when end users provide informed consent to have the input PCM activated.
-class (Functor pcm, Applicative pcm, Monad pcm, MonadIO pcm) => AudioInput pcm where
+class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioInput gui where
   -- | The PCM signal recorder is a callback function which consumes pulse code samples produced by
   -- a pulse code modulator (PCM).
   --
@@ -346,7 +361,7 @@ class (Functor pcm, Applicative pcm, Monad pcm, MonadIO pcm) => AudioInput pcm w
   --
   -- The 'PCMRecorder' takes an arbitrary state value @st@, and this state value may be updated over
   -- the course of sample recording.
-  setPCMRecorder :: PCMRecorder pcm st -> st -> pcm ()
+  setPCMRecorder :: PCMRecorder st -> st -> gui ()
 
   -- | This function must request of the operating system to begin retrieving pulse code information
   -- from the hardware PCM device, and launch a thread that loops over calling the 'PCMGenerator'
@@ -360,13 +375,13 @@ class (Functor pcm, Applicative pcm, Monad pcm, MonadIO pcm) => AudioInput pcm w
   -- 'PCMGenerator' and the time the hardware PCM device receives these changes, however the audio
   -- 'Happlets.Initialize.Provider' is not required to honor your request, or report to you on how
   -- big the buffer actually is.
-  activatePCMInput   :: BufferSizeRequest -> pcm PCMActivation
+  activatePCMInput   :: BufferSizeRequest -> gui PCMActivation
 
   -- | This function checks if the PCM input device is active, and if so, it kills the 'PCMRecorder'
   -- thread and informs the operating system that the Happlet shall no longer use the harware PCM
   -- input device.
-  deactivatePCMInput :: pcm PCMActivation
+  deactivatePCMInput :: gui PCMActivation
 
   -- | Enquire as to whether the the PCM input device is active or not, or whether an error has
   -- occurred.
-  queryPCMInputState :: pcm PCMActivation
+  queryPCMInputState :: gui PCMActivation
