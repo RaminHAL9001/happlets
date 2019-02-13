@@ -22,9 +22,15 @@
 -- to you over the internet), and some audio providers may not want to provide any audio recording
 -- at all.
 module Happlets.Audio
-  ( BufferSizeRequest, PCMActivation, FrameCounter,
+  ( -- * Audio Output
     AudioOutput(..), PCMGenerator(..),
+    -- ** PCMGenerator Constructors
+    mapTimeToStereo, mapTimeToMono, foldMapTimeToStereo, foldMapTimeToMono,
+    stateMapStereo, stateMapMono,
+    -- * Audio Input
     AudioInput(..), PCMRecorder(..),
+    -- * Common data types
+    BufferSizeRequest, PCMActivation, FrameCounter,
     -- * Constants
     AudioRealApprox, Frequency, Duration, Sample, PulseCode, Moment, SampleCount,
     audioSampleRate, unitQuanta, minFrequency, maxFrequency,
@@ -33,7 +39,9 @@ module Happlets.Audio
     sampleCountDuration, durationSampleCount,
   ) where
 
+import           Control.Arrow
 import           Control.Monad.IO.Class
+import           Control.Monad.State
 
 import qualified Data.Text as Strict
 import           Data.Int
@@ -84,14 +92,20 @@ type Duration  = AudioRealApprox
 -- value of type 'Sample' to values of type 'Int16', for this use the 'toPulseCode' function.
 type Sample    = AudioRealApprox
 
+-- | A 'Sample' sent to the left stereo channel.
+type LeftSample = Sample
+
+-- | A 'Sample' sent to the right stereo channel.
+type RightSample = Sample
+
 -- | The actual format of the information sent to the hardware pulse code modulator (PCM) device
 -- must be a signed 16-bit integer value.
 type PulseCode = Int16
 
--- | A 'PulseCode' sent to or received from a left-stereo channel.
+-- | A 'PulseCode' sent to or received from a left stereo channel.
 type LeftPulseCode = PulseCode
 
--- | A 'PulseCode' sent to or received from a right-stereo channel.
+-- | A 'PulseCode' sent to or received from a right stereo channel.
 type RightPulseCode = PulseCode
 
 -- | Units used for tracking moments in time. This is a time duration measured in relation to an
@@ -186,8 +200,8 @@ durationSampleCount = ceiling . (* audioSampleRate)
 -- counter can reliably be used to compute the amount of time that has traversed since the PCM
 -- thread was first launched.
 data PCMGenerator pcm st
-  = PCMGenerateMono   (FrameCounter -> st -> pcm (st, PulseCode))
-  | PCMGenerateStereo (FrameCounter -> st -> pcm (st, (LeftPulseCode, RightPulseCode)))
+  = PCMGenerateMono   (FrameCounter -> st -> pcm (PulseCode, st))
+  | PCMGenerateStereo (FrameCounter -> st -> pcm ((LeftPulseCode, RightPulseCode), st))
 
 -- | A 'PCMRecorder' is a callback function for consuming samples recieved from a PCM
 -- device. Functions of this type are passed to the 'setPCMRecorder' function. There are two modes
@@ -208,7 +222,62 @@ data PCMRecorder pcm st
 -- moment in time. We assume the PCM device operates at 44,000 samples per second, therefore a
 -- single frame describes the state of the PCM as it exists for 1/44,100th of a second. The
 -- information in the frame depends on how many output channels there are, and the bit depth
-type FrameCounter = Int64
+type FrameCounter = Int
+
+mapPair :: (a -> fa) -> (a, a) -> (fa, fa)
+mapPair f = f *** f
+
+mapTimePure
+  :: Monad pcm
+  => ((FrameCounter -> () -> pcm (b, ())) -> PCMGenerator pcm ()) -> (a -> b)
+  -> (Moment -> a) -> PCMGenerator pcm ()
+mapTimePure constr toPC f = constr $ \ fc () -> return $ flip (,) () $ toPC $ f (indexToTime fc)
+
+foldMapTimePure
+  :: Monad pcm
+  => ((FrameCounter -> st -> pcm (b, st)) -> PCMGenerator pcm st) -> (a -> b)
+  -> (Moment -> st -> (a, st)) -> PCMGenerator pcm st
+foldMapTimePure constr toPC f = constr $ \ fc st -> return $ first toPC $ f (indexToTime fc) st
+
+stateMap
+  :: Monad pcm
+  => ((FrameCounter -> st -> pcm (b, st)) -> PCMGenerator pcm st) -> (a -> b)
+  -> (Moment -> StateT st pcm a) -> PCMGenerator pcm st
+stateMap constr toPC f = constr $ \ fc -> runStateT $ liftM toPC $ f (indexToTime fc)
+
+-- | Construct a 'PCMGenerator' from a pure function that generates stereo PCM 'Sample's using only
+-- each 'Moment' in time as input.
+mapTimeToStereo :: Monad pcm => (Moment -> (LeftSample, RightSample)) -> PCMGenerator pcm ()
+mapTimeToStereo = mapTimePure PCMGenerateStereo (mapPair toPulseCode)
+
+-- | Construct a 'PCMGenerator' from a pure function that generates mono PCM 'Sample's using only
+-- each 'Moment' in time as input.
+mapTimeToMono :: Monad pcm => (Moment -> Sample) -> PCMGenerator pcm ()
+mapTimeToMono = mapTimePure PCMGenerateMono toPulseCode
+
+-- | Like 'mapTimeToStereo' but also allows one to fold a value as samples are generated.
+foldMapTimeToStereo
+  :: Monad pcm
+  => (Moment -> st -> ((LeftSample, RightSample), st)) -> PCMGenerator pcm st
+foldMapTimeToStereo = foldMapTimePure PCMGenerateStereo (mapPair toPulseCode)
+
+-- | Like 'mapTimeToStereo' but also allows one to fold a value as samples are generated.
+foldMapTimeToMono :: Monad pcm => (Moment -> st -> (Sample, st)) -> PCMGenerator pcm st
+foldMapTimeToMono = foldMapTimePure PCMGenerateMono toPulseCode
+
+-- | Construct a 'PCMGenerator' using a 'Control.Monad.State.StateT' function type, where you can
+-- update the state value using 'Control.Monad.State.put' or 'Control.Monad.State.modify', or the
+-- state lenses like @('Control.Lens..=')@ or @('Control.Lens.%=').
+stateMapStereo
+  :: Monad pcm
+  => (Moment -> StateT st pcm (LeftSample, RightSample)) -> PCMGenerator pcm st
+stateMapStereo = stateMap PCMGenerateStereo (mapPair toPulseCode)
+
+-- | Construct a 'PCMGenerator' using a 'Control.Monad.State.StateT' function type, where you can
+-- update the state value using 'Control.Monad.State.put' or 'Control.Monad.State.modify', or the
+-- state lenses like @('Control.Lens..=')@ or @('Control.Lens.%=').
+stateMapMono :: Monad pcm => (Moment -> StateT st pcm Sample) -> PCMGenerator pcm st
+stateMapMono = stateMap PCMGenerateMono toPulseCode
 
 ----------------------------------------------------------------------------------------------------
 
