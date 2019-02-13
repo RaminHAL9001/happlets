@@ -75,6 +75,7 @@ Library {
 
   EXPOSED-MODULES:
     Happlets
+    Happlets.Audio
     Happlets.Config
     Happlets.Draw
     Happlets.Draw.Color
