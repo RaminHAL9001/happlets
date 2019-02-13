@@ -200,8 +200,8 @@ durationSampleCount = ceiling . (* audioSampleRate)
 -- counter can reliably be used to compute the amount of time that has traversed since the PCM
 -- thread was first launched.
 data PCMGenerator pcm st
-  = PCMGenerateMono   (FrameCounter -> st -> pcm (PulseCode, st))
-  | PCMGenerateStereo (FrameCounter -> st -> pcm ((LeftPulseCode, RightPulseCode), st))
+  = PCMGenerateMono   (st -> FrameCounter -> pcm (PulseCode, st))
+  | PCMGenerateStereo (st -> FrameCounter -> pcm ((LeftPulseCode, RightPulseCode), st))
 
 -- | A 'PCMRecorder' is a callback function for consuming samples recieved from a PCM
 -- device. Functions of this type are passed to the 'setPCMRecorder' function. There are two modes
@@ -215,8 +215,8 @@ data PCMGenerator pcm st
 -- counter can reliably be used to compute the amount of time that has traversed since the PCM
 -- thread was first launched.
 data PCMRecorder pcm st
-  = PCMRecordMono     (FrameCounter -> st -> PulseCode -> pcm st)
-  | PCMRecordStereo   (FrameCounter -> st -> LeftPulseCode -> RightPulseCode -> pcm st)
+  = PCMRecordMono     (st -> FrameCounter -> PulseCode -> pcm st)
+  | PCMRecordStereo   (st -> FrameCounter -> LeftPulseCode -> RightPulseCode -> pcm st)
 
 -- | A frame is an information packet that describes the state of the hardware PCM device at single
 -- moment in time. We assume the PCM device operates at 44,000 samples per second, therefore a
@@ -229,21 +229,21 @@ mapPair f = f *** f
 
 mapTimePure
   :: Monad pcm
-  => ((FrameCounter -> () -> pcm (b, ())) -> PCMGenerator pcm ()) -> (a -> b)
+  => ((() -> FrameCounter -> pcm (b, ())) -> PCMGenerator pcm ()) -> (a -> b)
   -> (Moment -> a) -> PCMGenerator pcm ()
-mapTimePure constr toPC f = constr $ \ fc () -> return $ flip (,) () $ toPC $ f (indexToTime fc)
+mapTimePure constr toPC f = constr $ \ () -> return . flip (,) () . toPC . f . indexToTime
 
 foldMapTimePure
   :: Monad pcm
-  => ((FrameCounter -> st -> pcm (b, st)) -> PCMGenerator pcm st) -> (a -> b)
-  -> (Moment -> st -> (a, st)) -> PCMGenerator pcm st
-foldMapTimePure constr toPC f = constr $ \ fc st -> return $ first toPC $ f (indexToTime fc) st
+  => ((st -> FrameCounter -> pcm (b, st)) -> PCMGenerator pcm st) -> (a -> b)
+  -> (st -> Moment -> (a, st)) -> PCMGenerator pcm st
+foldMapTimePure constr toPC f = constr $ \ st -> return . first toPC . f st . indexToTime
 
 stateMap
   :: Monad pcm
-  => ((FrameCounter -> st -> pcm (b, st)) -> PCMGenerator pcm st) -> (a -> b)
+  => ((st -> FrameCounter -> pcm (b, st)) -> PCMGenerator pcm st) -> (a -> b)
   -> (Moment -> StateT st pcm a) -> PCMGenerator pcm st
-stateMap constr toPC f = constr $ \ fc -> runStateT $ liftM toPC $ f (indexToTime fc)
+stateMap constr toPC f = constr $ flip $ runStateT . liftM toPC . f . indexToTime
 
 -- | Construct a 'PCMGenerator' from a pure function that generates stereo PCM 'Sample's using only
 -- each 'Moment' in time as input.
@@ -258,11 +258,11 @@ mapTimeToMono = mapTimePure PCMGenerateMono toPulseCode
 -- | Like 'mapTimeToStereo' but also allows one to fold a value as samples are generated.
 foldMapTimeToStereo
   :: Monad pcm
-  => (Moment -> st -> ((LeftSample, RightSample), st)) -> PCMGenerator pcm st
+  => (st -> Moment -> ((LeftSample, RightSample), st)) -> PCMGenerator pcm st
 foldMapTimeToStereo = foldMapTimePure PCMGenerateStereo (mapPair toPulseCode)
 
 -- | Like 'mapTimeToStereo' but also allows one to fold a value as samples are generated.
-foldMapTimeToMono :: Monad pcm => (Moment -> st -> (Sample, st)) -> PCMGenerator pcm st
+foldMapTimeToMono :: Monad pcm => (st -> Moment -> (Sample, st)) -> PCMGenerator pcm st
 foldMapTimeToMono = foldMapTimePure PCMGenerateMono toPulseCode
 
 -- | Construct a 'PCMGenerator' using a 'Control.Monad.State.StateT' function type, where you can
