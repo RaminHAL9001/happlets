@@ -26,11 +26,11 @@ module Happlets.Audio
     PCMControl, newPCMControl, signalPCMControl, checkPCMControl,
     PCM, runPCM,
     -- * Audio Output
-    AudioOutput(..), PCMGenerator(..),
+    AudioPlayback(..), PCMGenerator(..),
     -- ** PCMGenerator Constructors
     mapTimeToStereo, mapTimeToMono, foldMapTimeToStereo, foldMapTimeToMono,
     -- * Audio Input
-    AudioInput(..), PCMRecorder(..),
+    AudioCapture(..), PCMRecorder(..),
     -- * Common data types
     BufferSizeRequest, PCMActivation, FrameCounter,
     -- * Constants
@@ -51,8 +51,8 @@ import           Data.Int
 
 ----------------------------------------------------------------------------------------------------
 
--- | Functions of type indicate a callback that is used to produce samples for a PCM 'AudioOutput'
--- device, or to consume samples for a PCM 'AudioInput' device. Callback functions of this type are
+-- | Functions of type indicate a callback that is used to produce samples for a PCM 'AudioPlayback'
+-- device, or to consume samples for a PCM 'AudioCapture' device. Callback functions of this type are
 -- called repeatedly and rapidly in real time. To prevent other parts of the Happlets library from
 -- interfearing too much with the operation of a PCM callback, communicating with a PCM is
 -- restricted to sending signals via a mutex called the 'PCMControl'. A 'PCM' callback function will
@@ -89,7 +89,7 @@ signalPCMControl (PCMControl mvar) signal = liftIO $ modifyMVar_ mvar $ return .
 
 -- | The buffer size request is a value measured in seconds.
 --
--- This value is used by the 'activatePCMOutput' function, and requests that PCM samples be saved to
+-- This value is used by the 'startupAudioPlayback' function, and requests that PCM samples be saved to
 -- a buffer that is flushed to the hardware PCM device only when the buffer is full. Smaller buffers
 -- are desireable as it determines the amount of delay that exists between the moment in time that a
 -- change in the 'PCMGenerator' function occurs and the moment in time that the hardware PCM device
@@ -104,7 +104,7 @@ signalPCMControl (PCMControl mvar) signal = liftIO $ modifyMVar_ mvar $ return .
 type BufferSizeRequest = Double
 
 -- | This value serves as a report on the state of the PCM device, namely whether or not the PCM
--- device is active or not, or whether a recent call to 'activatePCMOutput' or 'activatePCMInput'
+-- device is active or not, or whether a recent call to 'startupAudioPlayback' or 'startupAudioCapture'
 -- resulted in an error.
 data PCMActivation
   = PCMDeactivated
@@ -228,7 +228,7 @@ durationSampleCount = ceiling . (* audioSampleRate)
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'PCMGenerator' is a callback function for producing samples to be output to a PCM
--- device. Functions of this type are passed to the 'setPCMGenerator' function. There are two modes
+-- device. Functions of this type are passed to the 'audioPlayback' function. There are two modes
 -- of opeation: mono and stereo. It is expected that the callback is evaluated in it's own thread
 -- that has exclusive access to the operating system's PCM output interface. The thread shall also
 -- maintain an arbitrary state value of type @st@ and pass this value to the callback every time the
@@ -243,7 +243,7 @@ data PCMGenerator st
   | PCMGenerateStereo (FrameCounter -> PCM st (LeftPulseCode, RightPulseCode))
 
 -- | A 'PCMRecorder' is a callback function for consuming samples recieved from a PCM
--- device. Functions of this type are passed to the 'setPCMRecorder' function. There are two modes
+-- device. Functions of this type are passed to the 'audioCapture' function. There are two modes
 -- of opeation: mono and stereo. It is expected that the callback is evaluated in it's own thread
 -- that has exclusive access to the operating system's PCM input interface. The thread shall also
 -- maintain an arbitrary state value of type @st@ and pass this value to the callback every time the
@@ -298,28 +298,28 @@ foldMapTimeToMono = foldMapTimePure PCMGenerateMono toPulseCode
 
 -- | The typeclass of monadic functions which include stateful information for communicating with
 -- an audio output PCM device.
-class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioOutput gui where
+class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioPlayback gui where
   -- | The PCM signal generator is a callback function which produces pulse code samples to be sent
   -- to a pulse code modulator (PCM). This function can be called at any time, the @pcm@ function is
-  -- expected to keep a reference to the given callback. When 'activatePCMOutput' is executed, a
+  -- expected to keep a reference to the given callback. When 'startupAudioPlayback' is executed, a
   -- thread is launched which loops over calling the 'PCMGenerator' to generate each PCM sample. If
   -- this function is called while the PCM output is currently activated, the new PCM generator will
   -- not replace the old one until the current PCM buffer has been filled and sent to the operating
   -- system. Depending on the buffer size, this may take a noticable amount of time. Ultimately the
   -- amount of delay is unspecified and implementation dependent.
   --
-  -- It is not a good idea to rely on this 'setPCMGenerator' function to do sequencing, rather the
+  -- It is not a good idea to rely on this 'audioPlayback' function to do sequencing, rather the
   -- 'PCMGenerator' callback function should be initialized with access to an
   -- 'Control.Concurrent.MVar.MVar' which polls for information about what signal to generate, when,
   -- and for how long.
   --
   -- The 'PCMGenerator' takes an arbitrary state value @st@, and this state value may be updated
   -- over the course of sample generation.
-  setPCMGenerator     :: PCMGenerator st -> st -> gui ()
+  audioPlayback :: PCMGenerator st -> st -> gui ()
 
   -- | This function must request of the operating system to begin sending information to the
   -- hardware PCM device, and launch a thread that loops over calling the 'PCMGenerator' callback
-  -- that was set by the 'setPCMGenerator' function. Activating the PCM may be a (relatively) time
+  -- that was set by the 'audioPlayback' function. Activating the PCM may be a (relatively) time
   -- consuming process, and so it is expected that this will occur maybe once per session, or
   -- perhaps every time the user requests audio output be enabled.
   --
@@ -327,16 +327,16 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioOutput gui 
   -- 'PCMGenerator' and the time the hardware PCM device receives these changes, however the audio
   -- 'Happlets.Initialize.Provider' is not required to honor your request, or report to you on how
   -- big the buffer actually is.
-  activatePCMOutput   :: BufferSizeRequest -> gui PCMActivation
+  startupAudioPlayback :: BufferSizeRequest -> gui PCMActivation
 
   -- | This function checks if the PCM output device is active, and if so, it kills the
   -- 'PCMGenerator' thread and informs the operating system that the Happlet shall no longer use the
   -- harware PCM device.
-  deactivatePCMOutput :: gui PCMActivation
+  shutdownAudioPlayback :: gui PCMActivation
 
   -- | Enquire as to whether the the PCM output device is active or not, or whether an error has
   -- occurred.
-  queryPCMOutputState :: gui PCMActivation
+  audioPlaybackState :: gui PCMActivation
 
 ----------------------------------------------------------------------------------------------------
 
@@ -347,12 +347,12 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioOutput gui 
 -- Happlet may be made to spy on someone over a network by accessing the microphone built into an
 -- end user's computer. Not all Happlet 'Happlets.Initialize.Provider's will instantiate this
 -- typeclass, and if so, there will hopefully be security measures in place to allow use of
--- 'AudioInput' only when end users provide informed consent to have the input PCM activated.
-class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioInput gui where
+-- 'AudioCapture' only when end users provide informed consent to have the input PCM activated.
+class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioCapture gui where
   -- | The PCM signal recorder is a callback function which consumes pulse code samples produced by
   -- a pulse code modulator (PCM).
   --
-  -- When 'activatePCMInput' is executed, a thread is launched which loops over calling the
+  -- When 'startupAudioCapture' is executed, a thread is launched which loops over calling the
   -- 'PCMGenerator' to generate each PCM sample. If this function is called while the PCM input is
   -- currently activated, the new PCM generator will not replace the old one until the current PCM
   -- buffer provided by the operating system has been consumed. Depending on the buffer size, this
@@ -361,11 +361,11 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioInput gui w
   --
   -- The 'PCMRecorder' takes an arbitrary state value @st@, and this state value may be updated over
   -- the course of sample recording.
-  setPCMRecorder :: PCMRecorder st -> st -> gui ()
+  audioCapture :: PCMRecorder st -> st -> gui ()
 
   -- | This function must request of the operating system to begin retrieving pulse code information
   -- from the hardware PCM device, and launch a thread that loops over calling the 'PCMGenerator'
-  -- callback that was set by the 'setPCMGenerator' function. Activating the PCM will likely be a
+  -- callback that was set by the 'audioCapture' function. Activating the PCM will likely be a
   -- (relatively) time consuming process, especially if the 'Happlet.Initialize.Provider' must ask
   -- the end user for permission for access to the microphone (which hopefully it does) and so it is
   -- expected that this will occur maybe once per session, or perhaps every time the user requests
@@ -375,13 +375,13 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioInput gui w
   -- 'PCMGenerator' and the time the hardware PCM device receives these changes, however the audio
   -- 'Happlets.Initialize.Provider' is not required to honor your request, or report to you on how
   -- big the buffer actually is.
-  activatePCMInput   :: BufferSizeRequest -> gui PCMActivation
+  startupAudioCapture   :: BufferSizeRequest -> gui PCMActivation
 
   -- | This function checks if the PCM input device is active, and if so, it kills the 'PCMRecorder'
   -- thread and informs the operating system that the Happlet shall no longer use the harware PCM
   -- input device.
-  deactivatePCMInput :: gui PCMActivation
+  deactivatePCMInputu :: gui PCMActivation
 
   -- | Enquire as to whether the the PCM input device is active or not, or whether an error has
   -- occurred.
-  queryPCMInputState :: gui PCMActivation
+  audioCaptureState :: gui PCMActivation
