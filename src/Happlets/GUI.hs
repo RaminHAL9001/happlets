@@ -334,7 +334,7 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioPlayback gu
   -- The 'PCMGenerator' takes an arbitrary state value @st@, and this state value may be updated
   -- over the course of sample generation. Construct your 'PCMGenerator' using either the
   -- 'Happlets.Audio.stereoPCM' or 'Happlets.Audio.monoPCM' constructors.
-  audioPlayback :: PCMGenerator st -> st -> gui ()
+  audioPlayback :: PCMGenerator -> gui ()
 
   -- | This function must request of the operating system to begin sending information to the
   -- hardware PCM device, and launch a thread that loops over calling the 'PCMGenerator' callback
@@ -381,7 +381,7 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioCapture gui
   -- The 'PCMRecorder' takes an arbitrary state value @st@, and this state value may be updated over
   -- the course of sample recording. Construct the 'PCMRecorder' function using the 'stereoPCM' or
   -- 'monoPCM' constructor functions.
-  audioCapture :: PCMRecorder st -> st -> gui ()
+  audioCapture :: PCMRecorder -> gui ()
 
   -- | This function must request of the operating system to begin retrieving pulse code information
   -- from the hardware PCM device, and launch a thread that loops over calling the 'PCMGenerator'

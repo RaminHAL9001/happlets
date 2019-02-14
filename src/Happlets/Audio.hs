@@ -27,7 +27,7 @@ module Happlets.Audio
     PCM, runPCM, stereoPCM, monoPCM, StereoChannel, MonoChannel,
     PCMGenerator(..), PCMRecorder(..),
     -- ** PCMGenerator Constructors
-    mapTimeToStereo, mapTimeToMono, foldMapTimeToStereo, foldMapTimeToMono,
+    mapTimeToStereo, mapTimeToMono,
     -- * Common data types
     BufferSizeRequest, PCMActivation, FrameCounter,
     -- * Constants
@@ -41,7 +41,6 @@ module Happlets.Audio
 import           Control.Arrow
 import           Control.Concurrent
 import           Control.Monad.IO.Class
-import           Control.Monad.State
 
 import qualified Data.Text as Strict
 import           Data.Int
@@ -54,10 +53,8 @@ import           Data.Int
 -- interfearing too much with the operation of a PCM callback, communicating with a PCM is
 -- restricted to sending signals via a mutex called the 'PCMControl'. A 'PCM' callback function will
 -- poll a 'PCMControl' and decide how to behave on every iteration.
-newtype PCM st a = PCM (StateT st IO a)
+newtype PCM a = PCM (IO a)
   deriving (Functor, Applicative, Monad)
-
-instance MonadState st (PCM st) where { state = PCM . state; }
 
 -- | This data type is essentially a mutex that can only be written in from within the 'GUI'
 -- function, and can only be read out from within a 'PCM' function.
@@ -70,8 +67,8 @@ newtype PCMControl signal = PCMControl (MVar ([signal] -> [signal]))
 -- or 'stereoPCM' constructor to construct a 'PCMGenerator', and then pass the 'PCMGenerator' to the
 -- 'audioPlayback' function (in the 'AudioPlayback' typeclass, defined in the "Happlets.GUI"
 -- module).
-runPCM :: PCM st a -> st -> IO (a, st)
-runPCM (PCM f) = runStateT f
+runPCM :: PCM a -> IO a
+runPCM (PCM f) = f
 
 -- | Create a new 'PCMControl'. Every call to 'checkPCMSignal' will return 'Nothing' until
 -- 'signalPCM' is called with a value, at which point, the value will be returned by
@@ -81,7 +78,7 @@ newPCMControl = PCMControl <$> newMVar id
 
 -- | Poll a 'PCMControl' for whether @signal@ value has been stored into the 'PCMControl' via the
 -- 'signalPCM' function.
-checkPCMControl :: PCMControl signal -> PCM st [signal]
+checkPCMControl :: PCMControl signal -> PCM [signal]
 checkPCMControl (PCMControl mvar) = PCM $ liftIO $ modifyMVar mvar $ return . (,) id . ($ [])
 
 -- | Send a signal to a 'PCM' function via a 'PCMControl'.
@@ -120,19 +117,16 @@ class StereoChannel pcm stereo | pcm -> stereo where
 class MonoChannel pcm mono | pcm -> mono where
   monoPCM   :: mono   -> pcm
 
-instance
-  StereoChannel (PCMGenerator st) (FrameCounter -> PCM st (LeftPulseCode, RightPulseCode)) where
-    stereoPCM = PCMGenerateStereo
+instance StereoChannel PCMGenerator (FrameCounter -> PCM (LeftPulseCode, RightPulseCode)) where
+  stereoPCM = PCMGenerateStereo
 
-instance MonoChannel (PCMGenerator st) (FrameCounter -> PCM st PulseCode) where
+instance MonoChannel PCMGenerator (FrameCounter -> PCM PulseCode) where
   monoPCM = PCMGenerateMono
 
-instance
-  StereoChannel (PCMRecorder st) (FrameCounter -> LeftPulseCode -> RightPulseCode -> PCM st ())
-  where
-    stereoPCM = PCMRecordStereo
+instance StereoChannel PCMRecorder (FrameCounter -> LeftPulseCode -> RightPulseCode -> PCM ()) where
+  stereoPCM = PCMRecordStereo
 
-instance MonoChannel (PCMRecorder st) (FrameCounter -> PulseCode -> PCM st ()) where
+instance MonoChannel PCMRecorder (FrameCounter -> PulseCode -> PCM ()) where
   monoPCM = PCMRecordMono
 
 ----------------------------------------------------------------------------------------------------
@@ -280,32 +274,24 @@ durationSampleCount = ceiling . (* audioSampleRate)
 -- | A 'PCMGenerator' is a callback function for producing samples to be output to a PCM
 -- device. Functions of this type are passed to the 'audioPlayback' function. There are two modes
 -- of opeation: mono and stereo. It is expected that the callback is evaluated in it's own thread
--- that has exclusive access to the operating system's PCM output interface. The thread shall also
--- maintain an arbitrary state value of type @st@ and pass this value to the callback every time the
--- callback is evaluated, and accept an updated @st@ value after the callback returns to be used for
--- the next call to the callback.
+-- that has exclusive access to the operating system's PCM output interface.
 --
--- Along with the state value @st@, a 'FrameCounter' is also passed to the callback. The frame
--- counter can reliably be used to compute the amount of time that has traversed since the PCM
--- thread was first launched.
-data PCMGenerator st
-  = PCMGenerateMono   (FrameCounter -> PCM st PulseCode)
-  | PCMGenerateStereo (FrameCounter -> PCM st (LeftPulseCode, RightPulseCode))
+-- A 'FrameCounter' is passed to the callback. The frame counter can reliably be used to compute the
+-- amount of time that has traversed since the PCM thread was first launched.
+data PCMGenerator
+  = PCMGenerateMono   (FrameCounter -> PCM PulseCode)
+  | PCMGenerateStereo (FrameCounter -> PCM (LeftPulseCode, RightPulseCode))
 
 -- | A 'PCMRecorder' is a callback function for consuming samples recieved from a PCM
 -- device. Functions of this type are passed to the 'audioCapture' function. There are two modes
 -- of opeation: mono and stereo. It is expected that the callback is evaluated in it's own thread
--- that has exclusive access to the operating system's PCM input interface. The thread shall also
--- maintain an arbitrary state value of type @st@ and pass this value to the callback every time the
--- callback is evaluated, and accept an updated @st@ value after the callback returns to be used for
--- the next call to the callback.
+-- that has exclusive access to the operating system's PCM input interface.
 --
--- Along with the state value @st@, a 'FrameCounter' is also passed to the callback. The frame
--- counter can reliably be used to compute the amount of time that has traversed since the PCM
--- thread was first launched.
-data PCMRecorder st
-  = PCMRecordMono     (FrameCounter -> PulseCode -> PCM st ())
-  | PCMRecordStereo   (FrameCounter -> LeftPulseCode -> RightPulseCode -> PCM st ())
+-- A 'FrameCounter' is passed to the callback. The frame counter can reliably be used to compute the
+-- amount of time that has traversed since the PCM thread was first launched.
+data PCMRecorder
+  = PCMRecordMono     (FrameCounter -> PulseCode -> PCM ())
+  | PCMRecordStereo   (FrameCounter -> LeftPulseCode -> RightPulseCode -> PCM ())
 
 -- | A frame is an information packet that describes the state of the hardware PCM device at single
 -- moment in time. We assume the PCM device operates at 44,000 samples per second, therefore a
@@ -317,29 +303,16 @@ mapPair :: (a -> fa) -> (a, a) -> (fa, fa)
 mapPair f = f *** f
 
 mapTimePure
-  :: ((FrameCounter -> PCM () b) -> PCMGenerator ()) -> (a -> b)
-  -> (Moment -> a) -> PCMGenerator ()
+  :: ((FrameCounter -> PCM b) -> PCMGenerator) -> (a -> b)
+  -> (Moment -> a) -> PCMGenerator
 mapTimePure constr toPC f = constr $ return . toPC . f . indexToTime
-
-foldMapTimePure
-  :: ((FrameCounter -> PCM st b) -> PCMGenerator st) -> (a -> b)
-  -> (st -> Moment -> (a, st)) -> PCMGenerator st
-foldMapTimePure constr toPC f = constr $ state . fmap (first toPC) . flip f . indexToTime
 
 -- | Construct a 'PCMGenerator' from a pure function that generates stereo PCM 'Sample's using only
 -- each 'Moment' in time as input.
-mapTimeToStereo :: (Moment -> (LeftSample, RightSample)) -> PCMGenerator ()
+mapTimeToStereo :: (Moment -> (LeftSample, RightSample)) -> PCMGenerator
 mapTimeToStereo = mapTimePure PCMGenerateStereo (mapPair toPulseCode)
 
 -- | Construct a 'PCMGenerator' from a pure function that generates mono PCM 'Sample's using only
 -- each 'Moment' in time as input.
-mapTimeToMono :: (Moment -> Sample) -> PCMGenerator ()
+mapTimeToMono :: (Moment -> Sample) -> PCMGenerator
 mapTimeToMono = mapTimePure PCMGenerateMono toPulseCode
-
--- | Like 'mapTimeToStereo' but also allows one to fold a value as samples are generated.
-foldMapTimeToStereo :: (st -> Moment -> ((LeftSample, RightSample), st)) -> PCMGenerator st
-foldMapTimeToStereo = foldMapTimePure PCMGenerateStereo (mapPair toPulseCode)
-
--- | Like 'mapTimeToStereo' but also allows one to fold a value as samples are generated.
-foldMapTimeToMono :: (st -> Moment -> (Sample, st)) -> PCMGenerator st
-foldMapTimeToMono = foldMapTimePure PCMGenerateMono toPulseCode
