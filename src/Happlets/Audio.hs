@@ -24,7 +24,7 @@
 module Happlets.Audio
   ( -- * The PCM Function Type
     PCMControl, newPCMControl, signalPCMControl, checkPCMControl,
-    PCM, runPCM,
+    PCM, runPCM, stereoPCM, monoPCM, StereoChannel, MonoChannel,
     PCMGenerator(..), PCMRecorder(..),
     -- ** PCMGenerator Constructors
     mapTimeToStereo, mapTimeToMono, foldMapTimeToStereo, foldMapTimeToMono,
@@ -63,7 +63,13 @@ instance MonadState st (PCM st) where { state = PCM . state; }
 -- function, and can only be read out from within a 'PCM' function.
 newtype PCMControl signal = PCMControl (MVar ([signal] -> [signal]))
 
--- | This function should only be used by Happlet 'Happlets.Initialize.Provider's.
+-- | This function should only be used by Happlet 'Happlets.Initialize.Provider's, or in the case
+-- you want to test your own 'PCM' function and observe it's output.
+--
+-- To actually use a 'PCM' function in a Happlet program, wrap your 'PCM' function in the 'monoPCM'
+-- or 'stereoPCM' constructor to construct a 'PCMGenerator', and then pass the 'PCMGenerator' to the
+-- 'audioPlayback' function (in the 'AudioPlayback' typeclass, defined in the "Happlets.GUI"
+-- module).
 runPCM :: PCM st a -> st -> IO (a, st)
 runPCM (PCM f) = runStateT f
 
@@ -81,6 +87,53 @@ checkPCMControl (PCMControl mvar) = PCM $ liftIO $ modifyMVar mvar $ return . (,
 -- | Send a signal to a 'PCM' function via a 'PCMControl'.
 signalPCMControl :: MonadIO m => PCMControl signal -> signal -> m ()
 signalPCMControl (PCMControl mvar) signal = liftIO $ modifyMVar_ mvar $ return . (. (signal :))
+
+----------------------------------------------------------------------------------------------------
+
+-- | This class provides easier-to-remember constructors for 'PCMGenerateStereo', and
+-- 'PCMRecordStereo'. The 'stereoPCM' functions will create the correct type of function (either
+-- 'PCMGenerateStereo' or 'PCMRecordStereo') based on whether it is being passed as a value to the
+-- the 'Happlets.GUI.audioPlayback' or 'Happlets.GUI.audioCapture' functions. For example:
+--
+-- @
+-- myPlayback :: 'FrameCounter' -> 'PCM' MyPlayer ('LeftPulseCode', 'RightPulseCode')
+-- myPlayback i = do { ... }
+--
+-- myRecorder :: 'FrameCounter' -> 'LeftPulseCode' -> 'RightPulseCode' -> PCM MyRecorder ()
+-- myRecorder i left right = do { ... }
+--
+-- playMySound :: 'Happlets.GUI.GUI' win model ()
+-- playMySound = 'Happlets.GUI.audioPlayback' $ 'stereoPCM' myPlayback
+--
+-- recordMySound :: 'Happlets.GUI.GUI' win model ()
+-- recordMySound = 'Happlet.GUI.audioCapture' $ 'stereoPCM' myRecorder
+-- @
+--
+-- Notice above how 'stereoPCM' can be used with both 'myPlaback' and 'myRecorder' even though the
+-- function types are completely different. This is the convenience provided by the 'StereoChannel'
+-- typeclass: using the same name for different types.
+class StereoChannel pcm stereo | pcm -> stereo where
+  stereoPCM :: stereo -> pcm
+
+-- | Like tye StereoChannel' function, but for constructing 'PCMGenerateMono' and 'PCMRecordMono'
+-- for use with the 'audioPlayback' or 'audioCapture' functions.
+class MonoChannel pcm mono | pcm -> mono where
+  monoPCM   :: mono   -> pcm
+
+instance
+  StereoChannel (PCMGenerator st) (FrameCounter -> PCM st (LeftPulseCode, RightPulseCode)) where
+    stereoPCM = PCMGenerateStereo
+
+instance MonoChannel (PCMGenerator st) (FrameCounter -> PCM st PulseCode) where
+  monoPCM = PCMGenerateMono
+
+instance
+  StereoChannel (PCMRecorder st) (FrameCounter -> LeftPulseCode -> RightPulseCode -> PCM st ())
+  where
+    stereoPCM = PCMRecordStereo
+
+instance MonoChannel (PCMRecorder st) (FrameCounter -> PulseCode -> PCM st ()) where
+  monoPCM = PCMRecordMono
 
 ----------------------------------------------------------------------------------------------------
 

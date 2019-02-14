@@ -326,12 +326,14 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioPlayback gu
   -- amount of delay is unspecified and implementation dependent.
   --
   -- It is not a good idea to rely on this 'audioPlayback' function to do sequencing, rather the
-  -- 'PCMGenerator' callback function should be initialized with access to an
-  -- 'Control.Concurrent.MVar.MVar' which polls for information about what signal to generate, when,
-  -- and for how long.
+  -- 'PCMGenerator' callback function should be initialized with access to a
+  -- 'Happlets.Audio.PCMControl' and then poll this controller using
+  -- 'Happlets.Audio.checkPCMControl' for information about what signal to generate, when, and for
+  -- how long.
   --
   -- The 'PCMGenerator' takes an arbitrary state value @st@, and this state value may be updated
-  -- over the course of sample generation.
+  -- over the course of sample generation. Construct your 'PCMGenerator' using either the
+  -- 'Happlets.Audio.stereoPCM' or 'Happlets.Audio.monoPCM' constructors.
   audioPlayback :: PCMGenerator st -> st -> gui ()
 
   -- | This function must request of the operating system to begin sending information to the
@@ -377,7 +379,8 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioCapture gui
   -- implementation dependent.
   --
   -- The 'PCMRecorder' takes an arbitrary state value @st@, and this state value may be updated over
-  -- the course of sample recording.
+  -- the course of sample recording. Construct the 'PCMRecorder' function using the 'stereoPCM' or
+  -- 'monoPCM' constructor functions.
   audioCapture :: PCMRecorder st -> st -> gui ()
 
   -- | This function must request of the operating system to begin retrieving pulse code information
