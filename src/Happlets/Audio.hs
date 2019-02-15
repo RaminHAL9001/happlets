@@ -29,9 +29,10 @@ module Happlets.Audio
     -- ** PCMGenerator Constructors
     mapTimeToStereo, mapTimeToMono,
     -- * Common data types
-    BufferSizeRequest, PCMActivation, FrameCounter,
+    BufferSizeRequest, PCMActivation(..), FrameCounter,
     -- * Constants
-    AudioRealApprox, Frequency, Duration, Sample, PulseCode, Moment, SampleCount,
+    AudioRealApprox, Frequency, Duration, Moment, SampleCount,
+    Sample, LeftSample, RightSample, PulseCode, LeftPulseCode, RightPulseCode,
     audioSampleRate, unitQuanta, minFrequency, maxFrequency,
     -- * Conveniences
     toPulseCode, toSample, modTimeIndex, timeIndex, indexToTime,
