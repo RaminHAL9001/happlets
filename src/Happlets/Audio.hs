@@ -31,7 +31,7 @@ module Happlets.Audio
     -- * Common data types
     BufferSizeRequest, PCMActivation(..), FrameCounter,
     -- * Constants
-    AudioRealApprox, Frequency, Duration, Moment, SampleCount,
+    AudioRealApprox, Frequency, Duration, Moment, SampleCount, SampleIndex,
     Sample, LeftSample, RightSample, PulseCode, LeftPulseCode, RightPulseCode,
     audioSampleRate, unitQuanta, minFrequency, maxFrequency,
     -- * Conveniences
