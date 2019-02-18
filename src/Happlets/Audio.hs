@@ -27,7 +27,7 @@ module Happlets.Audio
     PCM, runPCM, stereoPCM, monoPCM, StereoChannel, MonoChannel,
     PCMGenerator(..), PCMRecorder(..),
     -- ** PCMGenerator Constructors
-    mapTimeToStereo, mapTimeToMono,
+    mapTimeToStereoPCM, mapTimeToMonoPCM, mapTimeToStereo, mapTimeToMono,
     -- * Common data types
     BufferSizeRequest, PCMActivation(..), FrameCounter,
     -- * Constants
@@ -303,10 +303,25 @@ type FrameCounter = Int64
 mapPair :: (a -> fa) -> (a, a) -> (fa, fa)
 mapPair f = f *** f
 
+mapTimePCM
+  :: ((FrameCounter -> PCM b) -> PCMGenerator) -> (a -> b)
+  -> (Moment -> PCM a) -> PCMGenerator
+mapTimePCM constr toPC f = constr $ fmap toPC . f . indexToTime
+
+-- | Construct a 'PCMGenerator' from a pure function that generates stereo PCM 'Sample's using only
+-- each 'Moment' in time as input.
+mapTimeToStereoPCM :: (Moment -> PCM (LeftSample, RightSample)) -> PCMGenerator
+mapTimeToStereoPCM = mapTimePCM PCMGenerateStereo (mapPair toPulseCode)
+
+-- | Construct a 'PCMGenerator' from a pure function that generates mono PCM 'Sample's using only
+-- each 'Moment' in time as input.
+mapTimeToMonoPCM :: (Moment -> PCM Sample) -> PCMGenerator
+mapTimeToMonoPCM = mapTimePCM PCMGenerateMono toPulseCode
+
 mapTimePure
   :: ((FrameCounter -> PCM b) -> PCMGenerator) -> (a -> b)
   -> (Moment -> a) -> PCMGenerator
-mapTimePure constr toPC f = constr $ return . toPC . f . indexToTime
+mapTimePure constr toPC = mapTimePCM constr toPC . (return .)
 
 -- | Construct a 'PCMGenerator' from a pure function that generates stereo PCM 'Sample's using only
 -- each 'Moment' in time as input.
