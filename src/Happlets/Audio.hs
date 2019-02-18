@@ -1,3 +1,5 @@
+{-# LANGUAGE KindSignatures #-}
+
 -- | This module provides an minimal API for audio providers. Minimalist means it allows for access
 -- to a pulse-code modulator (PCM). At the time of this writing, most modern commercially available
 -- computer systems provide a PCM with a 44.1 KHz sample rate, signed 16 bit samples per channel,
@@ -25,6 +27,11 @@ module Happlets.Audio
   ( -- * The PCM Function Type
     PCMControl, newPCMControl, signalPCMControl, checkPCMControl,
     PCM, runPCM, stereoPCM, monoPCM, StereoChannel, MonoChannel,
+    -- * The StatePCM Function Type
+    StatePCM(..), PCMStatus, newPCMStatus, readPCMStatus,
+    RunStatePCM, runStatePCM, monoStatePCMRecorder, stereoStatePCMRecorder,
+    getPCMStatus, putPCMStatus, modifyPCMStatus,
+    -- * Callback Function Types
     PCMGenerator(..), PCMRecorder(..),
     -- ** PCMGenerator Constructors
     mapTimeToStereoPCM, mapTimeToMonoPCM, mapTimeToStereo, mapTimeToMono,
@@ -41,7 +48,8 @@ module Happlets.Audio
 
 import           Control.Arrow
 import           Control.Concurrent
-import           Control.Monad.IO.Class
+import           Control.Monad.Reader
+import           Control.Monad.State
 
 import qualified Data.Text as Strict
 import           Data.Int
@@ -60,6 +68,55 @@ newtype PCM a = PCM (IO a)
 -- | This data type is essentially a mutex that can only be written in from within the 'GUI'
 -- function, and can only be read out from within a 'PCM' function.
 newtype PCMControl signal = PCMControl (MVar ([signal] -> [signal]))
+
+-- | This data type allows a 'PCM' type of function to report information about itself to the world
+-- outside of it's generator thread. The 'modifyPCMStatus' is an signalling function that can be
+-- called within a 'PCM' function, and 'readPCMStatus' is an @IO@ function that allows other threads
+-- to view the content of a 'PCMStatus' register.
+newtype PCMStatus st = PCMStatus (MVar st)
+
+-- | The 'StatePCM' function type is simply a stateful version of the 'PCM' function. Evaluating the
+-- 'runStatePCM' function takes a 'PCMStatus' register which must be defined before hand using
+-- 'newPCMStatus'. Evaluating 'runStatePCM' will produce a 'PCMGenerator' or 'PCMRecorder' depending
+-- on the calling context in which 'runStatePCM' is evaluated.
+newtype StatePCM st a = StatePCM { unwrapStatePCM :: ReaderT (PCMStatus st) PCM a }
+  deriving (Functor, Applicative, Monad)
+
+instance MonadState st (StatePCM st) where
+  state = StatePCM . ReaderT . flip modifyPCMStatus
+
+class Functor f => RunStatePCM f a pcm | a -> pcm, pcm -> f where
+  runStatePCM :: PCMStatus st -> f (StatePCM st a) -> pcm
+
+instance RunStatePCM ((->) FrameCounter) PulseCode PCMGenerator where
+  runStatePCM = monoStatePCMGenerator
+
+instance RunStatePCM ((->) FrameCounter) (LeftPulseCode, RightPulseCode) PCMGenerator where
+  runStatePCM = stereoStatePCMGenerator
+
+pcmStateRunner :: Functor f => (f (PCM a) -> pcm) -> PCMStatus st -> f (StatePCM st a) -> pcm
+pcmStateRunner constr stat = constr . fmap (flip runReaderT stat . unwrapStatePCM)
+
+monoStatePCMGenerator :: PCMStatus st -> (FrameCounter -> StatePCM st PulseCode) -> PCMGenerator
+monoStatePCMGenerator = pcmStateRunner PCMGenerateMono
+
+stereoStatePCMGenerator
+  :: PCMStatus st
+  -> (FrameCounter -> StatePCM st (LeftPulseCode, RightPulseCode))
+  -> PCMGenerator
+stereoStatePCMGenerator = pcmStateRunner PCMGenerateStereo
+
+---- TODO: use this to instantiate RunStatePCM
+monoStatePCMRecorder :: PCMStatus st -> (FrameCounter -> PulseCode -> StatePCM st ()) -> PCMRecorder
+monoStatePCMRecorder stat = pcmStateRunner (PCMRecordMono . curry) stat . uncurry
+
+---- TODO: use this to instantiate RunStatePCM
+stereoStatePCMRecorder
+  :: PCMStatus st
+  -> (FrameCounter -> LeftPulseCode -> RightPulseCode -> StatePCM st ())
+  -> PCMRecorder
+stereoStatePCMRecorder stat f =
+  pcmStateRunner (\ f -> PCMRecordStereo $ \ a b c -> f (a, b, c)) stat (\ (a, b, c) -> f a b c)
 
 -- | This function should only be used by Happlet 'Happlets.Initialize.Provider's, or in the case
 -- you want to test your own 'PCM' function and observe it's output.
@@ -85,6 +142,30 @@ checkPCMControl (PCMControl mvar) = PCM $ liftIO $ modifyMVar mvar $ return . (,
 -- | Send a signal to a 'PCM' function via a 'PCMControl'.
 signalPCMControl :: MonadIO m => PCMControl signal -> signal -> m ()
 signalPCMControl (PCMControl mvar) signal = liftIO $ modifyMVar_ mvar $ return . (. (signal :))
+
+-- | Define a new 'PCMStatus' register. You must provide an initial @st@ value.
+newPCMStatus :: MonadIO m => st -> m (PCMStatus st)
+newPCMStatus = liftIO . fmap PCMStatus . newMVar
+
+-- | A function which updates a 'PCMStatus' register.
+modifyPCMStatus :: PCMStatus st -> (st -> (a, st)) -> PCM a
+modifyPCMStatus (PCMStatus mvar) = PCM . modifyMVar mvar . ((return . (\ (a,b)->(b,a))) .)
+
+-- | A function which gets a copy of the 'PCMStatus' register. This function can only be used from
+-- within a 'PCM' function. To observe the 'PCMStatus' from outside of a 'PCM' function, use
+-- 'readPCMStatus'.
+getPCMStatus :: PCMStatus st -> PCM st
+getPCMStatus (PCMStatus mvar) = PCM $ readMVar mvar
+
+-- | Overwrite the value of a 'PCMStatus' register.
+putPCMStatus :: PCMStatus st -> st -> PCM ()
+putPCMStatus stat = modifyPCMStatus stat . const . (,) ()
+
+-- | A function which reads a 'PCMStatus' register. As an @IO@ function, this function can be used
+-- outside of a 'PCM' function, and cannot be used from within a 'PCM' function. To view the
+-- 'PCMStatus' from within a 'PCM' function, use 'getPCMStatus'.
+readPCMStatus :: PCMStatus st -> IO st
+readPCMStatus (PCMStatus mvar) = readMVar mvar
 
 ----------------------------------------------------------------------------------------------------
 
