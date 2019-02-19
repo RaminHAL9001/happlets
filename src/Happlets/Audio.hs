@@ -28,9 +28,14 @@ module Happlets.Audio
     PCMControl, newPCMControl, signalPCMControl, checkPCMControl,
     PCM, runPCM, stereoPCM, monoPCM, StereoChannel, MonoChannel,
     -- * The StatePCM Function Type
-    StatePCM(..), PCMStatus, newPCMStatus, readPCMStatus,
-    RunStatePCM, runStatePCM, monoStatePCMRecorder, stereoStatePCMRecorder,
-    getPCMStatus, putPCMStatus, modifyPCMStatus,
+    StatePCM(..), PCMRef, newPCMRef, readPCMRef,
+    runStatePCM, getPCMRef, putPCMRef, modifyPCMRef,
+    monoStatePCMGenerator, stereoStatePCMGenerator,
+    monoStatePCMRecorder,  stereoStatePCMRecorder,
+    -- ** Re-exporting "Control.Monad.State"
+    module Control.Monad.State,
+    -- * Lift PCM into StatePCM
+    MonadPCM(..),
     -- * Callback Function Types
     PCMGenerator(..), PCMRecorder(..),
     -- ** PCMGenerator Constructors
@@ -70,49 +75,45 @@ newtype PCM a = PCM (IO a)
 newtype PCMControl signal = PCMControl (MVar ([signal] -> [signal]))
 
 -- | This data type allows a 'PCM' type of function to report information about itself to the world
--- outside of it's generator thread. The 'modifyPCMStatus' is an signalling function that can be
--- called within a 'PCM' function, and 'readPCMStatus' is an @IO@ function that allows other threads
--- to view the content of a 'PCMStatus' register.
-newtype PCMStatus st = PCMStatus (MVar st)
+-- outside of it's generator thread. The 'modifyPCMRef' is an signalling function that can be
+-- called within a 'PCM' function, and 'readPCMRef' is an @IO@ function that allows other threads
+-- to view the content of a 'PCMRef' register.
+newtype PCMRef st = PCMRef (MVar st)
 
 -- | The 'StatePCM' function type is simply a stateful version of the 'PCM' function. Evaluating the
--- 'runStatePCM' function takes a 'PCMStatus' register which must be defined before hand using
--- 'newPCMStatus'. Evaluating 'runStatePCM' will produce a 'PCMGenerator' or 'PCMRecorder' depending
+-- 'runStatePCM' function takes a 'PCMRef' register which must be defined before hand using
+-- 'newPCMRef'. Evaluating 'runStatePCM' will produce a 'PCMGenerator' or 'PCMRecorder' depending
 -- on the calling context in which 'runStatePCM' is evaluated.
-newtype StatePCM st a = StatePCM { unwrapStatePCM :: ReaderT (PCMStatus st) PCM a }
+newtype StatePCM st a = StatePCM { unwrapStatePCM :: ReaderT (PCMRef st) PCM a }
   deriving (Functor, Applicative, Monad)
 
 instance MonadState st (StatePCM st) where
-  state = StatePCM . ReaderT . flip modifyPCMStatus
+  state = StatePCM . ReaderT . flip modifyPCMRef
 
-class Functor f => RunStatePCM f a pcm | a -> pcm, pcm -> f where
-  runStatePCM :: PCMStatus st -> f (StatePCM st a) -> pcm
+runStatePCM :: PCMRef st -> StatePCM st a -> PCM a
+runStatePCM status (StatePCM f) = runReaderT f status
 
-instance RunStatePCM ((->) FrameCounter) PulseCode PCMGenerator where
-  runStatePCM = monoStatePCMGenerator
-
-instance RunStatePCM ((->) FrameCounter) (LeftPulseCode, RightPulseCode) PCMGenerator where
-  runStatePCM = stereoStatePCMGenerator
-
-pcmStateRunner :: Functor f => (f (PCM a) -> pcm) -> PCMStatus st -> f (StatePCM st a) -> pcm
+pcmStateRunner :: Functor f => (f (PCM a) -> pcm) -> PCMRef st -> f (StatePCM st a) -> pcm
 pcmStateRunner constr stat = constr . fmap (flip runReaderT stat . unwrapStatePCM)
 
-monoStatePCMGenerator :: PCMStatus st -> (FrameCounter -> StatePCM st PulseCode) -> PCMGenerator
+-- | Construct a mono-signal 'PCMGenerator' from a 'StatePCM' function.
+monoStatePCMGenerator :: PCMRef st -> (FrameCounter -> StatePCM st PulseCode) -> PCMGenerator
 monoStatePCMGenerator = pcmStateRunner PCMGenerateMono
 
+-- | Construct a stereo-signal 'PCMGenerator' from a 'StatePCM' function.
 stereoStatePCMGenerator
-  :: PCMStatus st
+  :: PCMRef st
   -> (FrameCounter -> StatePCM st (LeftPulseCode, RightPulseCode))
   -> PCMGenerator
 stereoStatePCMGenerator = pcmStateRunner PCMGenerateStereo
 
----- TODO: use this to instantiate RunStatePCM
-monoStatePCMRecorder :: PCMStatus st -> (FrameCounter -> PulseCode -> StatePCM st ()) -> PCMRecorder
+-- | Construct mono-signal 'PCMRecorder' from a 'StatePCM' function.
+monoStatePCMRecorder :: PCMRef st -> (FrameCounter -> PulseCode -> StatePCM st ()) -> PCMRecorder
 monoStatePCMRecorder stat = pcmStateRunner (PCMRecordMono . curry) stat . uncurry
 
----- TODO: use this to instantiate RunStatePCM
+-- | Construct stereo-signal 'PCMRecorder' from a 'StatePCM' function.
 stereoStatePCMRecorder
-  :: PCMStatus st
+  :: PCMRef st
   -> (FrameCounter -> LeftPulseCode -> RightPulseCode -> StatePCM st ())
   -> PCMRecorder
 stereoStatePCMRecorder stat f =
@@ -134,38 +135,47 @@ runPCM (PCM f) = f
 newPCMControl :: IO (PCMControl signal)
 newPCMControl = PCMControl <$> newMVar id
 
+-- | This function allows a 'PCM' function to be lifted into the 'StatePCM' function. Any monad
+-- transformer that lifts a 'PCM' can instantiate this class. It should be noted, however, that
+-- there is only one function in this entire API which makes use of the 'MonadPCM' class, and that
+-- is 'checkPCMControl'.
+class Monad m => MonadPCM m where { liftPCM :: PCM a -> m a; }
+instance MonadPCM PCM where { liftPCM = id; }
+instance MonadPCM (StatePCM st) where { liftPCM = StatePCM . lift; }
+
 -- | Poll a 'PCMControl' for whether @signal@ value has been stored into the 'PCMControl' via the
 -- 'signalPCM' function.
-checkPCMControl :: PCMControl signal -> PCM [signal]
-checkPCMControl (PCMControl mvar) = PCM $ liftIO $ modifyMVar mvar $ return . (,) id . ($ [])
+checkPCMControl :: MonadPCM m => PCMControl signal -> m [signal]
+checkPCMControl (PCMControl mvar) = liftPCM $ PCM $ liftIO $
+  modifyMVar mvar $ return . (,) id . ($ [])
 
 -- | Send a signal to a 'PCM' function via a 'PCMControl'.
 signalPCMControl :: MonadIO m => PCMControl signal -> signal -> m ()
 signalPCMControl (PCMControl mvar) signal = liftIO $ modifyMVar_ mvar $ return . (. (signal :))
 
--- | Define a new 'PCMStatus' register. You must provide an initial @st@ value.
-newPCMStatus :: MonadIO m => st -> m (PCMStatus st)
-newPCMStatus = liftIO . fmap PCMStatus . newMVar
+-- | Define a new 'PCMRef' register. You must provide an initial @st@ value.
+newPCMRef :: MonadIO m => st -> m (PCMRef st)
+newPCMRef = liftIO . fmap PCMRef . newMVar
 
--- | A function which updates a 'PCMStatus' register.
-modifyPCMStatus :: PCMStatus st -> (st -> (a, st)) -> PCM a
-modifyPCMStatus (PCMStatus mvar) = PCM . modifyMVar mvar . ((return . (\ (a,b)->(b,a))) .)
+-- | A function which updates a 'PCMRef' register.
+modifyPCMRef :: PCMRef st -> (st -> (a, st)) -> PCM a
+modifyPCMRef (PCMRef mvar) = PCM . modifyMVar mvar . ((return . (\ (a,b)->(b,a))) .)
 
--- | A function which gets a copy of the 'PCMStatus' register. This function can only be used from
--- within a 'PCM' function. To observe the 'PCMStatus' from outside of a 'PCM' function, use
--- 'readPCMStatus'.
-getPCMStatus :: PCMStatus st -> PCM st
-getPCMStatus (PCMStatus mvar) = PCM $ readMVar mvar
+-- | A function which gets a copy of the 'PCMRef' register. This function can only be used from
+-- within a 'PCM' function. To observe the 'PCMRef' from outside of a 'PCM' function, use
+-- 'readPCMRef'.
+getPCMRef :: PCMRef st -> PCM st
+getPCMRef (PCMRef mvar) = PCM $ readMVar mvar
 
--- | Overwrite the value of a 'PCMStatus' register.
-putPCMStatus :: PCMStatus st -> st -> PCM ()
-putPCMStatus stat = modifyPCMStatus stat . const . (,) ()
+-- | Overwrite the value of a 'PCMRef' register.
+putPCMRef :: PCMRef st -> st -> PCM ()
+putPCMRef stat = modifyPCMRef stat . const . (,) ()
 
--- | A function which reads a 'PCMStatus' register. As an @IO@ function, this function can be used
+-- | A function which reads a 'PCMRef' register. As an @IO@ function, this function can be used
 -- outside of a 'PCM' function, and cannot be used from within a 'PCM' function. To view the
--- 'PCMStatus' from within a 'PCM' function, use 'getPCMStatus'.
-readPCMStatus :: PCMStatus st -> IO st
-readPCMStatus (PCMStatus mvar) = readMVar mvar
+-- 'PCMRef' from within a 'PCM' function, use 'getPCMRef'.
+readPCMRef :: PCMRef st -> IO st
+readPCMRef (PCMRef mvar) = readMVar mvar
 
 ----------------------------------------------------------------------------------------------------
 

@@ -112,7 +112,6 @@ import           Control.Lens
 import           Control.Monad.Except
 import qualified Control.Monad.Fail    as Monad
 import           Control.Monad.Reader
-import           Control.Monad.State
 
 import           Data.List             (intercalate)
 import           Data.Semigroup
