@@ -1,8 +1,36 @@
 -- | For Happlet back-end developers, it is only necessary to implement the 'RenderText' type class.
 --
 -- This module provides a minimal extended API for rendering text into a Happlet window as an
--- old-fashioned "dumb terminal" would display fonts, e.g. the DEC VT-100 terminal protocol still
--- used today on modern Linux systems.
+-- old-fashioned "dumb terminal" would display fonts, e.g. the DEC VT-100 terminal protocol still --
+-- used today on POSIX-compatible systems. The purpose of the Happlets Text API is to provide a
+-- means to display a matrix of characters for a variety of command-line like applications, while
+-- still providing some of the conveniences of a widget-based GUI application.
+-- 
+-- The text matrix must display a monospace font, with the assumption that all characters are either
+-- half-width or full-width. Ligatures should be disallowed unless the font in question can
+-- guarantee that the width of every glyph is an integer multiple of the width of all half-width
+-- glyphs.
+-- 
+-- The minimum API defined in this module provides functionality for the following:
+-- 
+-- * Set the font size.
+-- 
+-- * Set bold/italic fonts.
+-- 
+-- * Set the font foreground and background color.
+-- 
+-- * Evaluate a canvas monad that draws a character or string to an
+--   arbitrary point within an image.
+-- 
+-- * Obtain a PixCoord rectangle for a text string, even without
+--   displaying the string.
+-- 
+-- * Obtain a relative row/column size for a text string, even without
+--   displaying the string.
+-- 
+-- * Obtain a row/column for a mouse PixCoord.
+-- 
+-- * Obtain the row/column size of an arbitrary rectangle.
 --
 -- The most important function type is the 'ScreenPrinter'. Construct a 'ScreenPrinter' from a
 -- string using 'displayString' or 'displayChar'. You can also modify the font style using the
@@ -13,7 +41,7 @@
 -- @
 -- 'Happlets.GUI.onCanvas' $ do
 --     'screenPrinter' $ do
---         'textCursor' . 'gridRow'
+--         'textCursor' . 'gridRow' 'Control.Lens..=' 2
 --         'displayString' "This is some text printed in the default font.\\n"
 --         'fontStyle' (do 'fontForeColor' 'Control.Lens..=' 'Happlets.Draw.Color.blue'; 'fontBold' 'Control.Lens..=' 'Prelude.True';) $ do
 --             "This text is written with a bold blue font of the default size.\\n"
