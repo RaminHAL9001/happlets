@@ -1,0 +1,75 @@
+# Copyright (C) 2018-2019  Ramin Honary.
+#
+# "procgen" is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License (AGPL)
+# as published by the Free Software Foundation.
+#
+# "procgen" is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+# See the GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program (see the file called "LICENSE"). If not, see
+# <http://www.gnu.org/licenses/agpl.html>.
+
+name:        happlets
+version:     0.1.0.0
+synopsis:    "\"Haskell Applets\" provides event handlers and a canvas for building simple GUI apps."
+license:     AGPL
+copyright:   "2017-2019 Ramin Honary"
+author:      "Ramin Honary"
+maintainer:  "ramin.honary@gmail.com"
+github:      "RaminHAL9001/happlets"
+category:    GUI, Game
+
+extra-source-files: []
+
+dependencies:
+- base
+- containers
+- lens
+- linear
+- mtl
+- semigroups
+- time
+- text
+- transformers
+
+default-extensions:
+- DeriveDataTypeable
+- DeriveFunctor
+- ExistentialQuantification
+- FlexibleContexts
+- FlexibleInstances
+- FunctionalDependencies
+- GADTs
+- GeneralizedNewtypeDeriving
+- ImplicitParams
+- LambdaCase
+- MultiParamTypeClasses
+- OverloadedStrings
+- RankNTypes
+- ScopedTypeVariables
+- StandaloneDeriving
+
+ghc-options:
+-   -Wall
+-   -fno-warn-name-shadowing
+-   -fno-warn-unused-do-bind
+
+library:
+  source-dirs: src
+  exposed-modules:
+  - Happlets
+  - Happlets.Audio
+  - Happlets.Config
+  - Happlets.Draw
+  - Happlets.Draw.Color
+  - Happlets.Draw.SampCoord
+  - Happlets.Draw.Text
+  - Happlets.Draw.Types2D
+  - Happlets.Event
+  - Happlets.Initialize
+  - Happlets.Provider
+  - Happlets.GUI
