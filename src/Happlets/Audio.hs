@@ -37,7 +37,8 @@ module Happlets.Audio
     -- * Lift PCM into StatePCM
     MonadPCM(..),
     -- * Callback Function Types
-    PCMGenerator(..), PCMRecorder(..),
+    PCMGenerator(..), PCMGenerateStereo, PCMGenerateMono,
+    PCMRecorder(..),  PCMRecordStereo,   PCMRecordMono,
     -- ** PCMGenerator Constructors
     mapTimeToStereoPCM, mapTimeToMonoPCM, mapTimeToStereo, mapTimeToMono,
     -- * Common data types
@@ -374,6 +375,16 @@ data PCMGenerator
   = PCMGenerateMono   (FrameCounter -> PCM PulseCode)
   | PCMGenerateStereo (FrameCounter -> PCM (LeftPulseCode, RightPulseCode))
 
+-- | This is a type with the same name as the 'PCMGenerateStereo' constructor function. This type is
+-- a shorthand for the type of the function parameter that you pass to the 'PCMGenerateStereo'
+-- constructor function, which is why this type has the exact same name as the constructor.
+type PCMGenerateStereo = (FrameCounter -> PCM (LeftPulseCode, RightPulseCode))
+
+-- | This is a type with the same name as the 'PCMGenerateMono' constructor function. This type is a
+-- shorthand for the type of the function parameter that you pass to the 'PCMGenerateMono'
+-- constructor function, which is why this type has the exact same name as the constructor.
+type PCMGenerateMono   = (FrameCounter -> PCM PulseCode)
+
 -- | A 'PCMRecorder' is a callback function for consuming samples recieved from a PCM
 -- device. Functions of this type are passed to the 'audioCapture' function. There are two modes
 -- of opeation: mono and stereo. It is expected that the callback is evaluated in it's own thread
@@ -384,6 +395,18 @@ data PCMGenerator
 data PCMRecorder
   = PCMRecordMono     (FrameCounter -> PulseCode -> PCM ())
   | PCMRecordStereo   (FrameCounter -> LeftPulseCode -> RightPulseCode -> PCM ())
+
+-- | This is a type with the same name as the 'PCMRecordStereo' constructor function. This type is a
+-- shorthand for the type of the function parameter that you pass to the 'PCMRecordStereo'
+-- constructor function, which is why this type has the exact same name as the constructor.
+type PCMRecordStereo = (FrameCounter -> LeftPulseCode -> RightPulseCode -> PCM ())
+
+-- | This is a type with the same name as the 'PCMRecordMono' constructor function. This type is a
+-- shorthand for the type of the function parameter that you pass to the 'PCMRecordMono' constructor
+-- function, which is why this type has the exact same name as the constructor.
+type PCMRecordMono   = (FrameCounter -> PulseCode -> PCM ())
+
+----------------------------------------------------------------------------------------------------
 
 -- | A frame is an information packet that describes the state of the hardware PCM device at single
 -- moment in time. We assume the PCM device operates at 44,000 samples per second, therefore a
