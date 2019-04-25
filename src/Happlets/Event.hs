@@ -120,7 +120,7 @@ data KeyPoint
   | SymbolKey Strict.Text
     -- ^ For keys not included in this list. This will typically be the logical name mapped to a raw
     -- keyboard point by the operating system.
-  deriving (Eq, Show, Typeable)
+  deriving (Eq, Ord, Show, Typeable)
 
 -- | Typical modifier keys provided by most GUI back-ends, platform-independent. These values are
 -- extracted from the 'ModifierBits' bit field 

@@ -90,7 +90,7 @@ module Happlets.Draw.Text
     FontStyle(..), FontSize, IsUnderlined(..), IsStriken(..), defaultFontStyle,
     fontForeColor, fontBackColor, fontSize, fontBold, fontItalic, fontUnderline, fontStriken,
     -- * Text Grid Location
-    UnitGridSize, TextBoundingBox, gridBoundingBox,
+    UnitGridSize, TextBoundingBox, withGridLocation, gridBoundingBox,
     TextGridRow(..), rowInt, TextGridColumn(..), columnInt,
     TextGridLocation(..), TextGridSize, textGridLocation,
     -- * Cursor Advance Mechanism
@@ -106,7 +106,7 @@ module Happlets.Draw.Text
 import           Happlets.Draw.Color
 import           Happlets.Draw.Types2D
 
-import           Control.Category      ((>>>))
+import           Control.Arrow      ((>>>), (&&&))
 import           Control.Lens
 import           Control.Monad.State
 
@@ -569,3 +569,13 @@ withFontStyle changeFont print = do
   oldStyle <- lift getRendererFontStyle
   lift $ setRendererFontStyle $ execState changeFont oldStyle
   print <* lift (setRendererFontStyle oldStyle)
+
+-- | This function takes a continuation and a function which temporarily changes the location of the
+-- cursor, then evaluates the continuation, then restores the prior cursor position, then returns
+-- the result of the continuation's evaluation.
+withGridLocation
+  :: RenderText render
+  => (TextGridLocation -> TextGridLocation)
+  -> ScreenPrinter render a -> ScreenPrinter render a
+withGridLocation move f =
+  state ((^. textCursor) &&& (textCursor %~ move)) >>= (f <*) . (textCursor .=)
