@@ -5,8 +5,7 @@
 -- 'Happlets.GUI.CanBufferImages' type class to load from disk and blit to screen bitmap images,
 -- should be enough to construct minimalist user interfaces.
 module Happlets.Draw.Types2D
-  ( RealApprox(..), realApprox,
-    Point2D, Size2D, point2D, size2D, pointX, pointY, pointXY,
+  (Point2D, Size2D, point2D, size2D, pointX, pointY, pointXY,
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
     Rect2D(..), rect2D, rect2DSize, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
     rect2DCenter, rect2DCentre,
@@ -29,19 +28,13 @@ import           Linear.V2
 
 ----------------------------------------------------------------------------------------------------
 
--- | This type represents an approximation of a 'Prelude.Real' number.
-newtype RealApprox = RealApprox { unwrapRealApprox :: Double }
-  deriving (Eq, Ord, Enum, Num, Real, Fractional, Floating, RealFrac)
-
-instance Show RealApprox where { show = show . unwrapRealApprox; }
-
-instance Read RealApprox where
-  readsPrec p str = readsPrec p str >>= \ (n, rem) -> [(RealApprox n, rem)]
-
 -- | This type represents a single point.
 type Point2D n = V2 n
 
 type Size2D n = V2 n
+
+-- | Values of this type are used when drawing lines or borders around rectangls.
+type LineWidth n = n
 
 -- | This type represents a line segment consisting of two points.
 data Line2D n = Line2D !(Point2D n) !(Point2D n)
@@ -63,9 +56,6 @@ point2D = V2 0 0
 -- | A synonym for 'point2D'.
 size2D :: Num n => Size2D n
 size2D = point2D
-
-realApprox :: Iso' RealApprox Double
-realApprox = iso unwrapRealApprox RealApprox
 
 -- | The X coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
 pointX :: Lens' (Point2D n) n
@@ -187,8 +177,3 @@ class HasBoundingBox a where { theBoundingBox :: a n -> Rect2D n; }
 instance HasBoundingBox Rect2D where { theBoundingBox = id; }
 
 instance HasBoundingBox Line2D where { theBoundingBox (Line2D a b) = Rect2D a b; }
-
-----------------------------------------------------------------------------------------------------
-
--- | Values of this type are used when drawing lines or borders around rectangls.
-type LineWidth = RealApprox

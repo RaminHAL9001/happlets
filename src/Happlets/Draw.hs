@@ -39,22 +39,22 @@ class (Functor render, Applicative render, Monad render, MonadIO render)
   clearScreen :: FillColor -> render ()
 
   -- | Draw a line on the canvas.
-  drawLine :: LineColor -> LineWidth -> Line2D RealApprox -> render ()
+  drawLine :: RealFrac n => LineColor -> LineWidth n -> Line2D n -> render ()
 
   -- | Draw a sequence of lines from a list of points, from head-to-tail, on the canvas. Passing an
   -- empty list should result in a no-op. Passing a list with a single point should paint the point.
-  drawPath :: LineColor -> LineWidth -> [Point2D RealApprox] -> render ()
+  drawPath :: RealFrac n => LineColor -> LineWidth n -> [Point2D n] -> render ()
 
   -- | Draw a rectangle on the canvas.
-  drawRect :: LineColor -> LineWidth -> FillColor -> Rect2D RealApprox -> render ()
+  drawRect :: RealFrac n => LineColor -> LineWidth n -> FillColor -> Rect2D n -> render ()
 
   -- | Update a pixel value somewhere on the canvas.
-  setPoint :: Point2D RealApprox -> Color -> render ()
+  setPoint :: RealFrac n => Point2D n -> Color -> render ()
 
   -- | Read a pixel value somewhere on the canvas. Out-of-bounds indicies throw an exception.
-  getPoint :: Point2D RealApprox -> render Color
+  getPoint :: RealFrac n => Point2D n -> render Color
 
 modifyPoint
-  :: (Monad render, Happlet2DGraphics render)
-  => Point2D RealApprox -> (Color -> Color) -> render ()
+  :: (Monad render, Happlet2DGraphics render, RealFrac n)
+  => Point2D n -> (Color -> Color) -> render ()
 modifyPoint p f = getPoint p >>= setPoint p . f
