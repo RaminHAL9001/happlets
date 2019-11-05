@@ -45,11 +45,12 @@ module Happlets.GUI
     Happlet, HappletWindow(..), Display(..), getWaitingThreads,
 
     -- * The GUI Function Type
-    GUI, getModel, getSubModel, putModel, modifyModel,
+    GUI, onSubModel, getModel, getSubModel, putModel, modifyModel,
     cancelNow, cancelIfBusy, howBusy, deleteEventHandler, bracketGUI,
 
     -- * Widgets
-    Widget, widget, widgetState, widgetBoundingBox, onWidget, mouseOnWidget,
+    Widget, widget, widgetState, widgetBoundingBox,
+    onWidget, mouseOnWidget, onWidgetModel, mouseOnWidgetModel,
     widgetContainsPoint, widgetContainsMouse, theWidgetState,
 
     -- * Installing Event Handlers
@@ -114,7 +115,6 @@ import qualified Control.Monad.Fail    as Monad
 import           Control.Monad.Reader
 
 import           Data.List             (intercalate)
-import           Data.Semigroup
 import qualified Data.Sequence         as Seq
 import qualified Data.Set              as Set
 import qualified Data.Text             as Strict
@@ -130,7 +130,13 @@ import           System.IO.Unsafe (unsafePerformIO) -- used for generating uniqu
 -- "Happlets.Initialize" module in order to construct a 'Happlet' and associate it with a @window@
 -- in a single step.
 data Happlet model
-  = Happlet
+  = SubHapplet
+    { happletId   :: !Int
+    , happletLock :: MVar ThreadTracker
+    }
+    -- ^ Used as a place-holder in the 'GUIState' when no MVar locking is necessary to access parts
+    -- of the GUI model value.
+  | Happlet
     { happletId   :: !Int
     , happletLock :: MVar ThreadTracker
     , happletMVar :: MVar model
@@ -138,6 +144,12 @@ data Happlet model
   deriving (Eq, Typeable)
 
 data ThreadTracker = ThreadTracker{ threadCount :: !Int, threadList :: ![ThreadId] }
+
+-- | Create a 'SubHapplet' from a 'Happlet'.
+subHapplet :: Happlet model -> Happlet subModel
+subHapplet = \ case
+  SubHapplet{ happletId=hid, happletLock=lock } -> SubHapplet{ happletId = hid, happletLock = lock }
+  Happlet{ happletId=hid, happletLock=lock }    -> SubHapplet{ happletId = hid, happletLock = lock }
 
 newThreadTracker :: ThreadTracker
 newThreadTracker = ThreadTracker{ threadCount = (-1), threadList = [] }
@@ -180,7 +192,9 @@ makeHapplet mod = do
 
 -- | Lock the 'Happlet' and perform an IO function on the content of it.
 onHapplet :: Happlet model -> (model -> IO (a, model)) -> IO (a, model)
-onHapplet (Happlet{happletMVar=mvar,happletLock=lock}) f = do
+onHapplet hap f = do
+  let mvar = happletMVar hap
+  let lock = happletLock hap
   this <- myThreadId
   bracket_ (addThread lock this) (removeThread lock this) $ do
     modifyMVar mvar $ liftM (\ (a, model) -> (model, (a, model))) . f
@@ -192,13 +206,19 @@ onHapplet (Happlet{happletMVar=mvar,happletLock=lock}) f = do
 -- For the most part, a @model@ is only useful to the various 'Happlets.GUI.GUI' threads that run in
 -- response to input events, but if it is necessary to view a snapshot of the @model@ from outside
 -- of the event 'Happlet.GUI.GUI' proper, this is the function to use.
+--
+-- Note that if you evaluate this function using 'liftIO' on a 'Happlet' within a 'GUI' function
+-- that is currently operating on this 'Happlet', this function will throw an exception.
 peekModel :: Happlet model -> IO model
-peekModel (Happlet{happletMVar=mvar}) = readMVar mvar
+peekModel = \ case
+  Happlet{happletMVar=mvar} -> readMVar mvar
+  SubHapplet{happletId=hid} -> error $
+    "'Happlets.GUI.peekModel' evaluated on locked 'Happlet' (happletId="++show hid++")"
 
 -- | Every thread that is waiting to access the @model@ of a 'Happlet' is recorded. This function
 -- returns the number of threads that are waiting for access.
 getWaitingThreads :: Happlet model -> IO (Int, [ThreadId])
-getWaitingThreads (Happlet{happletLock=lock}) = (threadCount &&& threadList) <$> readMVar lock
+getWaitingThreads hap = (threadCount &&& threadList) <$> readMVar (happletLock hap)
 
 modifyMVar' :: MVar st -> (st -> IO (a, st)) -> IO a
 modifyMVar' mvar f = modifyMVar mvar $ fmap (\ (a, st) -> (st, a)) . f
@@ -625,31 +645,81 @@ bracketGUI lock unlock f = GUI $ StateT $ \ st -> do
   st <- takeMVar mvar
   return (a, st)
 
+-- | Operate on a portion of the @model@, which can be updated by a given 'Lens' into a @subModel@
+-- of the @model@, by evaluating a 'GUI' function on that @subModel@.
+onSubModel 
+  :: Lens' model subModel
+  -> GUI window subModel a
+  -> GUI window model a 
+onSubModel submodel subgui = do
+  guist <- getGUIState
+  let modst = theGUIModel guist ^. submodel
+  (a, new) <- liftIO $ runGUI subgui $ GUIState
+    { theGUIModel   = modst
+    , theGUIHapplet = subHapplet $ theGUIHapplet guist
+    , theGUIWindow  = theGUIWindow  guist
+    , theGUIWorkers = theGUIWorkers guist
+    }
+  putGUIState $ guist
+    { theGUIModel   = theGUIModel   guist & submodel .~ theGUIModel new
+    , theGUIHapplet = theGUIHapplet guist
+    , theGUIWindow  = theGUIWindow  guist
+    , theGUIWorkers = theGUIWorkers guist
+    }
+  GUI $ return a
+
 -- | Use a 'Control.Lens.Lens'' to select a 'Widget' from the current @model@, then evaluate a 'GUI'
--- function that updates this 'Widget'. The @window@ will have it's clip region set to the
--- 'widgetBoundingBox'
+-- function that updates the 'Widget'. The @window@ will have it's clip region set to the
+-- 'widgetBoundingBox' automatically.
+--
+-- Notice that the 'GUI' function type that is evaluated takes the 'Widget' as it's state. That
+-- means this function can update the widget and the bounding box. This also means that you must use
+-- the 'widgetState' lens to update the stateful value within the 'Widget'. If you want to update a
+-- part of the @widgetModel@ alone without modifying the 'widgetBoundingBox', use 'onWidgetModel'
+-- instead of this function.
 onWidget
   :: HappletWindow window render
-  => Lens' model (Widget st)
-  -> (Widget st -> GUI window model (Widget st))
-  -> GUI window model st
-onWidget widget f = do
-  w <- use widget
-  w <- bracketGUI (pushWindowClipRegion $ theWidgetBoundingBox w) popWindowClipRegion (f w)
-  assign widget w
-  return $ theWidgetState w
+  => Lens' model (Widget widgetModel)
+  -> GUI window (Widget widgetModel) a
+  -> GUI window model a
+onWidget widget subgui = do
+  guist <- getGUIState
+  let widgst = theGUIModel guist ^. widget
+  onSubModel widget $
+    bracketGUI (pushWindowClipRegion $ theWidgetBoundingBox widgst) popWindowClipRegion subgui
 
 -- | Use this function to delegate a 'Happlets.Event.Mouse' event to a 'Widget'. This function
 -- automatically checks if the mouse lies within the 'widgetBoundingBox' and triggers the 'GUI'
--- function evaluation using 'onWidget'.
+-- function evaluation using 'onWidget'. Returns @'Just' a@ if the mouse event occured within the
+-- 'widgetBoundingBox' and the action was evaluated with a mouse event, returns 'Nothing' if the
+-- mouse event missed the 'widgetBoundingBox'.
 mouseOnWidget
   :: HappletWindow window render
-  => Lens' model (Widget st)
+  => Lens' model (Widget widgetModel)
   -> Mouse
-  -> (Mouse -> Widget st -> GUI window model (Widget st))
-  -> GUI window model st
+  -> (Mouse -> GUI window (Widget widgetModel) a)
+  -> GUI window model (Maybe a)
 mouseOnWidget widget evt f = use widget >>= \ w ->
-  maybe (return $ theWidgetState w) (onWidget widget . f) (widgetContainsMouse evt w)
+  maybe (return Nothing) (fmap Just . onWidget widget . f) (widgetContainsMouse evt w)
+
+-- | This function combines 'onWidget' with 'onSubModel', which constructs a function that can
+-- modify a the @subModel@ of 'Widget' directly, without access to the 'widgetBoundingBox'.
+onWidgetModel
+  :: HappletWindow window render
+  => Lens' model (Widget widgetModel)
+  -> GUI window widgetModel a
+  -> GUI window model a
+onWidgetModel widget = onWidget widget . onSubModel widgetState
+
+-- | This function combines 'mouseOnWidget' with 'onSubModel' in much the same way that
+-- 'onWidgetModel' combines 'onWidget' with 'onSubModel'.
+mouseOnWidgetModel
+  :: HappletWindow window render
+  => Lens' model (Widget widgetModel)
+  -> Mouse
+  -> (Mouse -> GUI window widgetModel a)
+  -> GUI window model (Maybe a)
+mouseOnWidgetModel widget evt = mouseOnWidget widget evt . fmap (onSubModel widgetState)
 
 -- | Once you install an event handler, the default behavior is to leave the event handler installed
 -- after it has evaluated so that it can continue reacting to events without you needing to
