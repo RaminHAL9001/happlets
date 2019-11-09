@@ -9,7 +9,7 @@ module Happlets.Draw.Types2D
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
     Rect2D(..), rect2D, rect2DSize, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
     rect2DCenter, rect2DCentre,
-    canonicalRect2D, rect2DMinBoundOf, rect2DIntersect, rect2DDiagonal,
+    canonicalRect2D, rect2DMinBoundOf, rect2DIntersect, rect2DDiagonal, rect2DtoInt,
     MaybeSingleton2D(..), HasBoundingBox(..),
     LineWidth,
     module Happlets.Draw.SampCoord,
@@ -21,8 +21,6 @@ import           Happlets.Draw.SampCoord
 import           Control.Arrow
 import           Control.Lens
 import           Control.Monad
-
-import           Data.Semigroup
 
 import           Linear.V2
 
@@ -155,6 +153,12 @@ rect2DIntersect
 -- | Convert a 'Rect2D' to a 'Line2D'
 rect2DDiagonal :: Rect2D n -> Line2D n
 rect2DDiagonal (Rect2D a b) = Line2D a b
+
+-- | Evaluate 'floor' on the 'rect2DHead and 'ceiling' on the 'rect2DTail'.
+rect2DtoInt :: (RealFrac n, Integral i) => Rect2D n -> Rect2D i
+rect2DtoInt r = rect2D
+  & rect2DHead .~ (floor <$> (r ^. rect2DHead))
+  & rect2DTail .~ (ceiling <$> (r ^. rect2DTail))
 
 ----------------------------------------------------------------------------------------------------
 
