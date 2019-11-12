@@ -83,7 +83,8 @@ import           Happlets.Draw.SampCoord
 import           Happlets.GUI
 import           Happlets.Provider
 
-import           Control.Exception         (handle, SomeException(..))
+import           Control.Arrow             ((|||))
+import           Control.Exception         (try, SomeException(..))
 import           Control.Monad.Reader
 import           Control.Monad.State
 
@@ -174,10 +175,10 @@ simpleHapplet
   -> IO ()
 simpleHapplet provider updcfg model init = do
   doInitializeGUI provider
-  hap <- makeHapplet model
+  happ   <- makeHapplet model
   config <- execStateT updcfg (defaultConfig provider)
-  win <- doWindowNew provider config
-  doWindowAttach provider True win hap init
+  win    <- doWindowNew provider config
+  doWindowAttach provider True win happ init
   doGUIEventLoopLaunch provider config
   doWindowDelete provider win
 
@@ -224,22 +225,25 @@ attachWindow
   -> Happlet model -- ^ the happlet to attach
   -> (PixSize -> GUI window model ()) -- ^ the GUI initializer that will install event handlers
   -> Initialize window ()
-attachWindow vis win happ init = attachWindowWithCatch vis win happ init (hPutStrLn stderr . show)
+attachWindow vis win happ init = attachWindowWithFinalizer vis win happ init $
+  maybe (return ()) (hPutStrLn stderr . show)
 
--- | Same as 'attachWindow' but runs the main event loop (the 'doWindowAttach' function) within a
--- 'Control.Exception.catch' function using the given exception handler. Since this function is
+-- | Same as 'attachWindow' but takes a finalizer function that runs after the main event loop (the
+-- 'doWindowAttach' function) completes evaluation. The 'doAttachWindow' function is evaluated
+-- within a 'Control.Exception.try' function to catch all exceptions. Since this function is
 -- intended to be the final function run in the @main@ program (a long-running function, but the
 -- final one to run), the handler catches all possible exceptions hence the exception type is
--- 'SomeException'.
-attachWindowWithCatch
+-- 'SomeException'. If there was no exception, the 'Nothing' value is passed to the given finalizer.
+attachWindowWithFinalizer
   :: Bool          -- ^ make visible immediately?
   -> window        -- ^ the window to which the happlet will be attached
   -> Happlet model -- ^ the happlet to attach
   -> (PixSize -> GUI window model ()) -- ^ the GUI initializer that will install event handlers
-  -> (SomeException -> IO ()) -- ^ A finalizer to be called when any exception occurs.
+  -> (Maybe SomeException -> IO ()) -- ^ A finalizer to be called when the application window closes.
   -> Initialize window ()
-attachWindowWithCatch vis win happ init onErr = liftIO . handle onErr =<<
-  asks doWindowAttach <*> pure vis <*> pure win <*> pure happ <*> pure init
+attachWindowWithFinalizer vis win happ init final = 
+  asks doWindowAttach <*> pure vis <*> pure win <*> pure happ <*> pure init >>=
+  liftIO . (fmap (Just ||| const Nothing) . try >=> final)
 
 ---- | This function launches the GUI event loop. This function is called automatically by the
 ---- functions 'happlet' and 'simpleHapplet', so it should generally not be called. This function is
