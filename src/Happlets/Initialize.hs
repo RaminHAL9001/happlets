@@ -83,11 +83,8 @@ import           Happlets.Draw.SampCoord
 import           Happlets.GUI
 import           Happlets.Provider
 
-import           Control.Exception         (handle, SomeException(..))
 import           Control.Monad.Reader
 import           Control.Monad.State
-
-import           System.IO                 (hPutStrLn, stderr)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -224,21 +221,7 @@ attachWindow
   -> Happlet model -- ^ the happlet to attach
   -> (PixSize -> GUI window model ()) -- ^ the GUI initializer that will install event handlers
   -> Initialize window ()
-attachWindow vis win happ init = attachWindowWithCatch vis win happ init (hPutStrLn stderr . show)
-
--- | Same as 'attachWindow' but runs the main event loop (the 'doWindowAttach' function) within a
--- 'Control.Exception.catch' function using the given exception handler. Since this function is
--- intended to be the final function run in the @main@ program (a long-running function, but the
--- final one to run), the handler catches all possible exceptions hence the exception type is
--- 'SomeException'.
-attachWindowWithCatch
-  :: Bool          -- ^ make visible immediately?
-  -> window        -- ^ the window to which the happlet will be attached
-  -> Happlet model -- ^ the happlet to attach
-  -> (PixSize -> GUI window model ()) -- ^ the GUI initializer that will install event handlers
-  -> (SomeException -> IO ()) -- ^ A finalizer to be called when any exception occurs.
-  -> Initialize window ()
-attachWindowWithCatch vis win happ init onErr = liftIO . handle onErr =<<
+attachWindow vis win happ init = liftIO =<<
   asks doWindowAttach <*> pure vis <*> pure win <*> pure happ <*> pure init
 
 ---- | This function launches the GUI event loop. This function is called automatically by the
