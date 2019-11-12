@@ -140,9 +140,10 @@ animationFrameRate = lens theAnimationFrameRate $ \ b a -> b{ theAnimationFrameR
 decorateWindow :: Lens' Config Bool
 decorateWindow = lens willDecorateWindow $ \ b a -> b{ willDecorateWindow = a }
 
--- | If the Happlet window is closed, halt the Gtk+ event loop, returning control to the @main@
+-- | If the Happlet window is closed, halt the GUI event loop, returning control to the @main@
 -- function. If the 'gtkLaunchEventLoop' is the final function called in @main@ the Haskell program
--- will end.
+-- will end. If you would like your GUI application to have multiple windows open, this value should
+-- be set to 'False'. By default, this value should be set to 'True'.
 quitOnWindowClose :: Lens' Config Bool
 quitOnWindowClose = lens willQuitOnWindowClose $ \ b a -> b{ willQuitOnWindowClose = a }
 
