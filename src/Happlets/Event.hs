@@ -9,7 +9,6 @@ import           Happlets.Draw.SampCoord
 import           Control.Monad
 
 import           Data.Bits
-import           Data.Semigroup
 import qualified Data.Text as Strict
 import           Data.Time.Clock
 import           Data.Typeable
@@ -135,7 +134,7 @@ data ModifierTag
   | AltKey
   | LeftAltKey
   | RightAltKey
-  | CommandKey -- A second alt key, specific to Apple keyboards
+  | CommandKey -- A second alt key, specific to Apple keyboards, also maps to NumLock on Linux
   | LeftCommandKey
   | RightCommandKey
   | Super1Key
