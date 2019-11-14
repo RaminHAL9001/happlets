@@ -1461,7 +1461,26 @@ class Managed window where
 
 -- | This class must be instantiated by the 'Happlet.Provider.Provider' to evaluate 'GUI' functions
 -- in 'Worker' threads. The 'guiWorker' makes use of this interface.
+--
+-- Although the 'GUI' function type instantiates 'liftIO', it is important that you never evaluate
+-- 'threadDelay' or wait on an 'MVar' or 'QSem' within a 'GUI' function, or you will almost
+-- certainly deadlock the application, due to the way most GUI applications perform locking on the
+-- 'MVar's which contain the resources shared with the operating system.
+--
+-- To perform any @IO@ computation which may cause the thread to block, or otherwise require a lot
+-- of time to run to completion, call 'forkGUI' which creates a thread-safe evaluator for functions
+-- of type 'GUI' that can be safely evaluated in the @IO@ context of the thread.
 class CanRecruitWorkers window where
+  -- | This function creates a new Haskell thread and passes an evaluator (a continuation function)
+  -- of type @('GUI' window model a -> IO ('EventHandlerControl' a)@. This Haskell thread can safely
+  -- spawn other threads, it can evaluate 'threadDelay', it can safely wait on 'MVar's or 'QSem's,
+  -- and it can loop indefinitely. When it comes time to perform an action in the 'GUI', the thread
+  -- function can call the given evaluator function to perform an update in the GUI.
+  forkGUI
+    :: ((GUI window model a -> IO (EventHandlerControl a)) -> IO ())
+       -- ^ Use this function to evaluate a 'GUI' function within the @IO@ context of the 'Worker'
+       -- thread.
+    -> GUI window model ThreadId
   -- | This function must assume that the given 'GUI' function will be evaluated in a new thread
   -- with the given 'GUIState'. This function must perform all locking of mutex variables necessary
   -- to evaluate the 'GUI' function, and update all mutexes with the results of evaluation.
