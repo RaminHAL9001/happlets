@@ -83,35 +83,33 @@
 module Happlets.Draw.Text
   ( ScreenPrinter(..),
     screenPrinter, fontStyle, textCursor, renderOffset,
-    asGridSize, displayChar, displayString, gridLocationOfMouse,
+    asGridSize, displayPrintable, displayChar, displayString, displayStringEvalBoxes,
+    gridLocationOfMouse,
     HasTextGridLocation(..),
     -- * Font Styles
     withFontStyle, updateFontStyle,
-    FontStyle(..), FontSize, IsUnderlined(..), IsStriken(..), defaultFontStyle,
+    FontStyle(..), FontSize, IsUnderlined(..), IsStriken(..), defaultFontStyle, fontName,
     fontForeColor, fontBackColor, fontSize, fontBold, fontItalic, fontUnderline, fontStriken,
     -- * Text Grid Location
     UnitGridSize, TextBoundingBox, withGridLocation, gridBoundingBox,
     TextGridRow(..), rowInt, TextGridColumn(..), columnInt,
     TextGridLocation(..), TextGridSize, textGridLocation,
-    -- * Cursor Advance Mechanism
-    CursorAdvanceRules,
-    cursorAdvanceRules, defaultCursorAdvanceRules, cursorAdvanceRuleLangC, cursorCharRuleLangDOS,
     -- * Character Printing Machine
     ScreenPrinterState(..), screenPrinterState, runScreenPrinter,
-    CursorAdvanceInput(..),
-    RenderText(..), spanPrintable,
+    RenderText(..), spanPrintable, printableChar, PrintableString, unwrapPrintable,
     module Data.Char,
   ) where
 
 import           Happlets.Draw.Color
 import           Happlets.Draw.Types2D
 
-import           Control.Arrow      ((>>>), (&&&))
+import           Control.Arrow      ((>>>), (&&&), first)
 import           Control.Lens
 import           Control.Monad.State
 
 import           Data.Char
 import           Data.String
+import qualified Data.Text as Strict
 
 ----------------------------------------------------------------------------------------------------
 
@@ -151,6 +149,7 @@ data FontStyle
   = FontStyle
     { theFontForeColor :: !Color
     , theFontBackColor :: !Color
+    , theFontName      :: !Strict.Text
     , theFontSize      :: !FontSize
     , theFontBold      :: !Bool
     , theFontItalic    :: !Bool
@@ -164,12 +163,20 @@ defaultFontStyle :: FontStyle
 defaultFontStyle = FontStyle
   { theFontForeColor = black
   , theFontBackColor = white
+  , theFontName      = "Monospace"
   , theFontSize      = 16.0
   , theFontBold      = False
   , theFontItalic    = False
   , theFontUnderline = NoUnderline
   , theFontStriken   = NotStriken
   }
+
+-- | The requested font name for the built-in text console. It must be a monospaced font. This font
+-- will be set only if available, otherwise the system default font will be used. There is no way to
+-- programmatically determine whether the requested font has been set or not. This feature is merely
+-- a convenience, Happlets implementations are not required to support it.
+fontName :: Lens' FontStyle Strict.Text
+fontName = lens theFontName $ \ a b -> a{ theFontName = b }
 
 -- | The foreground 'Color' of the font.
 fontForeColor     :: Lens' FontStyle Color
@@ -206,12 +213,12 @@ fontStriken = lens theFontStriken $ \ a b -> a{ theFontStriken = b }
 -- | Positive 1 indicates the left-most column, negative 1 indicates the right-most column. Zero
 -- values indicate the cursor is not visible.
 newtype TextGridRow = TextGridRow Int
-  deriving (Eq, Ord, Read, Show, Enum, Bounded, Num)
+  deriving (Eq, Ord, Read, Show, Enum, Bounded, Num, Real, Integral)
 
 -- | Positive 1 indicates the top-most column, negative 1 indicates the bottom-most column. Zero
 -- values indicate the cursor is not visible.
 newtype TextGridColumn = TextGridColumn Int
-  deriving (Eq, Ord, Read, Show, Enum, Bounded, Num)
+  deriving (Eq, Ord, Read, Show, Enum, Bounded, Num, Real, Integral)
 
 -- | This is a screen cursor value containing both a 'CursorRow' and a 'CursorColumn'.
 data TextGridLocation = TextGridLocation !TextGridRow !TextGridColumn
@@ -313,22 +320,24 @@ class Monad render => RenderText render where
   -- evaluates the character as 'Prelude.False').
   screenPrintCharNoAdvance :: Char -> render (Maybe TextBoundingBox)
 
-  -- | This function __must__ pass the given 'Prelude.String' to the 'takePrintable' function and
-  -- then render the characters according to the given 'ScreenPrinterState' without modifying the
-  -- 'ScreenPrinterState'. The bounding box of the printed 'Prelude.String' is returned. The
-  -- returned bounding box need not align with the text grid, but it is expected that the
-  -- 'ScreenPrinterState' can be updated with a new 'GridLocation' according to the returned
-  -- bounding box.
+  -- | This function must render the characters according to the given 'ScreenPrinterState' and blit
+  -- them to the display image buffer without modifying the 'ScreenPrinterState'.
   --
-  -- If the given string is empty, this function shall return 'Prelude.Nothing'.
-  screenPrintNoAdvance :: String -> render (Maybe TextBoundingBox)
+  -- The bounding box of the printed 'Prelude.String' is returned, along with the portion of the
+  -- input string that was not printed. The returned bounding box need not align with the text grid,
+  -- but it is expected that the 'ScreenPrinterState' can be updated with a new 'GridLocation'
+  -- according to the returned bounding box.
+  --
+  -- If the given string is empty, this function shall return 'Prelude.Nothing', along with an empty
+  -- string.
+  screenPrintNoAdvance :: PrintableString -> render (Maybe TextBoundingBox)
 
   -- | Get the 'TextBoundingBox' size of a character without changing anything visible on the
   -- display.
   getCharBoundingBox :: Char -> render (Maybe TextBoundingBox)
 
   -- | Get the 'TextBoundingBox' size of a string without changing anything visible on the display.
-  getStringBoundingBox :: String -> render (Maybe TextBoundingBox)
+  getStringBoundingBox :: PrintableString -> render (Maybe TextBoundingBox)
 
   -- | Convert a 'Happlets.Types2D.Point2D' to a 'GridTextLocation'. This is useful for computing
   -- the grid locaiton of where a mouse event occurs.
@@ -378,24 +387,12 @@ instance RenderText render => IsString (ScreenPrinter render ()) where
 -- @
 data ScreenPrinterState
   = ScreenPrinterState
-    { theTextCursor         :: !TextGridLocation
-    , theFontStyle          :: !FontStyle
-    , theRenderOffset       :: !(V2 Double)
-    , theCursorAdvanceRules :: CursorAdvanceRules
+    { theTextCursor   :: !TextGridLocation
+    , theFontStyle    :: !FontStyle
+    , theRenderOffset :: !(V2 Double)
+    , theTabWidth     :: !TextGridColumn
+    , theTabStops     :: [TextGridColumn]
     }
-
--- | This function type is used by 'CursorAdvanceRules'.
-data CursorAdvanceInput
-  = CursorAdvanceChar   Char
-  | CursorAdvanceString String
-  deriving (Eq, Ord, Show)
-
--- | This function takes either a 'Prelude.String' or a 'Prelude.Char', along with a 'TextGridSize'
--- which approximates the bounding box for the given 'Prelude.String' or 'Prelude.Char'. This
--- function must then compute how to advance the text cursor based on these two inputs. Functions of
--- this type can be constructed for any possible use, and can be modifed at any time using the
--- 'cursorAdvanceRules' lens.
-type CursorAdvanceRules = CursorAdvanceInput -> TextGridSize -> TextGridLocation -> TextGridLocation
 
 instance HasTextGridLocation ScreenPrinterState where
   gridColumn = textCursor . gridColumn
@@ -415,46 +412,13 @@ instance RenderText render => RenderText (ScreenPrinter render) where
   setRendererFontStyle     = lift . setRendererFontStyle
   getRendererFontStyle     = lift getRendererFontStyle
 
--- | The 'defaultCursorAdvanceRules' are set to 'cursorAdvanceRuleLangC'.
-defaultCursorAdvanceRules :: CursorAdvanceRules
-defaultCursorAdvanceRules = cursorAdvanceRuleLangC
-
--- | This is the default text cursor behavior. If the given character is @('\\LF')@, the
--- 'gridColumn' is set to 0 and the 'gridRow' is incremented. For all other characters, the
--- 'Data.Char.WCWidth.wcwidth' function is used to obtain a character width value, and if the
--- character width value is @(-1)@ then the cursor is not advanced, otherwise the cursor is advanced
--- by the character width value.
---
--- The name of this function is similar to the UNIX locale environment variable setting @LANG=C@, as
--- in the locale is set to the C programming language, rather than the language for a specific
-cursorAdvanceRuleLangC :: CursorAdvanceRules
-cursorAdvanceRuleLangC input (TextGridLocation row col) = case input of
-  CursorAdvanceChar   c -> case c of
-    '\n'                  -> (gridRow +~ row) . (gridColumn .~ 0)
-    c | not (isPrint c)   -> id
-    _                     -> gridColumn +~ col
-  CursorAdvanceString{} -> gridColumn +~ col
-
--- | Similar to 'cursorCharLangC' with one difference: the new line character @('\\LF')@ simply
--- increments the 'cursorRow' but does not set the 'cursorColumn' to 0, while the carriage return
--- character @('\\CR')@ sets the 'cursorColumn' to 1 but does not increment the 'cursorRow',
--- therefore both the carriage return and line feed @('\\CR\\LF')@ are both necessary to send the
--- cursor to the next line.
-cursorCharRuleLangDOS :: CursorAdvanceRules
-cursorCharRuleLangDOS input (TextGridLocation _ col) = case input of
-  CursorAdvanceChar   c -> case c of
-    '\n'                  -> gridRow    +~ 1
-    '\r'                  -> gridColumn .~ 0
-    c | not (isPrint c)   -> id
-    _                     -> gridColumn +~ col
-  CursorAdvanceString{} -> gridColumn +~ col
-
 screenPrinterState :: ScreenPrinterState
 screenPrinterState = ScreenPrinterState
-  { theTextCursor         = textGridLocation
-  , theFontStyle          = defaultFontStyle
-  , theRenderOffset       = V2 (0.0) (0.0)
-  , theCursorAdvanceRules = defaultCursorAdvanceRules
+  { theTextCursor   = textGridLocation
+  , theFontStyle    = defaultFontStyle
+  , theRenderOffset = V2 (0.0) (0.0)
+  , theTabWidth     = 4
+  , theTabStops     = []
   }
 
 -- | The current 'gridRow' and 'gridColumn' of the text cursor.
@@ -471,20 +435,24 @@ fontStyle = lens theFontStyle $ \ a b -> a{ theFontStyle = b }
 renderOffset :: Lens' ScreenPrinterState (V2 Double)
 renderOffset = lens theRenderOffset $ \ a b -> a{ theRenderOffset = b }
 
--- | This is a function used to make decisions on how to move the cursor around as characters and
--- strings are printed. The default behavior is 'defaultCursorAdvanceRules', but you can make your
--- own rules (as long as the rules are expressed as a function of the type 'CursorAdvanceRules'),
--- and change the rules at any time within any function that instantiates the 'TextRender' type class.
--- You change the rules using this very lens.
---
--- One example of how you may want to change the cursor advance rules would be if you are
--- implementing a Chinese/Japanese language display where the characters are printed in columns from
--- top to bottom, and columns process from the right of the screen to the left. This behavior can be
--- defined as a rule and switched with this lens before calling 'displayString' on a string
--- containing many Chinese language characters. You can then switch back to the default rules using:
--- @'cursorAdvanceRules' 'Control.Lens..=' 'defaultCursorAdvanceRules'@.
-cursorAdvanceRules :: Lens' ScreenPrinterState CursorAdvanceRules
-cursorAdvanceRules = lens theCursorAdvanceRules $ \ a b -> a{ theCursorAdvanceRules = b }
+-- | This field is used by 'displayString', decides which 'gridColumn' to which the cursor will
+-- advance when a tab @\'\\t\'@ character is encountered.
+tabStops :: Lens' ScreenPrinterState [TextGridColumn]
+tabStops = lens theTabStops $ \ a b -> a{ theTabStops = b }
+
+-- | This field is used by 'displayString', decides which 'gridColumn' to which the cursor will
+-- advance when a tab @\'\\t\'@ character is encountered and there are no 'tabStops' set. This
+-- 'gridColumn' will be advanced to the nearest integer multiple of this value. A value of 1 treats
+-- tabs as being identical to the space character unless there are 'tabStops' set, a value of 0 or
+-- less will cause tabs to be ignored unless there are 'tabStops' set.
+tabWidth :: Lens' ScreenPrinterState TextGridColumn
+tabWidth = lens theTabWidth $ \ a b -> a{ theTabWidth = b }
+
+-- | This type can only be constructed by 'spanPrintable' or 'printableChar', and stores a 'String'
+-- that is guaranteed to only contain printable characters i.e. characters that can pass through a
+-- 'Data.List.filter' of characters for which 'Data.Char.isPrint' is true.
+newtype PrintableString = PrintableString{ unwrapPrintable :: String }
+  deriving (Eq, Ord)
 
 -- | This function must be used by "screenPrintStringNoAdvance" to sanitize strings passed to it
 -- before rendering. This function drops all @'not' . 'isPrint'@ characters from the 'Prelude.head'
@@ -492,8 +460,14 @@ cursorAdvanceRules = lens theCursorAdvanceRules $ \ a b -> a{ theCursorAdvanceRu
 -- non-printing characters after the first run of printing characters. This means if you have any
 -- tabs, newlines, line breaks, or anything that isn't printable in the given 'Prelude.String', only
 -- the characters up to those non-printing characters are taken.
-spanPrintable :: String -> (String, String)
-spanPrintable = span isPrint . dropWhile (not . isPrint)
+spanPrintable :: String -> (PrintableString, String)
+spanPrintable = first PrintableString . span isPrint . dropWhile (not . isPrint)
+
+-- | Constructs a 'PrintableString' containing a single 'Char' value only if it is printable, that
+-- is, if the 'isPrint' of of the 'Char' value is 'True'. Evaluates to 'Nothing' if the 'Char' is
+-- not printable.
+printableChar :: Char -> Maybe PrintableString
+printableChar c = if isPrint c then Just $ PrintableString [c] else Nothing
 
 -- | Given a 'TextBoundingBox' (a value typically returned by 'displayString' or 'displayChar'),
 -- evaluate 'gridCellSize' with 'gridBoundingBox' to obtain a 'TextGridSize' value that bounds the
@@ -520,18 +494,17 @@ runScreenPrinter = runStateT . unwrapScreenPrinter
 -- not for export
 displayInput
   :: RenderText render
-  => (input -> CursorAdvanceInput)
-  -> (input -> ScreenPrinter render (Maybe TextBoundingBox))
+  => (input -> ScreenPrinter render (Maybe TextBoundingBox))
   -> input -> ScreenPrinter render (Maybe TextBoundingBox)
-displayInput constr display input = do
+displayInput display input = do
   st <- get
   setScreenPrinterState st
   display input >>= \ case
     Nothing   -> return Nothing
     Just bnds -> do
-      grid <- asGridSize bnds
-      textCursor %= theCursorAdvanceRules st (constr input) grid
-      return $ Just bnds
+      spanSize <- asGridSize bnds
+      textCursor . gridColumn += spanSize ^. gridColumn
+      return (Just bnds)
 
 -- | After setting the 'fontStyle' with lens operators like @('Control.Lens..=')@, the state is
 -- modified but the changed state has not yet been applied. Use this function to apply the updated
@@ -542,11 +515,77 @@ updateFontStyle = use fontStyle >>= setRendererFontStyle
 
 -- | This function renders a single character, then advances the 'gridColumn' or 'gridRow'.
 displayChar :: RenderText render => Char -> ScreenPrinter render (Maybe TextBoundingBox)
-displayChar = displayInput CursorAdvanceChar screenPrintCharNoAdvance
+displayChar c = if isPrint c then displayInput screenPrintCharNoAdvance c else pure Nothing
 
--- | Render a string by calling 'displayChar' repeatedly.
+-- | Displays a 'PrintableString'.
+--
+-- This function works by rendering a string by calling 'screenPrintNoAdvance', and then advancing
+-- the cursor according to the size of the 'TextBoundingBox' returned by that function. This
+-- function will halt after the first newline character, returning the first newline character and
+-- all characters after it that were ignored.
+displayPrintable
+  :: RenderText render
+  => PrintableString
+  -> ScreenPrinter render (Maybe TextBoundingBox)
+displayPrintable = displayInput screenPrintNoAdvance
+
+-- | Prints a string with line breaks. This function will display strings in a way that is most
+-- intuitive to programmers who are familiar with command line interfaces.
+--
+-- This is a convenience function that breaks a given input 'String' up into 'PrintableString's,
+-- increments the ('textCursor' . 'gridColumn') field every time an @\'\\n\'@ character is
+-- encountered, sets the ('textCursor' . 'gridRow') to zero every time a @\'\\r\'@ character is
+-- encountered, and advances the @('textCursor' . 'gridColumn')@ field to the next 'tabStops'
+-- position every time a @\'\\t\'@ character is encountered.
+--
+-- All other non-printing characters are ignored, so VT-100 color changing codes or cursor
+-- positioning codes are not obeyed. (With a bit of help, we would like to provide some simple
+-- VT-100 protocol color and cursor positioning functionality in the future.)
 displayString :: RenderText render => String -> ScreenPrinter render (Maybe TextBoundingBox)
-displayString = displayInput CursorAdvanceString screenPrintNoAdvance
+displayString = displayStringEvalBoxes (const $ return ())
+
+-- | This function is very similar to 'displayString', but it takes a continuation function called
+-- the @evalBoxes@ function, a function of type @('TextBoundingBox' -> render ())@, which is
+-- evaluated every time a block of text is rendered by 'displayPrintable'. The 'TextBoundingBox'
+-- passed to @evalBoxes@ is the value returned by 'displayPrintable'.
+--
+-- This function allows you more fine-grained control of which parts of the screen might be
+-- refreshed. The 'TextBoundingBox' returned by this functionq is the 'mconcat'enation of all of the
+-- 'TextBoundingBox'es passed to the 'displayPrintable' function, which is the smallest box that
+-- encompases all of those boxes.
+displayStringEvalBoxes
+  :: RenderText render
+  => (TextBoundingBox -> render ()) -- ^ the @evalBoxes@ function
+  -> String -> ScreenPrinter render (Maybe TextBoundingBox)
+displayStringEvalBoxes withBox str = use tabStops >>= loop Nothing str where
+  loop bounding str stops = do
+    (prn, str) <- pure $ spanPrintable str
+    box <- displayPrintable prn
+    maybe (pure ()) (lift . withBox) box
+    bounding <- pure $ bounding <> box
+    case str of
+      ""    -> return bounding
+      '\ESC':str -> do
+        -- TODO: handle VT-100 escape codes.
+        loop bounding str stops
+      c:str -> do
+        stops <- case c of
+          '\n' -> do
+            textCursor %= (gridColumn .~ 0) . (gridRow +~ 1)
+            use tabStops -- replenish the list of tab stops
+          '\t' -> do
+            col <- use $ textCursor . gridColumn
+            case dropWhile (<= col) stops of
+              []      -> do
+                w <- use tabWidth
+                textCursor . gridColumn += case w of
+                  w | w <= 0 -> 0
+                  w | w == 1 -> 1
+                  w          -> w - mod col w
+                return []
+              s:stops -> (textCursor . gridColumn .= s) >> return stops
+          _    -> return stops
+        loop bounding str stops
 
 -- | This function takes a continuation which temporarily changes the font style used by the
 -- printer, which acts as a sort-of markup function. The function used to modify the 'fontStyle' is
