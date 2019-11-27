@@ -83,7 +83,8 @@
 module Happlets.Draw.Text
   ( ScreenPrinter(..),
     screenPrinter, fontStyle, textCursor, renderOffset,
-    asGridSize, displayPrintable, displayChar, displayString, displayStringEvalBoxes,
+    asGridSize, pixToGridSize,
+    displayPrintable, displayChar, displayString, displayStringEvalBoxes,
     gridLocationOfMouse,
     HasTextGridLocation(..),
     -- * Font Styles
@@ -490,6 +491,16 @@ printableChar c = if isPrint c then Just $ PrintableString [c] else Nothing
 -- cursor.
 asGridSize :: RenderText render => TextBoundingBox -> render TextGridSize
 asGridSize box = flip gridBoundingBox box <$> getGridCellSize
+
+-- | Takes a value of type 'PixSize' and computes the current 'TextGridSize' value that fits within
+-- that 'PixSize'. The 'PixSize' value is usually provided by the 'Happlets.GUI.getWindowSize'
+-- function, or passed as an argument of type 'Happlets.GUI.NewPixSize' to the redraw continuation
+-- function set by 'Happlets.GUI.resizeEvents',
+pixToGridSize
+  :: RenderText render
+  => PixSize -- ^ The size of the GUI window.
+  -> render TextGridSize
+pixToGridSize winSize = asGridSize $ fromIntegral <$> (rect2D & rect2DHead .~ winSize)
 
 -- | Evaluate the 'Control.Monad.State.Class.MonadState' 'ScreenPrinter'. Use this function within a
 -- @do@ block passed to the 'Happlets.GUI.onCanvas' or 'Happlets.GUI.onOSBuffer' function in order
