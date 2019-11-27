@@ -94,6 +94,7 @@ module Happlets.Draw.Text
     UnitGridSize, TextBoundingBox, withGridLocation, gridBoundingBox,
     TextGridRow(..), rowInt, TextGridColumn(..), columnInt,
     TextGridLocation(..), TextGridSize, textGridLocation,
+    sumGridLocation, diffGridLocation, positiveGridLocation,
     -- * Character Printing Machine
     ScreenPrinterState(..), screenPrinterState, runScreenPrinter,
     RenderText(..), spanPrintable, printableChar, PrintableString, unwrapPrintable,
@@ -246,6 +247,20 @@ instance HasTextGridLocation TextGridLocation where
                     (\ (TextGridLocation _ b) a -> TextGridLocation a b)
   gridColumn = lens (\ (TextGridLocation   _ b) -> b)
                     (\ (TextGridLocation a _) b -> TextGridLocation a b)
+
+-- | Compute the difference between two 'TextGridLocation's. Works just like vector arithmetic.
+diffGridLocation :: TextGridLocation -> TextGridLocation -> TextGridLocation
+diffGridLocation (TextGridLocation x0 y0) (TextGridLocation x1 y1) =
+  TextGridLocation (x0 - x1) (y0 - y1)
+
+sumGridLocation :: TextGridLocation -> TextGridLocation -> TextGridLocation
+sumGridLocation (TextGridLocation x0 y0) (TextGridLocation x1 y1) =
+  TextGridLocation (x0 + x1) (y0 + y1)
+
+-- | Returns 'True' if both components are positive. This is used to test if a location lies within
+-- a 'TextGridSize' bounding box when used with 'diffGridLocation'.
+positiveGridLocation :: TextGridLocation -> Bool
+positiveGridLocation (TextGridLocation row col) = row >= 0 && col >= 0
 
 -- | The initial 'TextGridLocation' which is set to @(0, 0)@. This value is intended to be used with
 -- lenses.
