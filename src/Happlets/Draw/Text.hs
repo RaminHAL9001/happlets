@@ -403,11 +403,12 @@ instance RenderText render => IsString (ScreenPrinter render ()) where
 -- @
 data ScreenPrinterState
   = ScreenPrinterState
-    { theTextCursor   :: !TextGridLocation
-    , theFontStyle    :: !FontStyle
-    , theRenderOffset :: !(V2 Double)
-    , theTabWidth     :: !TextGridColumn
-    , theTabStops     :: [TextGridColumn]
+    { theTextCursor             :: !TextGridLocation
+    , theFontStyle              :: !FontStyle
+    , theRenderOffset           :: !(V2 Double)
+    , theTabWidth               :: !TextGridColumn
+    , theTabStops               :: [TextGridColumn]
+    , theColumnResetsOnLineFeed :: !Bool
     }
 
 instance HasTextGridLocation ScreenPrinterState where
@@ -430,11 +431,12 @@ instance RenderText render => RenderText (ScreenPrinter render) where
 
 screenPrinterState :: ScreenPrinterState
 screenPrinterState = ScreenPrinterState
-  { theTextCursor   = textGridLocation
-  , theFontStyle    = defaultFontStyle
-  , theRenderOffset = V2 (0.0) (0.0)
-  , theTabWidth     = 4
-  , theTabStops     = []
+  { theTextCursor             = textGridLocation
+  , theFontStyle              = defaultFontStyle
+  , theRenderOffset           = V2 (0.0) (0.0)
+  , theTabWidth               = 4
+  , theTabStops               = []
+  , theColumnResetsOnLineFeed = True
   }
 
 -- | The current 'gridRow' and 'gridColumn' of the text cursor.
@@ -463,6 +465,11 @@ tabStops = lens theTabStops $ \ a b -> a{ theTabStops = b }
 -- less will cause tabs to be ignored unless there are 'tabStops' set.
 tabWidth :: Lens' ScreenPrinterState TextGridColumn
 tabWidth = lens theTabWidth $ \ a b -> a{ theTabWidth = b }
+
+-- | According to the VT-100 protocol, whether the terminal resets the column position to zero on an
+-- @'\\n@' character or not is configurable, but by default this value is True.
+columnResetsOnLineFeed :: Lens' ScreenPrinterState Bool
+columnResetsOnLineFeed = lens theColumnResetsOnLineFeed $ \ a b -> a{ theColumnResetsOnLineFeed = b }
 
 -- | This type can only be constructed by 'spanPrintable' or 'printableChar', and stores a 'String'
 -- that is guaranteed to only contain printable characters i.e. characters that can pass through a
@@ -558,15 +565,27 @@ displayPrintable = displayInput screenPrintNoAdvance
 -- | Prints a string with line breaks. This function will display strings in a way that is most
 -- intuitive to programmers who are familiar with command line interfaces.
 --
--- This is a convenience function that breaks a given input 'String' up into 'PrintableString's,
--- increments the ('textCursor' . 'gridColumn') field every time an @\'\\n\'@ character is
--- encountered, sets the ('textCursor' . 'gridRow') to zero every time a @\'\\r\'@ character is
--- encountered, and advances the @('textCursor' . 'gridColumn')@ field to the next 'tabStops'
--- position every time a @\'\\t\'@ character is encountered.
+-- This is a convenience function that breaks a given input 'String' up into 'PrintableString's, and
+-- also modifies the 'textCursor' position according to the control characters @'\\n'@, @'\\r'@, and
+-- @'\\t'@, in accordance with the semantics defined in the VT-100 protocol. All other control
+-- characters are ignored.
 --
+-- * @'\\r'@: sets @('textCursor' . 'gridColumn')@ to zero.
+--
+-- * @'\\n'@: sets @('textCursor' . 'gridColumn')@ to zero and increments @('textCursor' . 'gridRow')@,
+--  unless the 'columnResetsOnLineFeed' field is set to 'False'.
+--
+-- * @'\\v'@ and @'\\f'@: as with the VT-100 protocol behaves identically to @'\\n'@.
+--
+-- * @'\\t'@: @('textCursor' . 'gridColumn')@ is set to the next column value in the
+--   list of 'tabStops'.
+-- 
 -- All other non-printing characters are ignored, so VT-100 color changing codes or cursor
 -- positioning codes are not obeyed. (With a bit of help, we would like to provide some simple
 -- VT-100 protocol color and cursor positioning functionality in the future.)
+--
+-- The VT-100 protocol semantics were programmed according to this resource:
+-- https://vt100.net/docs/vt100-ug/table3-10.html
 displayString :: RenderText render => String -> ScreenPrinter render (Maybe TextBoundingBox)
 displayString = displayStringEvalBoxes (const $ return ())
 
@@ -584,6 +603,10 @@ displayStringEvalBoxes
   => (TextBoundingBox -> render ()) -- ^ the @evalBoxes@ function
   -> String -> ScreenPrinter render (Maybe TextBoundingBox)
 displayStringEvalBoxes withBox str = use tabStops >>= loop Nothing str where
+  lineFeed = do
+    resetCol <- use columnResetsOnLineFeed
+    textCursor %= (gridRow +~ 1) . (if resetCol then gridColumn .~ 0 else id)
+    use tabStops -- replenish the list of tab stops
   loop bounding str stops = do
     (prn, str) <- pure $ spanPrintable str
     box <- displayPrintable prn
@@ -592,13 +615,16 @@ displayStringEvalBoxes withBox str = use tabStops >>= loop Nothing str where
     case str of
       ""    -> return bounding
       '\ESC':str -> do
-        -- TODO: handle VT-100 escape codes.
+        -- TODO: handle VT-100 escape codes, particularly the ones for setting text color, bold
+        -- face, and for repositioning the cursor.
         loop bounding str stops
       c:str -> do
         stops <- case c of
-          '\n' -> do
-            textCursor %= (gridColumn .~ 0) . (gridRow +~ 1)
-            use tabStops -- replenish the list of tab stops
+          '\n' -> lineFeed
+          '\v' -> lineFeed
+          '\f' -> lineFeed
+          '\r' -> (textCursor . gridColumn .= 0) >> return stops
+          '\b' -> (textCursor . gridColumn %= min 0 . subtract 1) >> return stops
           '\t' -> do
             col <- use $ textCursor . gridColumn
             case dropWhile (<= col) stops of
