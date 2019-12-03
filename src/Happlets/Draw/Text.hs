@@ -484,7 +484,7 @@ newtype PrintableString = PrintableString{ unwrapPrintable :: String }
 -- tabs, newlines, line breaks, or anything that isn't printable in the given 'Prelude.String', only
 -- the characters up to those non-printing characters are taken.
 spanPrintable :: String -> (PrintableString, String)
-spanPrintable = first PrintableString . span isPrint . dropWhile (not . isPrint)
+spanPrintable = first PrintableString . span isPrint
 
 -- | Constructs a 'PrintableString' containing a single 'Char' value only if it is printable, that
 -- is, if the 'isPrint' of of the 'Char' value is 'True'. Evaluates to 'Nothing' if the 'Char' is
@@ -602,42 +602,47 @@ displayStringEvalBoxes
   :: RenderText render
   => (TextBoundingBox -> render ()) -- ^ the @evalBoxes@ function
   -> String -> ScreenPrinter render (Maybe TextBoundingBox)
-displayStringEvalBoxes withBox str = use tabStops >>= loop Nothing str where
+displayStringEvalBoxes withBox str = use tabStops >>= trimStops >>= printLoop Nothing str where
+  trimStops stops = do
+    col <- use (textCursor . gridColumn)
+    return $ dropWhile (<= col) stops
+  printLoop bounding str stops = do
+    (str, ctrl) <- pure $ spanPrintable str
+    box <- if null (unwrapPrintable str) then pure Nothing else displayPrintable str
+    maybe (pure ()) (lift . withBox) box
+    bounding <- pure $ bounding <> box
+    if null ctrl then return bounding else ctrlLoop ctrl stops >>= uncurry (printLoop bounding)
   lineFeed = do
     resetCol <- use columnResetsOnLineFeed
     textCursor %= (gridRow +~ 1) . (if resetCol then gridColumn .~ 0 else id)
     use tabStops -- replenish the list of tab stops
-  loop bounding str stops = do
-    (prn, str) <- pure $ spanPrintable str
-    box <- displayPrintable prn
-    maybe (pure ()) (lift . withBox) box
-    bounding <- pure $ bounding <> box
-    case str of
-      ""    -> return bounding
-      '\ESC':str -> do
+  ctrlLoop ctrl stops = case ctrl of
+    ""          -> return ("", stops)
+    c:ctrl      -> let next = ctrlLoop ctrl in case c of
+      '\0'   -> ctrlLoop ctrl stops -- null characters are ignored
+      '\ESC' -> do
         -- TODO: handle VT-100 escape codes, particularly the ones for setting text color, bold
         -- face, and for repositioning the cursor.
-        loop bounding str stops
-      c:str -> do
-        stops <- case c of
-          '\n' -> lineFeed
-          '\v' -> lineFeed
-          '\f' -> lineFeed
-          '\r' -> (textCursor . gridColumn .= 0) >> return stops
-          '\b' -> (textCursor . gridColumn %= min 0 . subtract 1) >> return stops
-          '\t' -> do
-            col <- use $ textCursor . gridColumn
-            case dropWhile (<= col) stops of
-              []      -> do
-                w <- use tabWidth
-                textCursor . gridColumn += case w of
-                  w | w <= 0 -> 0
-                  w | w == 1 -> 1
-                  w          -> w - mod col w
-                return []
-              s:stops -> (textCursor . gridColumn .= s) >> return stops
-          _    -> return stops
-        loop bounding str stops
+        ctrlLoop str stops
+      '\n' -> lineFeed >>= next
+      '\v' -> lineFeed >>= next
+      '\f' -> lineFeed >>= next
+      '\r' -> (textCursor . gridColumn .= 0) >> use tabStops >>= next
+      '\b' -> do
+        textCursor . gridColumn %= min 0 . subtract 1
+        use tabStops >>= trimStops >>= next
+      '\t' -> use (textCursor . gridColumn) >>= \ col ->
+        ( case dropWhile (<= col) stops of
+            []      -> do
+              w <- use tabWidth
+              textCursor . gridColumn += case w of
+                w | w <= 0 -> 0
+                w | w == 1 -> 1
+                w          -> w - mod col w
+              return []
+            s:stops -> (textCursor . gridColumn .= s) >> return stops
+          ) >>= next
+      _    -> return (c:ctrl, stops)
 
 -- | This function takes a continuation which temporarily changes the font style used by the
 -- printer, which acts as a sort-of markup function. The function used to modify the 'fontStyle' is
