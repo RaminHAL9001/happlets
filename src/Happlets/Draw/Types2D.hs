@@ -5,7 +5,8 @@
 -- 'Happlets.GUI.CanBufferImages' type class to load from disk and blit to screen bitmap images,
 -- should be enough to construct minimalist user interfaces.
 module Happlets.Draw.Types2D
-  (Point2D, Size2D, point2D, size2D, pointX, pointY, pointXY,
+  ( Widget(..),
+    Point2D, Size2D, point2D, size2D, pointX, pointY, pointXY,
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
     Rect2D(..), rect2D, rect2DSize, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
     rect2DCenter, rect2DCentre,
@@ -181,3 +182,19 @@ class HasBoundingBox a where { theBoundingBox :: a n -> Rect2D n; }
 instance HasBoundingBox Rect2D where { theBoundingBox = id; }
 
 instance HasBoundingBox Line2D where { theBoundingBox (Line2D a b) = Rect2D a b; }
+
+----------------------------------------------------------------------------------------------------
+
+-- | A widget is a class of data types which models an object in 2D space. It can be drawn onto a
+-- canvas using a specified @render@ monad, and needs to respond to a pointing device clicking or
+-- dragging. 
+class Widget w where
+  -- | All widgets must have a visibility property that can be enabled and disabled.
+  widgetVisible :: Lens' w Bool
+
+  -- | All widgets must test whether a window (given as a rectangle) intersects with this visiblity
+  -- region of the widget.
+  widgetIntersects :: w -> Rect2D SampCoord -> Bool
+
+  -- | All widgets must check whether a point lies within a clickable or draggable area
+  widgetContainsPoint :: w -> Point2D SampCoord -> Bool

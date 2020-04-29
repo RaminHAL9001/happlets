@@ -48,11 +48,6 @@ module Happlets.GUI
     GUI, onSubModel, getModel, getSubModel, putModel, modifyModel,
     cancelNow, cancelIfBusy, howBusy, deleteEventHandler, bracketGUI,
 
-    -- * Widgets
-    Widget, widget, widgetState, widgetBoundingBox,
-    onWidget, mouseOnWidget, onWidgetModel, mouseOnWidgetModel,
-    widgetContainsPoint, widgetContainsMouse, theWidgetState,
-
     -- * Installing Event Handlers
     -- $InstallingEventHandlers
     Managed(..),
@@ -427,48 +422,6 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioCapture gui
 
 ----------------------------------------------------------------------------------------------------
 
--- | A widget is any part of your @model@ that can be drawn to the @window@ that is restricted to a
--- rectangular bounding box. Use the 'onWidget' function to evaluate stateful updates on the
--- 'widgetState'
-data Widget st
-  = Widget
-    { theWidgetBoundingBox :: !(Rect2D SampCoord)
-    , theWidgetState       :: st
-      -- ^ a function that accesses the 'Widget' state without need for the 'Control.Lens.view'
-      -- function.
-    }
-
--- | Construct a new 'Widget'.
-widget :: st -> Rect2D SampCoord -> Widget st
-widget = flip $ Widget . canonicalRect2D
-
--- | The state of this widget. The model of a widget should contain values that are directly related
--- to elements that are drawn to the happlet window. Keeping part of the @model@ data structure is
--- bad practice.
-widgetState :: Lens' (Widget st) st
-widgetState = lens theWidgetState $ \ a b -> a{ theWidgetState = b }
-
--- | The bounding box of this widget.
-widgetBoundingBox :: Lens' (Widget st) (Rect2D SampCoord)
-widgetBoundingBox = lens theWidgetBoundingBox $ \ a b ->
-  a{ theWidgetBoundingBox = canonicalRect2D b }
-
--- | Does a 'PixCoord' lie somewhere within the 'widgetBoundingBox'?
-widgetContainsPoint :: PixCoord -> Widget st -> Bool
-widgetContainsPoint (V2 x y) widget = loX <= x && x <= hiX && loY <= y && y <= hiY where
-  (Rect2D (V2 loX loY) (V2 hiX hiY)) = theWidgetBoundingBox widget
-
--- | Does a 'Mouse' event's 'Happlets.Draw.SampCoord.PixCoord' lie within the 'widgetBoundingBox'?
--- If not return 'Nothing', but if so, modify the 'Mouse' event so that it's coordinates are
--- relative to the 'widgetBoundingBox'.
-widgetContainsMouse :: Mouse -> Widget st -> Maybe Mouse
-widgetContainsMouse (Mouse dev press mods button p@(V2 (SampCoord x) (SampCoord y))) widget = do
-  guard $ widgetContainsPoint p widget
-  let (Rect2D (V2 (SampCoord loX) (SampCoord loY)) _) = theWidgetBoundingBox widget
-  pure $ Mouse dev press mods button $ V2 (SampCoord $ x - loX) (SampCoord $ y - loY)
-
-----------------------------------------------------------------------------------------------------
-
 -- | This is the function type used to make stateful updates to your Happlet. There are 'GUI'
 -- functions that can control every single part of your GUI program state, including (but not
 -- limited to)
@@ -667,59 +620,6 @@ onSubModel submodel subgui = do
     , theGUIWorkers = theGUIWorkers guist
     }
   GUI $ return a
-
--- | Use a 'Control.Lens.Lens'' to select a 'Widget' from the current @model@, then evaluate a 'GUI'
--- function that updates the 'Widget'. The @window@ will have it's clip region set to the
--- 'widgetBoundingBox' automatically.
---
--- Notice that the 'GUI' function type that is evaluated takes the 'Widget' as it's state. That
--- means this function can update the widget and the bounding box. This also means that you must use
--- the 'widgetState' lens to update the stateful value within the 'Widget'. If you want to update a
--- part of the @widgetModel@ alone without modifying the 'widgetBoundingBox', use 'onWidgetModel'
--- instead of this function.
-onWidget
-  :: HappletWindow window render
-  => Lens' model (Widget widgetModel)
-  -> GUI window (Widget widgetModel) a
-  -> GUI window model a
-onWidget widget subgui = do
-  guist <- getGUIState
-  let widgst = theGUIModel guist ^. widget
-  onSubModel widget $
-    bracketGUI (pushWindowClipRegion $ theWidgetBoundingBox widgst) popWindowClipRegion subgui
-
--- | Use this function to delegate a 'Happlets.Event.Mouse' event to a 'Widget'. This function
--- automatically checks if the mouse lies within the 'widgetBoundingBox' and triggers the 'GUI'
--- function evaluation using 'onWidget'. Returns @'Just' a@ if the mouse event occured within the
--- 'widgetBoundingBox' and the action was evaluated with a mouse event, returns 'Nothing' if the
--- mouse event missed the 'widgetBoundingBox'.
-mouseOnWidget
-  :: HappletWindow window render
-  => Lens' model (Widget widgetModel)
-  -> Mouse
-  -> (Mouse -> GUI window (Widget widgetModel) a)
-  -> GUI window model (Maybe a)
-mouseOnWidget widget evt f = use widget >>= \ w ->
-  maybe (return Nothing) (fmap Just . onWidget widget . f) (widgetContainsMouse evt w)
-
--- | This function combines 'onWidget' with 'onSubModel', which constructs a function that can
--- modify a the @subModel@ of 'Widget' directly, without access to the 'widgetBoundingBox'.
-onWidgetModel
-  :: HappletWindow window render
-  => Lens' model (Widget widgetModel)
-  -> GUI window widgetModel a
-  -> GUI window model a
-onWidgetModel widget = onWidget widget . onSubModel widgetState
-
--- | This function combines 'mouseOnWidget' with 'onSubModel' in much the same way that
--- 'onWidgetModel' combines 'onWidget' with 'onSubModel'.
-mouseOnWidgetModel
-  :: HappletWindow window render
-  => Lens' model (Widget widgetModel)
-  -> Mouse
-  -> (Mouse -> GUI window widgetModel a)
-  -> GUI window model (Maybe a)
-mouseOnWidgetModel widget evt = mouseOnWidget widget evt . fmap (onSubModel widgetState)
 
 -- | Once you install an event handler, the default behavior is to leave the event handler installed
 -- after it has evaluated so that it can continue reacting to events without you needing to
