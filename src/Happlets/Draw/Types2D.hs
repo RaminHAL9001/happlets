@@ -5,16 +5,33 @@
 -- 'Happlets.GUI.CanBufferImages' type class to load from disk and blit to screen bitmap images,
 -- should be enough to construct minimalist user interfaces.
 module Happlets.Draw.Types2D
-  ( Widget(..),
-    Point2D, Size2D, point2D, size2D, pointX, pointY, pointXY,
+  ( -- * Typeclasses
+    WidgetType(..), Has2DOrigin(..), Is2DShape(..),
+    -- * Primitives
+    Draw2DShape(..),
+    -- ** Points
+    Point2D, Size2D,
+    point2D, size2D, pointX, pointY, pointXY,
+    -- ** Lines
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
+    LineWidth,
+    -- ** Rectangles
     Rect2D(..), rect2D, rect2DSize, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
     rect2DCenter, rect2DCentre,
     canonicalRect2D, rect2DMinBoundOf, rect2DIntersect, rect2DDiagonal, rect2DtoInt,
     MaybeSingleton2D(..), HasBoundingBox(..),
-    LineWidth,
+    -- ** Arcs
+    Magnitude(..), ArcRadius, Angle(..), StartAngle, EndAngle,
+    Arc2D(..), arc2D, arc2DOrigin, arc2DRadius, arc2DStart, arc2DEnd,
+    -- ** Paths
+    Path2D, path2D, path2DOrigin, path2DPoints,
+    -- ** Cubic Bezier Spline Paths
+    Cubic2D, Cubic2DSegment(..), cubic2D, cubic2DOrigin, cubic2DPoints,
+    cubic2DCtrlPt1, cubic2DCtrlPt2, cubic2DEndPoint,
+    -- * Re-exports
     module Happlets.Draw.SampCoord,
     module Linear.V2,
+    module Linear.Matrix,
   ) where
 
 import           Happlets.Draw.SampCoord
@@ -23,7 +40,10 @@ import           Control.Arrow
 import           Control.Lens
 import           Control.Monad
 
+import qualified Data.Vector.Unboxed as UVec
+
 import           Linear.V2
+import           Linear.Matrix
 
 ----------------------------------------------------------------------------------------------------
 
@@ -48,6 +68,134 @@ data Rect2D n = Rect2D !(Point2D n) !(Point2D n)
 
 instance Ord n => Semigroup (Rect2D n) where { (<>) = rect2DMinBoundOf; }
 
+newtype Magnitude n = Magnitude n
+  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating)
+
+type ArcRadius n = Magnitude n
+
+newtype Angle n = Angle n
+  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating)
+
+type StartAngle n = Angle n
+type EndAngle n   = Angle n
+
+data Arc2D n
+  = Arc2D
+    { theArc2DOrigin :: !(Point2D n)
+    , theArc2DRadius :: !(Magnitude n)
+    , theArc2DStart  :: !(StartAngle Double)
+    , theArc2DEnd    :: !(EndAngle Double)
+    }
+  deriving Eq
+
+data Path2D n = Path2D !(Point2D n) !(UVec.Vector n)
+  deriving Eq
+
+data Cubic2D n = Cubic2D !(Point2D n) !(UVec.Vector n)
+  deriving Eq
+
+data Cubic2DSegment n
+  = Cubic2DSegment
+    { theCubic2DCtrlPt1 :: !(Point2D n)
+    , theCubic2DCtrlPt2 :: !(Point2D n)
+    , theCubic2DEndPoint :: !(Point2D n)
+    }
+
+data Draw2DShape n
+  = Draw2DReset
+    -- ^ If 'fill' is called, this function sets all pixels in the buffer to the 'fillColor' value.
+  | Draw2DLine   !(Line2D n)
+  | Draw2DRect   !(Rect2D n)
+  | Draw2DArc    !(Arc2D  n)
+  | Draw2DPath   !(Path2D n)
+  | Draw2DCubic  !(Cubic2D n) -- ^ A cubic Bezier spline
+  deriving Eq
+
+class Is2DShape shape where
+  to2DShape :: shape n -> Draw2DShape n
+
+instance Is2DShape Arc2D   where { to2DShape = Draw2DArc; }
+instance Is2DShape Line2D  where { to2DShape = Draw2DLine; }
+instance Is2DShape Rect2D  where { to2DShape = Draw2DRect; }
+instance Is2DShape Path2D  where { to2DShape = Draw2DPath; }
+instance Is2DShape Cubic2D where { to2DShape = Draw2DCubic; }
+
+class Has2DOrigin shape where
+  origin2D :: Lens' (shape n) (Point2D n)
+
+instance Has2DOrigin Arc2D   where { origin2D = arc2DOrigin; }
+instance Has2DOrigin Line2D  where { origin2D = line2DHead; }
+instance Has2DOrigin Rect2D  where { origin2D = rect2DHead; }
+instance Has2DOrigin Path2D  where { origin2D = path2DOrigin; }
+instance Has2DOrigin Cubic2D where { origin2D = cubic2DOrigin; }
+
+----------------------------------------------------------------------------------------------------
+
+arc2D :: Num n => Arc2D n
+arc2D = Arc2D
+  { theArc2DOrigin = V2 0 0
+  , theArc2DRadius = 1
+  , theArc2DStart  = 0.0
+  , theArc2DEnd    = 2.0 * pi
+  }
+
+arc2DOrigin :: Lens' (Arc2D n) (Point2D n)
+arc2DOrigin = lens theArc2DOrigin $ \ a b -> a{ theArc2DOrigin = b }
+
+arc2DRadius :: Lens' (Arc2D n) (Magnitude n)
+arc2DRadius = lens theArc2DRadius $ \ a b -> a{ theArc2DRadius = b }
+
+arc2DStart :: Lens' (Arc2D n) (StartAngle Double)
+arc2DStart = lens theArc2DStart $ \ a b -> a{ theArc2DStart = b }
+
+arc2DEnd :: Lens' (Arc2D n) (EndAngle Double)
+arc2DEnd = lens theArc2DEnd $ \ a b -> a{ theArc2DEnd = b }
+
+----------------------------------------------------------------------------------------------------
+
+path2DOrigin :: Lens' (Path2D n) (Point2D n)
+path2DOrigin = lens (\ (Path2D p _) -> p) (\ (Path2D _ v) p -> Path2D p v)
+
+-- | Construct a new 'Path2D'
+path2D :: UVec.Unbox n => Point2D n -> [Point2D n] -> Path2D n
+path2D p = Path2D p . UVec.fromList . (>>= (\ (V2 x y) -> [x, y]))
+
+-- | Deconstruct a 'Path2D' into it's component points
+path2DPoints :: UVec.Unbox n => Path2D n -> (Point2D n, [Point2D n])
+path2DPoints (Path2D p v) = (p, points id (UVec.toList v)) where
+  points stack = \ case
+    x:y:more -> points (stack . ((V2 x y) :)) more
+    _        -> stack []
+
+----------------------------------------------------------------------------------------------------
+
+cubic2DOrigin :: Lens' (Cubic2D n) (Point2D n)
+cubic2DOrigin = lens (\ (Cubic2D p _) -> p) (\ (Cubic2D _ v) p -> Cubic2D p v)
+
+-- | Construct a new 'Cubic2D'
+cubic2D :: UVec.Unbox n => Point2D n -> [Cubic2DSegment n] -> Cubic2D n
+cubic2D p = Cubic2D p . UVec.fromList .
+  (>>= (\ (Cubic2DSegment (V2 x1 y1) (V2 x2 y2) (V2 x3 y3)) -> [x1, y1, x2, y2, x3, y3]))
+
+-- | Deconstruct a 'Cubic2D' into it's component points
+cubic2DPoints :: UVec.Unbox n => Cubic2D n -> (Point2D n, [Cubic2DSegment n])
+cubic2DPoints (Cubic2D p v) = (p, points id (UVec.toList v)) where
+  points stack = \ case
+    x1:y1:x2:y2:x3:y3:more ->
+      points (stack . ((Cubic2DSegment (V2 x1 y1) (V2 x2 y2) (V2 x3 y3)) :)) more
+    _                      -> stack []
+
+cubic2DCtrlPt1 :: Lens' (Cubic2DSegment n) (Point2D n)
+cubic2DCtrlPt1 = lens theCubic2DCtrlPt1 $ \ a b -> a{ theCubic2DCtrlPt1 = b }
+
+cubic2DCtrlPt2 :: Lens' (Cubic2DSegment n) (Point2D n)
+cubic2DCtrlPt2 = lens theCubic2DCtrlPt1 $ \ a b -> a{ theCubic2DCtrlPt2 = b }
+
+cubic2DEndPoint :: Lens' (Cubic2DSegment n) (Point2D n)
+cubic2DEndPoint = lens theCubic2DEndPoint $ \ a b -> a{ theCubic2DEndPoint = b }
+
+----------------------------------------------------------------------------------------------------
+
 -- | An initializing 'Point2D' where 'pointX' and 'pointY' are both zero.
 point2D :: Num n => Point2D n
 point2D = V2 0 0
@@ -68,6 +216,8 @@ pointY = lens (\ (V2 _ y) -> y) $ \ (V2 x _) y -> (V2 x y)
 pointXY :: Iso' (Point2D n) (n, n)
 pointXY = iso (\ (V2 x y) -> (x, y)) (\ (x,y) -> V2 x y)
 
+----------------------------------------------------------------------------------------------------
+
 -- | An initializing 'Line2D' where 'lineHead' and 'lineTail' are both the zero 'point2D'.
 line2D :: Num n => Line2D n
 line2D = Line2D point2D point2D
@@ -83,6 +233,8 @@ line2DTail = lens (\ (Line2D _ b) -> b) $ \ (Line2D a _) b -> Line2D a b
 -- | Expresses a 'Line2D' as a tuple of 'Point2D' values.
 line2DPoints :: Iso' (Line2D n) (Point2D n, Point2D n)
 line2DPoints = iso (\ (Line2D a b) -> (a, b)) (\ (a,b) -> Line2D a b)
+
+----------------------------------------------------------------------------------------------------
 
 -- | An initializing 'Line2D' where the 'rectLower' and 'rectUpper' values are the zero 'point2D'.
 rect2D :: Num n => Rect2D n
@@ -188,7 +340,7 @@ instance HasBoundingBox Line2D where { theBoundingBox (Line2D a b) = Rect2D a b;
 -- | A widget is a class of data types which models an object in 2D space. It can be drawn onto a
 -- canvas using a specified @render@ monad, and needs to respond to a pointing device clicking or
 -- dragging. 
-class Widget w where
+class WidgetType w where
   -- | All widgets must have a visibility property that can be enabled and disabled.
   widgetVisible :: Lens' w Bool
 

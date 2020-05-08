@@ -5,6 +5,7 @@ module Happlets
   , module Happlets.Initialize
   , module Happlets.GUI
   , module Happlets.Draw.Color
+  , module Happlets.Variable
   , module Control.Monad.State
   , module Control.Lens
   ) where
@@ -14,6 +15,7 @@ import           Happlets.Config
 import           Happlets.Initialize
 import           Happlets.GUI
 import           Happlets.Draw.Color
+import           Happlets.Variable
 
 import           Control.Monad.State
 import           Control.Lens

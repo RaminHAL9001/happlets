@@ -42,7 +42,8 @@
 -- type class.
 module Happlets.GUI
   ( -- * The Happlet Data Type
-    Happlet, HappletWindow(..), Display(..), getWaitingThreads,
+    Happlet, HappletWindow(..), HappletCanvasIO(..), CanvasIOError(..),
+    Display(..), getWaitingThreads,
 
     -- * The GUI Function Type
     GUI, onSubModel, getModel, getSubModel, putModel, modifyModel,
@@ -97,6 +98,7 @@ import           Happlets.Audio
 import           Happlets.Event
 import           Happlets.Draw.SampCoord
 import           Happlets.Draw.Types2D
+import           Happlets.Variable
 
 import           Control.Arrow
 import           Control.Category
@@ -242,7 +244,7 @@ modifyMVar' mvar f = modifyMVar mvar $ fmap (\ (a, st) -> (st, a)) . f
 -- cursor, then when the cursor moves again, use 'refreshWindow' or 'refreshRegion' to delete the
 -- temporary image and redrawing that part of the window with the __canvas__ buffer, and draw the
 -- cursor again at the new mouse location.
-class HappletWindow window render | window -> render where
+class HappletWindow window render pixbuf | window -> render, render -> pixbuf where
 
   -- | Return the size of the window. As you can see from the type of this function, it can only be
   -- evaluated from within a GUI, which guarantees the window size is valid for the duration of the
@@ -267,17 +269,13 @@ class HappletWindow window render | window -> render where
   -- @window@.
   changeEvents :: GUI window oldmodel () -> GUI window oldmodel ()
 
-  -- | Push a clip region of the window's canvas buffer (the buffer that is drawn to by the
-  -- 'onCanvas' function). The coordinates used by all drawing operations will be translated such
-  -- that the upper-left corner of the 'Happlets.Draw.Types2D.Rect2D' within the window will be the
-  -- point @(0, 0)@ from the perspective of the 'onCanvas' @render@ing function. Only the top
-  -- element of the clip region stack is used, the remainder of the stack is ignored.
-  pushWindowClipRegion :: Rect2D SampCoord -> GUI window model ()
-
-  -- | Pop the clip reigion of the window's canvas buffer that was last pushed by
-  -- 'setWindowClipRegion'. If the stack of clip regions is empty, drawing operations now operate on
-  -- the entire window.
-  popWindowClipRegion :: GUI window model ()
+  -- | Set the clip region of the current window. The coordinates used by all drawing operations
+  -- will be translated such that the upper-left corner of the 'Happlets.Draw.Types2D.Rect2D' within
+  -- the window will be the point @(0, 0)@ from the perspective of the 'onCanvas' @render@ing
+  -- function. Only the top element of the clip region stack is used, the remainder of the stack is
+  -- ignored. Setting 'Nothing' clears the region so that drawing operations can be applied to the
+  -- entire window.
+  windowClipRegion :: Variable (GUI window model) (Maybe (Rect2D SampCoord))
 
   -- | Construct a 'GUI' function which evaluates a @render@ function that updates the happlet's own
   -- "canvas", which is an image buffer accessible only to your happlet, (it serves as the invisible
@@ -321,9 +319,26 @@ class HappletWindow window render | window -> render where
   -- 'onCanvas'.
   refreshWindow :: GUI window model ()
 
+  -- | Create a new canvas buffer.
+  canvasNewBuffer :: Size2D SampCoord -> GUI window model pixbuf
+  
+  -- | Evaluate a @render@ function on a different @pixbuf@ than the current canvas.
+  withCanvasBuffer :: pixbuf -> render a -> GUI window model a
+
+-- | Similar to the typeclass 'HappletWindow', but provides additional functions for loading pixel
+-- buffers from a file, and saving to a file.
+class HappletCanvasIO window render pixbuf | window -> render, render -> pixbuf where
+  loadCanvasBuffer :: FilePath -> GUI window model (Either CanvasIOError pixbuf)
+  saveCanvasBuffer :: FilePath -> pixbuf -> GUI window model (Either IOException ())
+
+data CanvasIOError
+  = CanvasIOFilePath IOException
+  | CanvasIOFileType Strict.Text
+  deriving (Eq, Show)
+
 -- | This is a type class similar to the 'Prelude.Show' class, except it displays to the 'GUI'.
-class Display drawable render | drawable -> render where
-  display :: HappletWindow window render => drawable -> GUI window model ()
+class Display drawable where
+  display :: drawable -> GUI window model ()
 
 ----------------------------------------------------------------------------------------------------
 
