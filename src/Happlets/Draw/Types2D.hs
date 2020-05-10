@@ -8,7 +8,7 @@ module Happlets.Draw.Types2D
   ( -- * Typeclasses
     WidgetType(..), Has2DOrigin(..), Is2DShape(..),
     -- * Primitives
-    Draw2DShape(..),
+    Draw2DShape(..), Map2DShape(..),
     -- ** Points
     Point2D, Size2D,
     point2D, size2D, pointX, pointY, pointXY,
@@ -28,6 +28,8 @@ module Happlets.Draw.Types2D
     -- ** Cubic Bezier Spline Paths
     Cubic2D, Cubic2DSegment(..), cubic2D, cubic2DOrigin, cubic2DPoints,
     cubic2DCtrlPt1, cubic2DCtrlPt2, cubic2DEndPoint,
+    -- ** Matrix Transformations
+    Transform2D,
     -- * Re-exports
     module Happlets.Draw.SampCoord,
     module Linear.V2,
@@ -47,6 +49,13 @@ import           Linear.Matrix
 
 ----------------------------------------------------------------------------------------------------
 
+-- | Some of the shapes in this module cannot instantiate 'Functor' because there are constrains on
+-- the numerical type used to define the shape, namely 'RealFrac' and 'UVec.Unbox'.
+class Map2DShape shape where
+  map2DShape :: (Real n,  UVec.Unbox n) => (n -> n) -> shape n -> shape n
+
+instance Map2DShape V2 where { map2DShape = fmap; }
+
 -- | This type represents a single point.
 type Point2D n = V2 n
 
@@ -55,9 +64,16 @@ type Size2D n = V2 n
 -- | Values of this type are used when drawing lines or borders around rectangls.
 type LineWidth n = n
 
+-- | A matrix of type 'M44' which is used to construct transformations. Although the name of this
+-- type implies a 2D transformation, it can actually transform along 4 dimensions, making it easier
+-- to setup transformation matrixies according to the 'mkTransformationMat' function.
+type Transform2D n = M44 n
+
 -- | This type represents a line segment consisting of two points.
 data Line2D n = Line2D !(Point2D n) !(Point2D n)
   deriving (Eq, Functor)
+
+instance Map2DShape Line2D where { map2DShape = fmap; }
 
 -- | This type represents a rectangle bounded by two where all sides of the rectangle points are
 -- parallel to the orthogonal basis vectors of the drawing plane. This data type instantiates
@@ -67,14 +83,15 @@ data Rect2D n = Rect2D !(Point2D n) !(Point2D n)
   deriving (Eq, Functor)
 
 instance Ord n => Semigroup (Rect2D n) where { (<>) = rect2DMinBoundOf; }
+instance Map2DShape Rect2D where { map2DShape = fmap; }
 
 newtype Magnitude n = Magnitude n
-  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating)
+  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating, Functor)
 
 type ArcRadius n = Magnitude n
 
 newtype Angle n = Angle n
-  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating)
+  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating, Functor)
 
 type StartAngle n = Angle n
 type EndAngle n   = Angle n
@@ -86,13 +103,21 @@ data Arc2D n
     , theArc2DStart  :: !(StartAngle Double)
     , theArc2DEnd    :: !(EndAngle Double)
     }
-  deriving Eq
+  deriving (Eq, Functor)
+
+instance Map2DShape Arc2D where { map2DShape = fmap; }
 
 data Path2D n = Path2D !(Point2D n) !(UVec.Vector n)
   deriving Eq
 
+instance Map2DShape Path2D where
+  map2DShape f (Path2D p vec) = Path2D (f <$> p) (UVec.map f vec)
+
 data Cubic2D n = Cubic2D !(Point2D n) !(UVec.Vector n)
   deriving Eq
+
+instance Map2DShape Cubic2D where
+  map2DShape f (Cubic2D p vec) = Cubic2D (f <$> p) (UVec.map f vec)
 
 data Cubic2DSegment n
   = Cubic2DSegment
@@ -100,6 +125,9 @@ data Cubic2DSegment n
     , theCubic2DCtrlPt2 :: !(Point2D n)
     , theCubic2DEndPoint :: !(Point2D n)
     }
+  deriving (Eq, Functor)
+
+instance Map2DShape Cubic2DSegment where { map2DShape = fmap; }
 
 data Draw2DShape n
   = Draw2DReset
@@ -110,6 +138,15 @@ data Draw2DShape n
   | Draw2DPath   !(Path2D n)
   | Draw2DCubic  !(Cubic2D n) -- ^ A cubic Bezier spline
   deriving Eq
+
+instance Map2DShape Draw2DShape where
+  map2DShape f = \ case
+    Draw2DReset   -> Draw2DReset
+    Draw2DLine  o -> Draw2DLine  $ map2DShape f o
+    Draw2DRect  o -> Draw2DRect  $ map2DShape f o
+    Draw2DArc   o -> Draw2DArc   $ map2DShape f o
+    Draw2DPath  o -> Draw2DPath  $ map2DShape f o
+    Draw2DCubic o -> Draw2DCubic $ map2DShape f o
 
 class Is2DShape shape where
   to2DShape :: shape n -> Draw2DShape n

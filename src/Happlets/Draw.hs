@@ -8,14 +8,17 @@
 -- been made at the time of this writing.
 module Happlets.Draw
   ( -- * 2D Graphics Typeclass
-    Happlet2DGraphics(..), BlitOperator(..), Happlet2DGeometry(..), Happlet2DBuffersPixels(..),
-    modifyPixel,
-    -- * Fill Types
+    Happlet2DGraphics(..), BlitOperator(..), modifyPixel,
+    -- ** Fill Types
     PaintSource(..), GradientType(..), GradientStopList, GradientStop(..),
     gradStopsFromList, gradStopsToList, gradStopPoint, gradStopColor,
-    -- * Line Style
+    -- * Geometric Shapes
+    Happlet2DGeometry(..),
+    -- ** Line Style
     HasLineStyle(..), LineStyle(..), theLineColour,
     makeLineStyle, lineColor, lineColour, lineWeight,
+    -- * Image Buffers
+    Happlet2DBuffersPixels(..), Source, Target,
     -- * Re-Exports
     module Happlets.Draw.Color,
     module Happlets.Draw.SampCoord,
@@ -29,13 +32,21 @@ import           Happlets.Draw.Text
 import           Happlets.Draw.Types2D
 import           Happlets.Variable
 
-import           Control.Lens (Lens', lens, (%~))
+import           Control.Lens (Lens', lens)
 import           Control.Monad.IO.Class
 
 import qualified Data.Vector.Unboxed as UVec
 import           Data.Word
 
 ----------------------------------------------------------------------------------------------------
+
+-- | This is a simple type tag used to indicate the difference between a source and target image,
+-- for operations like blitting.
+type Source image = image
+
+-- | This is a simple type tag used to indicate the difference between a source and target image,
+-- for operations like blitting.
+type Target image = image
 
 -- | This sets the blitting function, that is, when an object is blitted to the canvas, how are the
 -- pixels that are already on the canvas (the destination) combined with the new pixels (the
@@ -63,33 +74,34 @@ data PaintSource
 
 data GradientStop
   = GradientStop
-    { theGradStopPoint :: !Float -- ^ A percentage value
+    { theGradStopPoint :: !Double -- ^ A percentage value
     , theGradStopColor :: !Color
     }
   deriving Eq
 
 data GradientType
   = GradLinear !(Angle Double)
-  | GradRadial !(Point2D Float)
+  | GradRadial !(Point2D Float) !(Magnitude Float) !(Point2D Float) !(Magnitude Float)
+    -- ^ Specify two circles, the gradient will transition between these two circles.
   deriving Eq
 
 newtype GradientStopList = GradientStopList (UVec.Vector Word32)
 
-gradStopPoint :: Lens' GradientStop Float
+gradStopPoint :: Lens' GradientStop Double
 gradStopPoint = lens theGradStopPoint $ \ a b -> a{ theGradStopPoint = b }
 
 gradStopColor :: Lens' GradientStop Color
 gradStopColor = lens theGradStopColor $ \ a b -> a{ theGradStopColor = b }
 
+-- | Gradient stop points must be a percentage value, so 'gradStopPoint' values not between 0.0 and
+-- 1.0 will be filtered from this list. The list of stops does not need to include the first and
+-- last stop, the 'PaintGradient' data structure has two color values for storing these first and
+-- last values.
 gradStopsFromList :: [GradientStop] -> GradientStopList
 gradStopsFromList lst = GradientStopList $ UVec.fromList words where
-  stops = theGradStopPoint <$> lst
-  lo = minimum stops
-  hi = maximum stops
-  r  = hi - lo
-  normStops = (gradStopPoint %~ (\ p -> (p - lo) / r)) <$> lst
+  valid stop = let p = theGradStopPoint stop in 0.0 <= p && p <= 1.0
   words = do
-    (GradientStop{theGradStopPoint=p, theGradStopColor=c}) <- normStops
+    (GradientStop{theGradStopPoint=p, theGradStopColor=c}) <- filter valid lst
     [floor $ p * realToFrac (maxBound :: Word32), get32BitsRGBA c]
 
 gradStopsToList :: GradientStopList -> [GradientStop]
@@ -187,7 +199,7 @@ class Happlet2DGraphics render => Happlet2DGeometry render dim where
 
   -- | Before blitting, you can also set a transformation matrix that tells the blit operation to
   -- rotate, scale, translate, or skew, or any of the above.
-  blitTransform :: Variable render (M44 dim)
+  blitTransform :: Variable render (Transform2D dim)
 
 -- | This class extends the 'Happlet2DGraphics' class with operators for copying sections of the
 -- operand canvas into a pixel buffer.

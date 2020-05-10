@@ -4,6 +4,9 @@
 -- change in state.
 module Happlets.Variable where
 
+import           Control.Lens (Lens', assign, use)
+import           Control.Monad.State.Class
+
 -- | This data structure contains two functions, one for updating the state, and one for querying
 -- the state. It is like a lens, but must evaluate in a monadic function type @m@ which can perform
 -- a side effect as a result of the change to the state.
@@ -31,3 +34,18 @@ data Variable m a
 
 updateVal :: Monad m => Variable m a -> (a -> a) -> m ()
 updateVal ctx f = getVal ctx >>= setVal ctx . f
+
+variableFromLens :: MonadState st m => Lens' st a -> Variable m a
+variableFromLens lens = Variable
+  { setVal = assign lens
+  , getVal = use lens
+  }
+
+fmapVariableMonad
+  :: (Monad m0, Monad m1)
+  => (forall any . m0 any -> m1 any)
+  -> Variable m0 a -> Variable m1 a
+fmapVariableMonad f var = Variable
+  { setVal = f <$> setVal var
+  , getVal = f $ getVal var
+  }

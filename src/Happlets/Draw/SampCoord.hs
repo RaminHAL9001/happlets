@@ -24,11 +24,3 @@ type PixSize = V2 SampCoord
 
 sampCoord :: Integral i => i -> SampCoord
 sampCoord = SampCoord . fromIntegral
-
--- | This is a simple type tag used to indicate the difference between a source and target image,
--- for operations like blitting.
-type Source image = image
-
--- | This is a simple type tag used to indicate the difference between a source and target image,
--- for operations like blitting.
-type Target image = image

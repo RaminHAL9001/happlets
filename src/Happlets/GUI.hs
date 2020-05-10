@@ -96,6 +96,7 @@ import           Prelude hiding ((.), id)
 
 import           Happlets.Audio
 import           Happlets.Event
+import           Happlets.Draw      (Source, Target)
 import           Happlets.Draw.SampCoord
 import           Happlets.Draw.Types2D
 import           Happlets.Variable
