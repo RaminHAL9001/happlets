@@ -2,7 +2,7 @@
 -- include additional packages into your project. This module is not imported automatically when you
 -- import the "Happlets" module, so if you would prefer to use a better alternative color data type
 -- it is easier to do so. This module can be imported with the "Happlets.Draw" module.
-module Happlets.Draw.Color
+module Happlets.View.Color
   ( Color, FillColor, LineColor,
     get32BitsRGBA, set32BitsRGBA, word32RGBA,
     get32BitsARGB, set32BitsARGB, word32ARGB,

@@ -9,19 +9,11 @@
 -- 'Happlet' to a window, it is also necessary to provide an initial 'GUI' function which will be
 -- used to install other 'GUI' functions to be used as event handlers.
 --
--- The "Happlets.Event" module provides a consistent API for all back-end
+-- The "Happlets.Control" module provides a consistent API for all back-end
 -- 'Happlets.Provider.Provider's, but the subset of which event data types that your 'Happlet'
 -- program will be able to respond to depends on the back-end "Happlets.Provider" you are using and
--- which type classes the @window@ type instantiates. The type classes that provide the API
+-- which type classes the @provider@ type instantiates. The type classes that provide the API
 -- functions for installing 'GUI' event handlers include:
---
---  * 'Managed'
---  * 'CanResize'
---  * 'CanAnimate'
---  * 'CanMouse'
---  * 'CanKeyboard'
---  * 'CanTrackpad'
---  * 'CanForceFeedback'
 --
 --  These type classes provide the functions that allow you to install 'GUI' functions as event
 --  handlers into your 'Happlet' when the 'Happlet' is attached to the @window@ using the
@@ -40,30 +32,20 @@
 -- GUI functions update the window using the 'onCanvas' function which evaluates a screen updating
 -- function specific to the back-end 'Happlets.Provider.Provider' as defined by the 'HappletWindow'
 -- type class.
-module Happlets.GUI
+module Happlets.Model.GUI
   ( -- * The Happlet Data Type
-    Happlet, HappletWindow(..), HappletCanvasIO(..), CanvasIOError(..),
-    Display(..), getWaitingThreads,
+    Happlet, getWaitingThreads,
+
+    -- * The Display Typeclass
+    Display(..), DrawableRef(..), drawableEmptyRef,
 
     -- * The GUI Function Type
     GUI, onSubModel, getModel, getSubModel, putModel, modifyModel,
     cancelNow, cancelIfBusy, howBusy, deleteEventHandler, bracketGUI,
 
-    -- * Installing Event Handlers
-    -- $InstallingEventHandlers
-    Managed(..),
-    CanRecruitWorkers(..), ForkWorkerThread, defaultLaunchWorkerThread,
-    CanResize(..), OldPixSize, NewPixSize, CanvasMode(..),
-    CanAnimate(..), AudioPlayback(..), AudioCapture(..),
-    CanMouse(..), MouseEventPattern(..),
-    CanKeyboard(..),
-    CanTrackpad(..),
-
-    -- * Buffered Images
-    CanBufferImages(..),
-
     -- * Workers
     -- $Workers
+    CanRecruitWorkers(..),
     Workspace, newWorkspace, copyWorkspace,
     WorkerName, guiWorker, recruitWorker, relieveWorker, relieveWorkersIn,
     WorkCycleTime(..),
@@ -78,28 +60,19 @@ module Happlets.GUI
     WorkerSignal(..), WorkerNotification(..), setWorkerStatus, runWorkerTask,
     WorkerID, workerIDtoInt,
 
-    -- * Other Capabilities
-    -- $OtherCapabilities
-    CanForceFeedback(..),
-    DeviceHandler(..), unrecognizedInputDevices, failUnrecognizedInputDevices,
-
     -- * Low-level details
     -- $LowLevel_Details
     GUIState(..), EventHandlerControl(..),
-    guiModel, guiWindow, guiIsLive, execGUI, runGUI, guiCatch,
+    guiModel, guiProvider, guiIsLive, execGUI, runGUI, guiCatch,
     makeHapplet, onHapplet, peekModel, sameHapplet,
     getGUIState, putGUIState, modifyGUIState, askHapplet, govWorkerUnion,
-
+    -- ** Functions for Providers
+    MonadProvider(..), ProviderStateLock,
+    runProviderOnLock, providerLiftGUI,
+    -- guiLiftProvider, checkGUIContinue, -- <- TODO 
   ) where
 
 import           Prelude hiding ((.), id)
-
-import           Happlets.Audio
-import           Happlets.Event
-import           Happlets.Draw      (Source, Target)
-import           Happlets.Draw.SampCoord
-import           Happlets.Draw.Types2D
-import           Happlets.Variable
 
 import           Control.Arrow
 import           Control.Category
@@ -111,6 +84,7 @@ import           Control.Lens
 import           Control.Monad.Except
 import qualified Control.Monad.Fail    as Monad
 import           Control.Monad.Reader
+import           Control.Monad.State
 
 import           Data.List             (intercalate)
 import qualified Data.Sequence         as Seq
@@ -125,7 +99,7 @@ import           System.IO.Unsafe (unsafePerformIO) -- used for generating uniqu
 
 -- | This is a handle containing the current @model@ state of the 'Happlet'. It is constructed with
 -- 'makeHapplet', but it is better to use 'Happlets.Initialize.makeHapplet' in the
--- "Happlets.Initialize" module in order to construct a 'Happlet' and associate it with a @window@
+-- "Happlets.Initialize" module in order to construct a 'Happlet' and associate it with a @provider@
 -- in a single step.
 data Happlet model
   = SubHapplet
@@ -223,218 +197,26 @@ modifyMVar' mvar f = modifyMVar mvar $ fmap (\ (a, st) -> (st, a)) . f
 
 ----------------------------------------------------------------------------------------------------
 
--- | All Happlet back-end 'Happlets.Provider.Provider's must instantiate this type class at the very
--- least. The functions in this typeclass allow you to draw images that become visible on screen.
---
--- When drawing images, keep in mind that the Happlet window is double buffered, and you may draw to
--- either buffer.
---
--- * There is a __"canvas"__ buffer which you fully control, only your code has access to this
---   buffer. This buffer has more permanence, because the only time it can be changed is when your
---   own code changes it.
---
--- * There is also an __"OS buffer"__ which is a buffer managed by your operating system's window
---   manager. This buffer is often modified by the operating system, for example, when a window from
---   another application is laid on top of your Happlet's window.
---
--- When the OS buffer becomes "dirty" (modified by some event happening elsewhere in the operating
--- system and window manager), the canvas buffer is used to re-draw the dirty region of the window.
---
--- The only time you should draw to the __OS buffer__ is when drawing a temporary image, like a
--- custom mouse cursor, or a drag-and-drop shadow. You can draw an image that follows the mouse
--- cursor, then when the cursor moves again, use 'refreshWindow' or 'refreshRegion' to delete the
--- temporary image and redrawing that part of the window with the __canvas__ buffer, and draw the
--- cursor again at the new mouse location.
-class HappletWindow window render pixbuf | window -> render, render -> pixbuf where
-
-  -- | Return the size of the window. As you can see from the type of this function, it can only be
-  -- evaluated from within a GUI, which guarantees the window size is valid for the duration of the
-  -- function evaluation. After a 'GUI' function finishes evaluation, it is not called again until a
-  -- new event comes in, at which time the size of the window may have changed and you will need to
-  -- call this function again to obtain the new size. It is a good idea to call this function first
-  -- before doing anyting else, if you need the window size for your 'GUI' computation.
-  getWindowSize :: GUI window model PixSize
-
-  -- | Similar to 'doWindowNewHapplet', except places an existing 'Happlet' into the @window@,
-  -- removing the previous 'Happlet'. This is effectivel a context switch that occurs within a
-  -- single @window@. This function disables all event handlers, then evaluates the given 'GUI'
-  -- function which should install new event handlers. This function then evaluates to 'disable', so
-  -- any line of code in the @do@ block written after this function is called will never execute.
-  windowChangeHapplet
-    :: forall newmodel oldmodel . Happlet newmodel
-    -> (OldPixSize -> GUI window newmodel ())
-    -> GUI window oldmodel ()
-
-  -- | This event handler is called when 'windowChangeHapplet' is called, allowing one final event
-  -- handler to be called for cleaning-up, before the current 'Happlet' is detached from the
-  -- @window@.
-  changeEvents :: GUI window oldmodel () -> GUI window oldmodel ()
-
-  -- | Set the clip region of the current window. The coordinates used by all drawing operations
-  -- will be translated such that the upper-left corner of the 'Happlets.Draw.Types2D.Rect2D' within
-  -- the window will be the point @(0, 0)@ from the perspective of the 'onCanvas' @render@ing
-  -- function. Only the top element of the clip region stack is used, the remainder of the stack is
-  -- ignored. Setting 'Nothing' clears the region so that drawing operations can be applied to the
-  -- entire window.
-  windowClipRegion :: Variable (GUI window model) (Maybe (Rect2D SampCoord))
-
-  -- | Construct a 'GUI' function which evaluates a @render@ function that updates the happlet's own
-  -- "canvas", which is an image buffer accessible only to your happlet, (it serves as the invisible
-  -- half of the double-buffer renderer). The Images drawn with this function are automatically
-  -- copied back to the operating system's window buffer (the visible half of the double-buffer
-  -- renderer) whenever the window becomes "dirty" from events happening outside of the program,
-  -- like when a your Happlet's window is covered by another window from another application.
-  --
-  -- As a result, it is usually best to draw to this buffer if you want an image that isn't effected
-  -- when you switch away from your Happlet to another applcation window, images drawn to the canvas
-  -- have a bit more permenance to them, since only your happlet can change it.
-  --
-  -- __NOTE__ that when a window is resized, the canvas buffer is deleted and a new one is allocated
-  -- to match the requested window size, so drawing to the canvas does not preserve your image if
-  -- your window is resized, you must still redraw after the window is resized.
-  onCanvas :: forall model a . render a -> GUI window model a
-
-  -- | Similar to 'onCanvas' but does NOT draw to the Happlet's own reserved image buffer (the
-  -- invisible side of the double-buffer renderer), rather it draws directly to the image buffer
-  -- used by the operating system (the visible side of the double-buffer renderer).
-  --
-  -- There are a few consequences to drawing directly to the OS buffer, the first being that the OS
-  -- image buffer is regularly over-written by other applications running in the operating system,
-  -- so things drawn to the OS image buffer may dissapear at any time, even when there aren't any
-  -- events passed to your Happlet.
-  --
-  -- Another consequence is that you can overwrite the OS buffer with your happlet's "canvas" buffer
-  -- at any time using 'refreshRegion'. This can be very useful when you want a temporary image to
-  -- be displayed on top of your Happlet (like a pop-up menu or custom mouse cursor) that can be
-  -- erased and replaced with the content of the "canvas" buffer as soon as (for example) the mouse
-  -- moves or some such event occurs.
-  onOSBuffer :: forall model a . render a -> GUI window model a
-
-  -- | Force an area of the window to be redrawn by re-blitting the double buffer image to the
-  -- window. Use this method to clear parts of the window that have been drawn over by the
-  -- 'drawToWindow' function.
-  refreshRegion :: [Rect2D SampCoord] -> GUI window model ()
-
-  -- | Like 'refreshRegion' but refreshes the whole window. This function deletes everything drawn
-  -- by the 'drawToWindow' function and replaces it with the content of the image drawn by
-  -- 'onCanvas'.
-  refreshWindow :: GUI window model ()
-
-  -- | Create a new canvas buffer.
-  canvasNewBuffer :: Size2D SampCoord -> GUI window model pixbuf
-  
-  -- | Evaluate a @render@ function on a different @pixbuf@ than the current canvas.
-  withCanvasBuffer :: pixbuf -> render a -> GUI window model a
-
--- | Similar to the typeclass 'HappletWindow', but provides additional functions for loading pixel
--- buffers from a file, and saving to a file.
-class HappletCanvasIO window render pixbuf | window -> render, render -> pixbuf where
-  loadCanvasBuffer :: FilePath -> GUI window model (Either CanvasIOError pixbuf)
-  saveCanvasBuffer :: FilePath -> pixbuf -> GUI window model (Either IOException ())
-
-data CanvasIOError
-  = CanvasIOFilePath IOException
-  | CanvasIOFileType Strict.Text
-  deriving (Eq, Show)
-
 -- | This is a type class similar to the 'Prelude.Show' class, except it displays to the 'GUI'.
 class Display drawable where
-  display :: drawable -> GUI window model ()
+  -- | When something is displayed to the GUI, an object should be inserted into the @model@ of the
+  -- GUI, and then the canvas should be redrawn using the functions in
+  -- 'Happlet.Control.Window.HappletWindow'. This function should return a reference to the drawable
+  -- so that it can be updated and/or deleted.
+  display :: drawable -> GUI provider model (DrawableRef provider model)
 
-----------------------------------------------------------------------------------------------------
+data DrawableRef provider model
+  = DeleteDrawable
+    { deleteDrawable :: GUI provider model ()
+    , updateDrawable :: GUI provider model ()
+    }
 
--- | The typeclass of monadic functions which include stateful information for communicating with
--- an audio output PCM device.
-class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioPlayback gui where
-  -- | The PCM signal generator is a callback function which produces pulse code samples to be sent
-  -- to a pulse code modulator (PCM). This function can be called at any time, the @pcm@ function is
-  -- expected to keep a reference to the given callback. When 'startupAudioPlayback' is executed, a
-  -- thread is launched which loops over calling the 'PCMGenerator' to generate each PCM sample. If
-  -- this function is called while the PCM output is currently activated, the new PCM generator will
-  -- not replace the old one until the current PCM buffer has been filled and sent to the operating
-  -- system. Depending on the buffer size, this may take a noticable amount of time. Ultimately the
-  -- amount of delay is unspecified and implementation dependent.
-  --
-  -- It is not a good idea to rely on this 'audioPlayback' function to do sequencing, rather the
-  -- 'PCMGenerator' callback function should be initialized with access to a
-  -- 'Happlets.Audio.PCMControl' and then poll this controller using
-  -- 'Happlets.Audio.checkPCMControl' for information about what signal to generate, when, and for
-  -- how long.
-  --
-  -- The 'PCMGenerator' takes an arbitrary state value @st@, and this state value may be updated
-  -- over the course of sample generation. Construct your 'PCMGenerator' using either the
-  -- 'Happlets.Audio.stereoPCM' or 'Happlets.Audio.monoPCM' constructors.
-  audioPlayback :: PCMGenerator -> gui PCMActivation
-
-  -- | This function must request of the operating system to begin sending information to the
-  -- hardware PCM device, and launch a thread that loops over calling the 'PCMGenerator' callback
-  -- that was set by the 'audioPlayback' function. Activating the PCM may be a (relatively) time
-  -- consuming process, and so it is expected that this will occur maybe once per session, or
-  -- perhaps every time the user requests audio output be enabled.
-  --
-  -- You can request a the PCM use a smaller buffer to decrease the delay between changes in the
-  -- 'PCMGenerator' and the time the hardware PCM device receives these changes, however the audio
-  -- 'Happlets.Initialize.Provider' is not required to honor your request, or report to you on how
-  -- big the buffer actually is.
-  startupAudioPlayback :: BufferSizeRequest -> gui PCMActivation
-
-  -- | This function checks if the PCM output device is active, and if so, it kills the
-  -- 'PCMGenerator' thread and informs the operating system that the Happlet shall no longer use the
-  -- harware PCM device.
-  shutdownAudioPlayback :: gui PCMActivation
-
-  -- | Enquire as to whether the the PCM output device is active or not, or whether an error has
-  -- occurred.
-  audioPlaybackState :: gui PCMActivation
-
-----------------------------------------------------------------------------------------------------
-
--- | The typeclass of monadic functions which include stateful information for communicating with an
--- audio output PCM device.
---
--- Instantiating this class does have security implications for end users, specifically that a
--- Happlet may be made to spy on someone over a network by accessing the microphone built into an
--- end user's computer. Not all Happlet 'Happlets.Initialize.Provider's will instantiate this
--- typeclass, and if so, there will hopefully be security measures in place to allow use of
--- 'AudioCapture' only when end users provide informed consent to have the input PCM activated.
-class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioCapture gui where
-  -- | The PCM signal recorder is a callback function which consumes pulse code samples produced by
-  -- a pulse code modulator (PCM).
-  --
-  -- When 'startupAudioCapture' is executed, a thread is launched which loops over calling the
-  -- 'PCMGenerator' to generate each PCM sample. If this function is called while the PCM input is
-  -- currently activated, the new PCM generator will not replace the old one until the current PCM
-  -- buffer provided by the operating system has been consumed. Depending on the buffer size, this
-  -- may take a noticable amount of time. Ultimately the amount of delay is unspecified and
-  -- implementation dependent.
-  --
-  -- The 'PCMRecorder' takes an arbitrary state value @st@, and this state value may be updated over
-  -- the course of sample recording. Construct the 'PCMRecorder' function using the 'stereoPCM' or
-  -- 'monoPCM' constructor functions.
-  audioCapture :: PCMRecorder -> gui PCMActivation
-
-  -- | This function must request of the operating system to begin retrieving pulse code information
-  -- from the hardware PCM device, and launch a thread that loops over calling the 'PCMGenerator'
-  -- callback that was set by the 'audioCapture' function. Activating the PCM will likely be a
-  -- (relatively) time consuming process, especially if the 'Happlet.Initialize.Provider' must ask
-  -- the end user for permission for access to the microphone (which hopefully it does) and so it is
-  -- expected that this will occur maybe once per session, or perhaps every time the user requests
-  -- audio output be enabled.
-  --
-  -- You can request a the PCM use a smaller buffer to decrease the delay between changes in the
-  -- 'PCMGenerator' and the time the hardware PCM device receives these changes, however the audio
-  -- 'Happlets.Initialize.Provider' is not required to honor your request, or report to you on how
-  -- big the buffer actually is.
-  startupAudioCapture   :: BufferSizeRequest -> gui PCMActivation
-
-  -- | This function checks if the PCM input device is active, and if so, it kills the 'PCMRecorder'
-  -- thread and informs the operating system that the Happlet shall no longer use the harware PCM
-  -- input device.
-  deactivatePCMInputu :: gui PCMActivation
-
-  -- | Enquire as to whether the the PCM input device is active or not, or whether an error has
-  -- occurred.
-  audioCaptureState :: gui PCMActivation
+-- | A 'DrawableRef' that does nothing, use Haskell record syntax to provide the necessary functions.
+drawableEmptyRef :: DrawableRef provider model
+drawableEmptyRef = DeleteDrawable
+  { deleteDrawable = return ()
+  , updateDrawable = return ()
+  }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -451,7 +233,7 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioCapture gui
 -- GUI is a monad function type that instantiates the 'Control.Monad.State.Class.MonadState'
 -- allowing you to transform the value stored in the 'Happlet'. Simply use
 -- 'Control.Monad.State.Class.get' and 'Control.Monad.State.Class.put' to update your program, and
--- then call functions like 'onCanvas' to re-draw relavent parts of the @window@.
+-- then call functions like 'onCanvas' to re-draw relavent parts of the @provider@.
 --
 -- The function 'deleteEventHandler' can be used to immediately halt evaluation of a 'GUI' function,
 -- and delete the current event handler, which can be useful when you write your event
@@ -484,14 +266,14 @@ class (Functor gui, Applicative gui, Monad gui, MonadIO gui) => AudioCapture gui
 -- @
 --
 -- However, if you want to createa a "universal" Happlet that works with absolutely any provider,
--- not just Gtk+, then your entire program should be written with a polymorphic @window@ type.  The
--- @window@ type is the type specific to the operating system and the Happlet provider you use, so
+-- not just Gtk+, then your entire program should be written with a polymorphic @provider@ type.  The
+-- @provider@ type is the type specific to the operating system and the Happlet provider you use, so
 -- if you leave it blank, you will be free to call 'simpleHapplet' with any
 -- 'Happelt.Provider.Provider' at all. However, at this time, the Happlets API is a little too
 -- sparse for this to be practical, for the time being, your program may need to rely on
 -- functionality specific to a Provider like Gtk+.
-newtype GUI window model a
-  = GUI{ unwrapGUI :: StateT (GUIState window model) IO (EventHandlerControl a)}
+newtype GUI provider model a
+  = GUI{ unwrapGUI :: StateT (GUIState provider model) IO (EventHandlerControl a)}
   deriving (Functor)
 
 -- | A data type indicating the condition of GUI evaluation. This value is part of the 'GUIState'
@@ -508,17 +290,17 @@ data EventHandlerControl a
   deriving (Eq, Show, Functor)
 
 -- | The 'GUIState' is the state that is constructed during the evaluation of a GUI function.
-data GUIState window model
+data GUIState provider model
   = GUIState
-    { theGUIModel   :: !model
-    , theGUIHapplet :: !(Happlet model)
-    , theGUIWindow  :: !window
-    , theGUIWorkers :: !WorkerUnion
+    { theGUIModel    :: !model
+    , theGUIHapplet  :: !(Happlet model)
+    , theGUIProvider :: !(ProviderStateLock provider)
+    , theGUIWorkers  :: !WorkerUnion
     }
 
-instance Applicative (GUI window model) where { pure = return; (<*>) = ap; }
+instance Applicative (GUI provider model) where { pure = return; (<*>) = ap; }
 
-instance Monad (GUI window model) where
+instance Monad (GUI provider model) where
   return = GUI . return . EventHandlerContinue
   (GUI f) >>= next = GUI $ StateT $ \ st -> runStateT f st >>= \ (a, st) -> case a of
     EventHandlerContinue a -> runStateT (unwrapGUI $ next a) st
@@ -526,46 +308,46 @@ instance Monad (GUI window model) where
     EventHandlerCancel     -> return (EventHandlerCancel  , st)
     EventHandlerFail   err -> return (EventHandlerFail err, st)
 
-instance MonadIO (GUI window model) where
+instance MonadIO (GUI provider model) where
   liftIO f = GUI $ liftIO $ EventHandlerContinue <$> f
 
-instance MonadState model (GUI window model) where
+instance MonadState model (GUI provider model) where
   state f = GUI $ state $ \ st ->
     let (a, model) = f (theGUIModel st) in (EventHandlerContinue a, st{ theGUIModel = model })
 
-instance MonadReader (Happlet model) (GUI window model) where
+instance MonadReader (Happlet model) (GUI provider model) where
   ask = GUI $ EventHandlerContinue <$> gets theGUIHapplet
   local loc (GUI f) = GUI $ do
     oldst <- get
     put $ oldst{ theGUIHapplet = loc $ theGUIHapplet oldst }
     f <* modify (\ newst -> newst{ theGUIHapplet = theGUIHapplet oldst })
   
-instance Monad.MonadFail (GUI window model) where
+instance Monad.MonadFail (GUI provider model) where
   fail = GUI . return . EventHandlerFail . Strict.pack
 
-instance MonadError Strict.Text (GUI window model) where
+instance MonadError Strict.Text (GUI provider model) where
   throwError = GUI . return . EventHandlerFail
   catchError (GUI try) catch = GUI $ try >>= \ case
     EventHandlerFail msg -> unwrapGUI $ catch msg
     result               -> return result
 
-instance Semigroup a => Semigroup (GUI window model a) where
+instance Semigroup a => Semigroup (GUI provider model a) where
   a <> b = (<>) <$> a <*> b
 
-instance Monoid a => Monoid (GUI window model a) where
+instance Monoid a => Monoid (GUI provider model a) where
   mempty = return mempty
   mappend a b = mappend <$> a <*> b
 
 -- | 'Control.Lens.Lens' for manipulating the 'GUIState'. It is better to use 'getModel',
 -- 'updateModel', 'putModel', 'subModel', or 'liftGUI' instead of manipulating a 'GUIState'
 -- directly.
-guiModel :: Lens' (GUIState window model) model
+guiModel :: Lens' (GUIState provider model) model
 guiModel = lens theGUIModel $ \ a b -> a{ theGUIModel = b }
 
 -- | 'Control.Lens.Lens' for manipulating the 'GUIState'. It is better to not use this function at
 -- all.
-guiWindow :: Lens' (GUIState window model) window
-guiWindow = lens theGUIWindow $ \ a b -> a{ theGUIWindow = b }
+guiProvider :: Lens' (GUIState provider model) (ProviderStateLock provider)
+guiProvider = lens theGUIProvider $ \ a b -> a{ theGUIProvider = b }
 
 -- | Evaluate a 'GUI' function on a given 'Happlet'. The 'Happlet' is __NOT__ locked during
 -- evaluation, it is expected that the 'Happlet' has already been locked with 'onHapplet', however a
@@ -573,33 +355,33 @@ guiWindow = lens theGUIWindow $ \ a b -> a{ theGUIWindow = b }
 -- evaluate it. This is analogous to 'Control.Monad.State.runStateT' in the "Control.Monad.State"
 -- module.
 runGUI
-  :: GUI window model a -- ^ the 'GUI' function to evaluate
-  -> GUIState window model
-  -> IO (EventHandlerControl a, GUIState window model)
+  :: GUI provider model a -- ^ the 'GUI' function to evaluate
+  -> GUIState provider model
+  -> IO (EventHandlerControl a, GUIState provider model)
 runGUI (GUI f) st = runStateT f st
 
 -- | Like 'runGUI' but discards the @a@ typed return value. This is analogous to
 -- 'Control.Monad.State.execStateT' in the "Control.Monad.State" module.
 execGUI
-  :: GUI window model a -- ^ the 'GUI' function to evaluate
-  -> GUIState window model
-  -> IO (GUIState window model)
+  :: GUI provider model a -- ^ the 'GUI' function to evaluate
+  -> GUIState provider model
+  -> IO (GUIState provider model)
 execGUI f = fmap snd . runGUI f
 
 -- | Evaluate a 'GUI' function but catch calls to 'cancelNow', 'deleteEventHandler', and
 -- 'Control.Monad.Fail.fail'.
 guiCatch
-  :: GUI window model a
-  -> (EventHandlerControl a -> GUI window model b)
-  -> GUI window model b
+  :: GUI provider model a
+  -> (EventHandlerControl a -> GUI provider model b)
+  -> GUI provider model b
 guiCatch (GUI f) = ((GUI $ f >>= \ result -> return (EventHandlerContinue result)) >>=)
 
 -- | Like the 'Control.Exception.bracket' function, but works in the 'GUI' monad.
 bracketGUI
-  :: GUI window model open
-  -> GUI window model closed
-  -> GUI window model a
-  -> GUI window model a
+  :: GUI provider model open
+  -> GUI provider model closed
+  -> GUI provider model a
+  -> GUI provider model a
 bracketGUI lock unlock f = GUI $ StateT $ \ st -> do
   mvar <- newEmptyMVar
   a    <- bracket
@@ -618,22 +400,22 @@ bracketGUI lock unlock f = GUI $ StateT $ \ st -> do
 -- of the @model@, by evaluating a 'GUI' function on that @subModel@.
 onSubModel 
   :: Lens' model subModel
-  -> GUI window subModel a
-  -> GUI window model a 
+  -> GUI provider subModel a
+  -> GUI provider model a 
 onSubModel submodel subgui = do
   guist <- getGUIState
   let modst = theGUIModel guist ^. submodel
   (a, new) <- liftIO $ runGUI subgui $ GUIState
-    { theGUIModel   = modst
-    , theGUIHapplet = subHapplet $ theGUIHapplet guist
-    , theGUIWindow  = theGUIWindow  guist
-    , theGUIWorkers = theGUIWorkers guist
+    { theGUIModel    = modst
+    , theGUIHapplet  = subHapplet $ theGUIHapplet guist
+    , theGUIProvider = theGUIProvider guist
+    , theGUIWorkers  = theGUIWorkers  guist
     }
   putGUIState $ guist
-    { theGUIModel   = theGUIModel   guist & submodel .~ theGUIModel new
-    , theGUIHapplet = theGUIHapplet guist
-    , theGUIWindow  = theGUIWindow  guist
-    , theGUIWorkers = theGUIWorkers guist
+    { theGUIModel    = theGUIModel    guist & submodel .~ theGUIModel new
+    , theGUIHapplet  = theGUIHapplet  guist
+    , theGUIProvider = theGUIProvider guist
+    , theGUIWorkers  = theGUIWorkers  guist
     }
   GUI $ return a
 
@@ -647,12 +429,12 @@ onSubModel submodel subgui = do
 --
 -- Under the hood, this function will evaluate 'breakGUI' with a 'EventHandlerHalt' condition set in the
 -- 'guiContinue' field.
-deleteEventHandler :: GUI window model void
+deleteEventHandler :: GUI provider model void
 deleteEventHandler = GUI $ return EventHandlerHalt
 
 -- | Cancel the current event handler execution. This function is like 'disable' but does not
 -- instruct the event handler to remove itself.
-cancelNow :: GUI window model void
+cancelNow :: GUI provider model void
 cancelNow = GUI $ return EventHandlerCancel
 
 -- | When an event handler evaluates this function, it is voluntarily canceling the current event
@@ -661,12 +443,12 @@ cancelNow = GUI $ return EventHandlerCancel
 -- (especially ones that indicate which events have been handled), but before time-consuming drawing
 -- updates have begun. This allows other threads to have access to the model and perform their own
 -- drawing.
-cancelIfBusy :: GUI window model ()
+cancelIfBusy :: GUI provider model ()
 cancelIfBusy = howBusy >>= flip when cancelNow . (> 0)
 
 -- | Return a value indicating how many pending threads there are waiting for their turn to access
 -- the 'Happlet' @model@.
-howBusy :: GUI window model Int
+howBusy :: GUI provider model Int
 howBusy = GUI $ fmap EventHandlerContinue $
   gets theGUIHapplet >>= liftIO . fmap fst . getWaitingThreads
 
@@ -674,28 +456,28 @@ howBusy = GUI $ fmap EventHandlerContinue $
 -- transformer so you can use functions like 'Control.Monad.State.Class.get'. However this function
 -- is provided as synonym for the 'Control.Monad.State.Class.get' function for convenience, and
 -- perhaps for better readability in your code.
-getModel :: GUI window model model
+getModel :: GUI provider model model
 getModel = get
 
 -- | The 'GUI' function type instantiates the 'Control.Monad.State.Class.MonadState' monad
 -- transformer so you can use functions like 'Control.Monad.State.Class.gets'. However this function
 -- is provided as synonym for the 'Control.Monad.State.Class.gets' function for convenience, and
 -- perhaps for better readability in your code.
-getSubModel :: (model -> a) -> GUI window model a
+getSubModel :: (model -> a) -> GUI provider model a
 getSubModel = gets
 
 -- | The 'GUI' function type instantiates the 'Control.Monad.State.Class.MonadState' monad
 -- transformer so you can use functions like 'Control.Monad.State.Class.put'. However this function
 -- is provided as synonym for the 'Control.Monad.State.Class.put' function for convenience, and
 -- perhaps for better readability in your code.
-putModel :: model -> GUI window model ()
+putModel :: model -> GUI provider model ()
 putModel = put
 
 -- | The 'GUI' function type instantiates the 'Control.Monad.State.Class.MonadState' monad
 -- transformer so you can use functions like 'Control.Monad.State.Class.modify'. However this
 -- function is provided as synonym for the 'Control.Monad.State.Class.modify' function for
 -- convenience, and perhaps for better readability in your code.
-modifyModel :: (model -> model) -> GUI window model ()
+modifyModel :: (model -> model) -> GUI provider model ()
 modifyModel = modify
 
 ----------------------------------------------------------------------------------------------------
@@ -714,26 +496,85 @@ guiIsLive = \ case { EventHandlerContinue{} -> True; _ -> False; }
 -- | Obtain a copy of the entire 'GUIState' data structure set for the current 'GUI' evaluation
 -- context. This function should never be used unless you are programming a Happlet
 -- 'Happlets.Provider.Provider'.
-getGUIState :: GUI window model (GUIState window model)
+getGUIState :: GUI provider model (GUIState provider model)
 getGUIState = GUI $ EventHandlerContinue <$> get
 
 -- | Update the entire copy of the 'GUIState' data structure for the current context. This
 -- function should never be used unless you are programming a Happlet 'Happlets.Provider.Provider'.
-putGUIState :: GUIState window model -> GUI window model ()
+putGUIState :: GUIState provider model -> GUI provider model ()
 putGUIState = GUI . fmap EventHandlerContinue . put
 
 -- | Modify the 'GUIState' data structure for the current context. This function should never be
 -- used unless you are programming a Happlet 'Happlets.Provider.Provider'
-modifyGUIState :: (GUIState window model -> GUIState window model) -> GUI window model ()
+modifyGUIState :: (GUIState provider model -> GUIState provider model) -> GUI provider model ()
 modifyGUIState = GUI . fmap EventHandlerContinue . modify
 
 -- | Obtain a reference to the 'Happlet' in which this 'GUI' function is being evaluated.
-askHapplet :: GUI window model (Happlet model)
+askHapplet :: GUI provider model (Happlet model)
 askHapplet = ask
 
 -- | Obtain a reference to the "government" 'WorkerUnion' for this GUI.
-govWorkerUnion :: GUI window model WorkerUnion
+govWorkerUnion :: GUI provider model WorkerUnion
 govWorkerUnion = GUI $ EventHandlerContinue <$> gets theGUIWorkers
+
+----------------------------------------------------------------------------------------------------
+
+class (MonadIO m, MonadState provider m)
+  => MonadProvider provider m | provider -> m where
+  runProviderIO :: m a -> provider -> IO (a, provider)
+  contextSwitcher :: Lens' provider (m (EventHandlerControl ()))
+  signalFatalError :: Strict.Text -> m ()
+
+data ProviderStateLock provider
+  = ProviderUnlocked (MVar provider)
+    -- ^ Unocked means we have not yet called 'modifyMVar', but we can do so on the 'MVar' given
+    -- here.
+  | ProviderLocked   provider
+    -- ^ Locked means we are within 'modifyMVar' and we have the @provider@ state value.
+
+-- | Lock a 'ProviderStateLock' and then evaluate 'runProviderIO' on the given 'MonadProvider'
+-- function @m@.
+runProviderOnLock
+  :: (MonadIO m, MonadProvider provider m)
+  => ProviderStateLock provider -> m a -> IO a
+runProviderOnLock lock f = case lock of
+  ProviderUnlocked mvar -> modifyMVar mvar $ fmap (\ (a,b) -> (b,a)) . runProviderIO f
+  ProviderLocked{}      -> fail $ "runProviderOnLock: evaluated on already locked provider."
+
+-- | This function should always be called within a callback function that is installed into the
+-- provider for handling events coming into the program from the operating system.
+providerLiftGUI
+  :: (MonadIO m, MonadState provider m, MonadProvider provider m, CanRecruitWorkers provider)
+  => Happlet model -> GUI provider model a -> m (EventHandlerControl a)
+providerLiftGUI happlet f = do
+  -- (1) Always set 'contextSwitcher' to a no-op, it may be set to something else by @f@.
+  contextSwitcher .= return (EventHandlerContinue ())
+  -- (2) Get the provider after having set it's 'contextSwitcher' to a no-op.
+  provider <- get
+  (result, provider) <- liftIO $ fmap fst $ onHapplet happlet $ \ model -> do
+    (guiContin, guiState) <- runGUI f GUIState
+      { theGUIHapplet  = happlet
+      , theGUIProvider = ProviderLocked provider
+      , theGUIModel    = model
+      , theGUIWorkers  = governmentWorkerUnion provider
+      }
+    case theGUIProvider guiState of
+      ProviderLocked provider -> return ((guiContin, provider), theGUIModel guiState)
+      ProviderUnlocked{}      -> fail $
+        "providerLiftGUI: runGUI succesfull, but provider in GUIState is still locked"
+  -- (3) Put the newly updated provider state back into the monad state
+  put provider
+  -- (4) Check if the result is 'HappletEventCancel', if it is, there is a chance that a context
+  -- switch occurred. The context switcher is always evaluated on a cancel signal. If the context
+  -- switcher was not changed by @f@ between (1) and (2), the 'contextSwitcher' field has therefore
+  -- not been changed from the (return ()) value (a no-op) set at (1) and so no context switch
+  -- occurs.
+  case result of
+    EventHandlerCancel -> (provider ^. contextSwitcher) >>= \ case
+      EventHandlerFail msg -> signalFatalError msg
+      _                    -> return ()
+    _                  -> return ()
+  return result
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1030,9 +871,9 @@ _recruitWorker fork wu (Workspace mvar) handl cycle (WorkerTask f) =
 -- The 'Happlet.Provider.Provider' must instantiate 'CanRecruitWorkers' in order for this function
 -- to be usable -- we hope that all 'Happlet.Provider.Provider's will do this.
 guiWorker
-  :: CanRecruitWorkers window
+  :: CanRecruitWorkers provider
   => WorkerName -> WorkCycleTime
-  -> GUI window model void -> GUI window model Worker
+  -> GUI provider model void -> GUI provider model Worker
 guiWorker handl cycle f = do
   guist <- getGUIState
   newWorker (launchWorkerThread guist) (theGUIWorkers guist) handl cycle $ \ worker -> do
@@ -1045,9 +886,9 @@ guiWorker handl cycle f = do
 -- 'Worker'-related functions here which can be evaluated to any function type of the 'MonadIO' type
 -- class. The default "government" 'WorkerUnion' is only available during 'GUI' evaluation.
 govWorker
-  :: CanRecruitWorkers window
+  :: CanRecruitWorkers provider
   => Workspace work -> WorkerName -> WorkCycleTime
-  -> WorkerTask work void -> GUI window model Worker
+  -> WorkerTask work void -> GUI provider model Worker
 govWorker workspace handl cycle f = do
   st  <- getGUIState
   gov <- govWorkerUnion
@@ -1108,9 +949,9 @@ postTaskWorkers (Workspace mvar) handls f =
 -- | Similar to 'postWorkers', but the task evaluated is of type 'GUI', allowing full access to the
 -- 'GUI's state as each work item is posted.
 guiPostWorkers
-  :: CanRecruitWorkers window
-  => [WorkerName] -> (inWork -> GUI window model outWork)
-  -> GUI window model (WorkPost inWork outWork)
+  :: CanRecruitWorkers provider
+  => [WorkerName] -> (inWork -> GUI provider model outWork)
+  -> GUI provider model (WorkPost inWork outWork)
 guiPostWorkers names f = getGUIState >>= \ st ->
   postal (launchWorkerThread st) names $ \ self work -> do
     setWorkerStatus self WorkerWaiting
@@ -1250,7 +1091,7 @@ relieveWorkersIn (WorkerUnion mvar) toBeRelieved = liftIO $ modifyMVar_ mvar $ \
 
 -- | Like 'relieveWorkersIn' but the signals are sent to the workers default "government"
 -- 'WorkerUnion'.
-relieveGovWorkers :: (Worker -> Bool) -> GUI window model ()
+relieveGovWorkers :: (Worker -> Bool) -> GUI provider model ()
 relieveGovWorkers toBeRelieved = govWorkerUnion >>= liftIO . flip relieveWorkersIn toBeRelieved
 
 -- | Define a new 'WorkerUnion'. 
@@ -1354,27 +1195,6 @@ newWorkPostStats = do
 
 ----------------------------------------------------------------------------------------------------
 
--- $InstallingEventHandlers
---
--- These are functions your 'Happlet' can use to subscribe to receive certain types of events that
--- the back-end 'Happlets.Provider.Provider' may provide. Not all back-end
--- 'Happlets.Provider.Provider's provide all types of events. If the @window@ type you are using
--- does instantiate the below classes, you may program your 'Happlet' to receive that type of event.
-
--- | Windows that are manageable are part of multi-window GUI operating systems where a window
--- manager can display multiple windows, sending a signal when the window is made visible or
--- invisible, and sending a signal when the window received focus (is made to receive user input) or
--- loses focus.
-class Managed window where
-  -- | This event handler is evaluated when the window becomes visible or invisible
-  visibleEvents :: (Bool -> GUI window model ()) -> GUI window model ()
-  -- | This event handler is evaluated when the window gains or loses focus.
-  focusEvents :: (Bool -> GUI window model ()) -> GUI window model ()
-  -- | This function asks the operating system or desktop environment to show or hide the window
-  -- associated with the given @window@. This should trigger a call to the event handler set by
-  -- 'visibleEvents'.
-  windowVisible :: Bool -> GUI window model ()
-
 -- | This class must be instantiated by the 'Happlet.Provider.Provider' to evaluate 'GUI' functions
 -- in 'Worker' threads. The 'guiWorker' makes use of this interface.
 --
@@ -1386,21 +1206,23 @@ class Managed window where
 -- To perform any @IO@ computation which may cause the thread to block, or otherwise require a lot
 -- of time to run to completion, call 'forkGUI' which creates a thread-safe evaluator for functions
 -- of type 'GUI' that can be safely evaluated in the @IO@ context of the thread.
-class CanRecruitWorkers window where
+class CanRecruitWorkers provider where
+  governmentWorkerUnion :: provider -> WorkerUnion
+
   -- | This function creates a new Haskell thread and passes an evaluator (a continuation function)
   -- of type @('GUI' window model a -> IO ('EventHandlerControl' a)@. This Haskell thread can safely
   -- spawn other threads, it can evaluate 'threadDelay', it can safely wait on 'MVar's or 'QSem's,
   -- and it can loop indefinitely. When it comes time to perform an action in the 'GUI', the thread
   -- function can call the given evaluator function to perform an update in the GUI.
   forkGUI
-    :: ((GUI window model a -> IO (EventHandlerControl a)) -> IO ())
+    :: ((GUI provider model a -> IO (EventHandlerControl a)) -> IO ())
        -- ^ Use this function to evaluate a 'GUI' function within the @IO@ context of the 'Worker'
        -- thread.
-    -> GUI window model ThreadId
+    -> GUI provider model ThreadId
   -- | This function must assume that the given 'GUI' function will be evaluated in a new thread
   -- with the given 'GUIState'. This function must perform all locking of mutex variables necessary
   -- to evaluate the 'GUI' function, and update all mutexes with the results of evaluation.
-  inOtherThreadRunGUI :: GUIState window model -> GUI window model a -> IO (EventHandlerControl a)
+  inOtherThreadRunGUI :: GUIState provider model -> GUI provider model a -> IO (EventHandlerControl a)
   -- | Launch a worker thread that can safely interact with the GUI. Many GUI libraries do not
   -- provide thread safety, instead using a cooperative mutlithreading model, and so launching
   -- worker threads must make use of the GUI's own cooperative multithread functionality. In Gtk+
@@ -1412,7 +1234,7 @@ class CanRecruitWorkers window where
   -- value that can optionally stop it's own thread loop, and returns an @IO ()@ function that can
   -- be used to halt the thread.
   launchWorkerThread
-    :: GUIState window model -- ^ provides access to the @window@
+    :: GUIState provider model -- ^ provides access to the @provider@
     -> WorkerUnion
        -- ^ use to call 'unionizeWorker' when thread begins and 'retireWorker' when thread
        -- ends. Usually this union is the same as 'theGUIWorkers' ("government" union), but not
@@ -1423,192 +1245,3 @@ class CanRecruitWorkers window where
     -> (Worker -> IO (EventHandlerControl void))
         -- ^ the task to be perofmred during each work cycle.
     -> IO (IO ())    -- ^ returns a function that used to halt the thread that is forked here.
-
--- | Windows that can be resized can provide an instance of this class. Even on platforms where
--- there is only one window per screen, it may be possible to change screen sizes if the screen
--- resolutions or screen orientations can change.
-class CanResize window where
-  -- | This event handler is evaluated when the window is resized. It should NOT be called when the
-  -- window is first initialized, or when it is first made visible. The 'NewPixSize' event value
-  -- passed to the event handler 'GUI' function you provie to this event handler will always be
-  -- exactly the same value as what is returned by 'getWindowSize'.
-  resizeEvents
-    :: CanvasMode
-    -> (OldPixSize -> NewPixSize -> GUI window model ())
-    -> GUI window model ()
-
--- | The event handler function set with 'resizeEvents' takes this parameter, which is the value of
--- the previous canvas size.
-type OldPixSize = PixSize
-
--- | The event handler function set with 'resizeEvents' takes this parameter, which is the value of
--- the new canvas size.
-type NewPixSize = PixSize
-
--- | When defining the behavior of your app for responding to window resize events (using
--- 'resizeEvents'), you have a choice of whether or not your app copies the old image to the new
--- canvas, or if you would prefer to just redraw everything from scratch. If you need to redraw
--- everything on a resize, this is common when objects in the image need to move around a lot when a
--- resize occurs, like in a text editor. If you are just going to redraw everything, then it would
--- be a pretty significant waste of CPU resources to copy the old canvas to the new canvas buffer
--- just before you drew over it. In this case, you would set your redraw beahvior to
--- 'ClearCanvasMode'.
---
--- However, sometimes you don't need to redraw everything, maybe you want the same exact image as
--- before, just with a new cropping frame, and if the window is larger than before you'll only
--- redraw the part of the buffer that was recently exposed. This can be done easily by setting
--- 'CopyCanvasMode', the Happlet back-end provider will automatically copy the old canvas buffer to
--- the new one after a resize event and before it calls your event handler.
---
--- You also have the option of using 'ScaleCanvasMode', which is like 'CopyCanvasMode' but scales
--- the image to the new buffer size. 'ScaleWidthCanvasMode' scales the image proportionally, meaning
--- a square will always be a square even when you resize the window to a rectanglular shape, and the
--- scaling factor is computed from the difference between the old width and the new
--- width. 'ScaleHeightCanvasMode' is similar but sets the scaling factor based on the new height.
-data CanvasMode
-  = ClearCanvasMode -- ^ don't bother copying the old canvas to the new one, we will just
-  | CopyCanvasMode -- ^ copy the old canvas to the new before running the resize event handler.
-  | ScaleCanvasMode -- ^ copy the old canvas and scale it to fill the new canvas.
-  | ScaleWidthCanvasMode -- ^ copy the old canvas proprtionally from the new canvas width.
-  | ScaleHeightCanvasMode -- ^ copy the old canvas proportionally from the new canvas height.
-  deriving (Eq, Ord, Show, Bounded, Enum)
-
--- | This class provides the ability to install animation event handlers which are repeatedly called
--- at fast, regular time intervals, usually 60 frames per second.
-class CanAnimate window where
-  -- | This function will be called repeatedly with a time delta indicating how much time has passed
-  -- since the animation handler was installed. The given 'GUI' function should update the
-  -- 'Happlet.View.Readraw' state each time.
-  stepFrameEvents :: (AnimationMoment -> GUI window model ()) -> GUI window model ()
-  -- | This function returns true of false if there is currently an animation event handler
-  -- installed and running in the Happlet. To disable a running animation, evaluate
-  -- @'stepFrameEvents' 'disable'@.
-  animationIsRunning :: GUI window model Bool
-
--- | This class provides the ability to install keyboard event handlers.
-class CanKeyboard window where
-  -- | There may be more than one keyboard, although it is not likely. Just the same, it is possible
-  -- to specify an 'Happlets.Event.InputDeviceId'. Remember that passing an empty list of
-  -- 'Happlets.Event.InputDeviceId's will install the 'GUI' function to receive events from the
-  -- default device.
-  keyboardEvents :: (Keyboard -> GUI window model ()) -> GUI window model ()
-  -- | This function should return a list of all possible keyboard devices. If an empty list is
-  -- returned, only one device, the default device, is provided.
-  providedKeyboardDevices :: GUI window model [InputDeviceId]
-  providedKeyboardDevices = return []
-
--- | Mouse events can cause a lot of event throughput. To reduce this throughput and improve
--- efficiency, the 'mouseEvents' function take a parameter that lets you filter only certain mouse
--- events, so your 'GUI' function is only called when mouse events matching one of these patterns
--- occur.
-data MouseEventPattern
-  = MouseButton -- ^ Matches only mouse button click events.
-  | MouseDrag   -- ^ Matches mouse motion events only when a button is clicked down.
-  | MouseAll    -- ^ Matches all mouse motion and mouse button events.
-  deriving (Eq, Ord, Show, Enum, Bounded)
-
--- | This class provides the ability to install mouse event handlers. Minimal complete definition is
--- 'mouseEvents'.
-class CanMouse window where
-  -- | Install a 'GUI' function that only responds to mouse button clicks. All mouse cursor motion
-  -- is ignored.
-  mouseEvents
-    :: MouseEventPattern
-    -> (Mouse -> GUI window model ())
-    -> GUI window model ()
-  -- | This function should return a list of all possible mouse devices. If an empty list is
-  -- returned, only one device, the default device, is provided.
-  providedMouseDevices :: GUI window model [InputDeviceId]
-  providedMouseDevices = return []
-
--- | This class provides the ability to provide trackpad events handlers. Happlet programmers should
--- be not expect that many back-end providers will not provide events of this type at all.
---
--- 'Happlet.Event.Trackpad' events are a catch-all event type which cover all input devices that are
--- not keyboard or mouse devices. Back-end providers should strive to, as often as possible, eschew
--- a 'CanTrackpad' provider and define a 'CanMouse' provider a specific input device instead.
---
--- However, raw mouse events, stylus events, and touch screen events may all fall under the category
--- of 'CanTrackpad', so if the back-end providers would like to provide this type of event, it may.
-class CanTrackpad window where
-  -- | For 'Happlets.Event.Trackpad' events, it is important (but still not required) for you to
-  -- specify an 'Happlets.Event.InputDeviceId'.
-  trackpadEvents :: (Trackpad -> GUI window model ()) -> GUI window model ()
-  -- | This function should return a list of all possible trackpad devices. If an empty list is
-  -- returned, only one device, the default device, is provided. It is more important that back-end
-  -- providers specify elements of this list, because of the wide variety of input devices that this
-  -- event handler could be made to handle.
-  providedTrackpadDevices :: GUI window model [InputDeviceId]
-  providedTrackpadDevices = return []
-
-----------------------------------------------------------------------------------------------------
-
--- | The back-end provider may provide it's own abstraction for an image buffer that satisfies the
--- functions of this type class.
-class CanBufferImages window image render | window -> image, window -> render where
-  -- | Create a new image buffer.
-  newImageBuffer :: forall model a . PixSize -> render a -> GUI window model (a, image)
-  -- | Resize the image buffer.
-  resizeImageBuffer :: forall model a . image -> PixSize -> render a -> GUI window model a
-  -- | Draw to the image buffer using a @render@ function.
-  drawImage :: forall model a . image -> render a -> GUI window model a
-  -- | Blit an image buffer to the current @window@. You can offset the location of the blit
-  -- operation by passing an offset value as the 'Happlets.Readraw.PixCoord'.
-  blitImage :: image -> PixCoord -> GUI window model ()
-  -- | Like 'blitImage' but blits to another @image@, rather than to the current @window@. The first
-  -- @image@ parameter is the source from which to blit, the second @image@ is the target to which
-  -- to blit, followed by the offset and mask.
-  blitImageTo
-    :: Source image
-    -> Target image
-    -> Target PixCoord
-    -> GUI window model ()
-
-----------------------------------------------------------------------------------------------------
-
--- $OtherCapabilities
---
--- These are functions which can be called when defining a GUI function which has nothing to do with
--- reacting to events.
-
--- | Some back-end providers may wish to provide force-feedback functionality along with
--- 'CanTrackapd' event handlers.
-class CanForceFeedback window where
-  -- | Happlet programmers should be able to program a force feedback pattern by specifying a list
-  -- of intensities and durations. Multiple calls to this function __should__ delete later force
-  -- feedback patterns, and only execute the first call to this function. In multi-threaded systems,
-  -- it is up to the back-end provider to decide what should happen if multiple threads call
-  -- 'forceFeedback' at the same time. It is recommended that the force feedback sent to the input
-  -- device should work on a first-come-first-serve basis, and later patterns should cancle current
-  -- patterns that are currently being sent to the input device.
-  forceFeedback :: [(FFIntensity, FFDuration)] -> GUI window model ()
-
--- | For back-end 'Happlets.Provider.Provider's that allow 'Happlet.GUI.Happlet's to subscribe to
--- events from specific devices, this function asks the back-end 'Happlets.Provider.Provider' to
--- return a list of valid input device identifiers that can be used when installing event handlers.
-class DeviceHandler window where
-  -- | Provide an up-to-date list of available 'Happlets.Event.InputDeviceId's.
-  providedInputDevices :: GUI window model [InputDeviceId]
-  -- | Subscriber functions which install 'GUI' event handlers, for example 'keyboardEvents',
-  -- 'mouseEvents', 'trackpadEvents', or 'forceFeedback', will by default subscribe to events from
-  -- any and all devices sending input from the back-end 'Happlets.Provider.Provider'. However if
-  -- you wish for your 'Happlet' to only subscribe to events coming from only certain specific
-  -- devices, evaluate these subscriber functions within this 'onDevices' function to limit which
-  -- devices will send input to your 'GUI' functions.
-  onDevices :: [InputDeviceId] -> GUI window model () -> GUI window model ()
-
--- | Returns a list of input devices that are not recognized.
-unrecognizedInputDevices
-  :: DeviceHandler window
-  => [InputDeviceId] -> GUI window model [InputDeviceId]
-unrecognizedInputDevices test = do
-  have <- providedInputDevices
-  return [device | device <- test, not $ device `elem` have]
-
--- | Similar to 'unrecognizedInputDevices' but will throw a runtime exception if any of the given
--- 'InputDeviceId's are not provided by the 'providedInputDevices'.
-failUnrecognizedInputDevices
-  :: DeviceHandler window
-  => [InputDeviceId] -> GUI window model ()
-failUnrecognizedInputDevices = unrecognizedInputDevices >=> \ bad ->
-  if null bad then return () else fail $ "Unrecognized input device IDs"++show bad

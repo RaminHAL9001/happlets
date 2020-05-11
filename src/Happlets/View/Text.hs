@@ -80,7 +80,7 @@
 -- tracking clients over a network. All font configurations must be performed by the operating
 -- system, and the Happlet 'Happlets.Initialize.Provider' must always select the default monospace
 -- font.
-module Happlets.Draw.Text
+module Happlets.View.Text
   ( ScreenPrinter(..),
     screenPrinter, fontStyle, textCursor, renderOffset,
     asGridSize, pixToGridSize,
@@ -102,8 +102,8 @@ module Happlets.Draw.Text
     module Data.Char,
   ) where
 
-import           Happlets.Draw.Color
-import           Happlets.Draw.Types2D
+import           Happlets.View.Color
+import           Happlets.View.Types2D
 
 import           Control.Arrow      ((>>>), (&&&), first)
 import           Control.Lens

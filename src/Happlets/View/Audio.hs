@@ -1,12 +1,15 @@
 {-# LANGUAGE KindSignatures #-}
 
--- | This module provides an minimal API for audio providers. Minimalist means it allows for access
--- to a pulse-code modulator (PCM). At the time of this writing, most modern commercially available
--- computer systems provide a PCM with a 44.1 KHz sample rate, signed 16 bit samples per channel,
--- and 2 (left and right) stereo output channels.
+-- | This module provides an minimal "view" API for audio providers. It is a "view" in the sense
+-- that this code is designed to output a signal -- although it is an audio signal, rather than a
+-- video signal. It is minimalist in that it provides an abstraction for a pulse-code modulator
+-- (PCM). At the time of this writing, most modern commercially available computer systems provide a
+-- PCM with a 44.1 KHz sample rate, signed 16 bit samples per channel, and 2 (left and right) stereo
+-- output channels.
 --
 -- APIs for compression and reading/writing audio to/from persistent storage are not provided, MIDI
--- or any kind of sequencing APIs are not provided either.
+-- or any kind of sequencing APIs are not provided either. If they are provided, it would be in a
+-- separate package that provides a "Happlets.Control.MIDI" module.
 --
 -- These specifications are mostly good enough for general purpose use cases. For those evaluating
 -- whether Happlets could be useful for audio signal processing and synthesis, Happlets may still be
@@ -23,7 +26,7 @@
 -- requires additional security measures (you don't want hackers using your microphone and listening
 -- to you over the internet), and some audio providers may not want to provide any audio recording
 -- at all.
-module Happlets.Audio
+module Happlets.View.Audio
   ( -- * The PCM Function Type
     PCMControl, newPCMControl, signalPCMControl, checkPCMControl,
     PCM, runPCM, stereoPCM, monoPCM, StereoChannel, MonoChannel,

@@ -29,7 +29,7 @@
 -- 2. call 'newHapplet' to create a new 'Happlets.GUI.Happlet' container which contains your
 --    document object model.
 -- 3. call 'attachWindow' to attach the 'Happlets.GUI.Happlet' to the window, passing an
---    initializing 'Happlets.GUI.GUI' function to setup the event handlers.
+--    initializing 'Happlets.Model.GUI.GUI' function to setup the event handlers.
 -- 4. perform the above 3 steps for as many windows as necessary.
 -- 5. if necessary, call 'deleteWindow'.
 --
@@ -47,7 +47,7 @@
 --     ---
 --     win <- newWindow
 --     ---
---     --- create a new 'Happlets.GUI.Happlet' to contain the document object model ---
+--     --- create a new 'Happlets.Model.GUI.Happlet' to contain the document object model ---
 --     ---
 --     happ <- 'newHapplet' MyDocumentModel
 --         { myFoo = emptyFoo
@@ -63,24 +63,24 @@
 -- if your document model contains information sensitive to the geometry of the window, you can
 -- initialize your document model using the given window size.
 --
--- The document model stored in the 'Happlets.GUI.Happlet' container can be any data type at
+-- The document model stored in the 'Happlets.Model.GUI.Happlet' container can be any data type at
 -- all. Haskell's static type checker ensures that the 'GUI' function you use to initialize the
--- event handlers must match the content of the 'Happlets.GUI.Happlet' container. As your
--- 'Happlets.GUI.GUI' program begins receiving events from the operating system's window manager,
--- the document model is updated using the ordinary 'Control.Monad.State.Class.MonadState' API
--- functions like 'Control.Monad.State.Class.get', 'Control.Monad.State.Class.put',
+-- event handlers must match the content of the 'Happlets.Model.GUI.Happlet' container. As your
+-- 'Happlets.Model.GUI.GUI' program begins receiving events from the operating system's window
+-- manager, the document model is updated using the ordinary 'Control.Monad.State.Class.MonadState'
+-- API functions like 'Control.Monad.State.Class.get', 'Control.Monad.State.Class.put',
 -- 'Control.Monad.State.Class.modify', as well as the 'Control.Lens.Lens'' functions
 -- 'Control.Lens.use', 'Control.Lens.assign' and it's infix form ('Control.Lens..='), and
 -- 'Control.Lens.modifying' and it's infix form ('Control.Lens.%=').
 --
--- Please also refer to the "Happlets.GUI" documentation on the 'Happlets.GUI.GUI' function type
--- which is the Happlets equivalent of the @IO@ function type. There you will find instructions on
--- how to install event handlers.
-module Happlets.Initialize where
+-- Please also refer to the "Happlets.Model.GUI" documentation on the 'Happlets.Model.GUI.GUI'
+-- function type which is the Happlets equivalent of the @IO@ function type. There you will find
+-- instructions on how to install event handlers.
+module Happlets.Model.Initialize where
 
 import           Happlets.Config
-import           Happlets.Draw.SampCoord
-import           Happlets.GUI
+import           Happlets.View.SampCoord
+import           Happlets.Model.GUI
 import           Happlets.Provider
 
 import           Control.Monad.Reader
@@ -93,28 +93,29 @@ import           Control.Monad.State
 -- 
 -- The real use of this function type is provided by the various classes that can be instantiated by
 -- the back-end provider.
-newtype Initialize window a
-  = Initialize { unwrapGUI :: ReaderT (Provider window) (StateT Config IO) a }
+newtype Initialize provider a
+  = Initialize { unwrapGUI :: ReaderT (Provider provider) (StateT Config IO) a }
   deriving (Functor, Applicative, Monad, MonadIO)
 
-instance MonadReader (Provider window) (Initialize window) where
+instance MonadReader (Provider provider) (Initialize provider) where
   ask = Initialize ask
   local f = Initialize . local f . unwrapGUI
 
-instance MonadState Config (Initialize window) where
+instance MonadState Config (Initialize provider) where
   state = Initialize . state
 
--- | This function is an all-in-one setup function that lets you create a 'Happlets.GUI.Happlet'
--- with a single function call. Pass the back-end 'Happlets.Provider.Provider', a stateful function
--- for updating the default 'Happlets.Config.Config', an initial @model@, and an initial
--- 'Happlets.GUI.GUI' function for installing the 'Happlets.GUI.Happlet' event handlers. This
--- function will automatically call 'newHapplet', 'newWindow', 'attachWindow', 'happlet', and then
+-- | This function is an all-in-one setup function that lets you create a
+-- 'Happlets.Model.GUI.Happlet' with a single function call. Pass the back-end
+-- 'Happlets.Provider.Provider', a stateful function for updating the default
+-- 'Happlets.Config.Config', an initial @model@, and an initial 'Happlets.Model.GUI.GUI' function
+-- for installing the 'Happlets.Model.GUI.Happlet' event handlers. This function will automatically
+-- call 'newHapplet', 'newWindow', 'attachWindow', 'happlet', and then
 -- return when the GUI event loop halts. Here is an example of how you might use it:
 --
 -- @
 -- import Happlets
 --
--- -- Here you define your document model data type, which will be updated by the 'Happlets.GUI.GUI'
+-- -- Here you define your document model data type, which will be updated by the 'Happlets.Model.GUI.GUI'
 -- -- function whenever an event occurs.
 -- data MyDocModel = MyDocModel
 --      { someFoo      :: FooType
@@ -146,27 +147,27 @@ instance MonadState Config (Initialize window) where
 --         -- Use this function to update your document model with the window size (if necessary),
 --         -- and install the event handler functions.
 --
---         'Happlets.GUI.modifyModel' $ \ mydoc ->
+--         'Happlets.Model.GUI.modifyModel' $ \ mydoc ->
 --             mydoc{ myDocWinSize = winSiz } --  <-- here you set the window size
 --
---         'Happlets.GUI.mouseEvents' 'Happlets.GUI.MouseButton' $ \ mousEvt -> do
+--         'Happlets.Model.GUI.mouseEvents' 'Happlets.GUI.MouseButton' $ \ mousEvt -> do
 --             ---
 --             --- some code for handling mouse events ...
 --             ---
 --
---         'Happlets.GUI.keyboardEvents' $ \ keyEvt -> do
+--         'Happlets.Model.GUI.keyboardEvents' $ \ keyEvt -> do
 --             ---
 --             --- some code for handling key events ...
 --             ---
 --     )
 -- @
 simpleHapplet
-  :: Provider window -- ^ pass the Happlets back-end provider
+  :: Provider provider -- ^ pass the Happlets back-end provider
   -> StateT Config IO ()
       -- ^ Use lens functions like @('Control.Lens..=')@ and @('Control.Lens.%=')@ to define this
       -- function.
   -> model -- ^ pass the initial model
-  -> (PixSize -> GUI window model ())
+  -> (PixSize -> GUI provider model ())
       -- ^ Pass the function which installs the event handlers.
   -> IO ()
 simpleHapplet provider updcfg model init = do
@@ -179,55 +180,55 @@ simpleHapplet provider updcfg model init = do
   doWindowDelete provider win
 
 -- | Run the 'Initialize' function with the given back-end 'Happlets.Happlet.Provider'.
-happlet :: Provider window -> Initialize window a -> IO a
+happlet :: Provider provider -> Initialize provider a -> IO a
 happlet provider (Initialize f) = do
   doInitializeGUI provider
   (a, config) <- runStateT (runReaderT f provider) (defaultConfig provider)
   liftIO $ doGUIEventLoopLaunch provider config
   return a
 
--- | Create a new @window@. The @window@ itself only contains stateful information relevant to the
--- 'Happlets.GUI.GUI' back-end 'Happlets.Provider.Provider', it does not do anything on it's
+-- | Create a new @provider@. The @provider@ itself only contains stateful information relevant to
+-- the 'Happlets.GUI.GUI' back-end 'Happlets.Provider.Provider', it does not do anything on it's
 -- own. This function does not place a window on the screen, only the 'attachWindow' function can do
 -- that.
-newWindow :: Initialize window window
+newWindow :: Initialize provider provider
 newWindow = liftIO =<< asks doWindowNew <*> get
 
 -- | Create a new 'Happlets.GUI.Happlet', which contains a document object model of any type. When
 -- you call 'attachWindow' you must supply this 'Happlets.GUI.Happlet' container along with a
--- 'Happlets.GUI.GUI' function that installs all the necessary event handlers into the @window@. As
--- the @window@ begins reciving events from the operating system's window manager, these event
+-- 'Happlets.GUI.GUI' function that installs all the necessary event handlers into the @provider@. As
+-- the @provider@ begins reciving events from the operating system's window manager, these event
 -- handlers are evaluated, and the content of this 'Happlets.GUI.Happlet' can be updated using the
 -- 'Control.Monad.State.Class.MonadState' functions like 'Control.Monad.State.Class.get',
 -- 'Control.Monad.State.Class.put', 'Control.Monad.State.Class.modify', as well as the
 -- 'Control.Lens.Lens'' functions 'Control.Lens.use', 'Control.Lens.assign' and it's infix form
 -- ('Control.Lens..='), and 'Control.Lens.modifying' and it's infix form ('Control.Lens.%=').
-newHapplet :: model -> Initialize window (Happlet model)
+newHapplet :: model -> Initialize provider (Happlet model)
 newHapplet = liftIO . makeHapplet
 
 -- | This function evaluates the given 'Happlets.GUI.GUI' function to install 'Happlets.GUI.GUI'
--- event handlers into the @window@ that can modify the content of the 'Happlets.GUI.Happlet'
+-- event handlers into the @provider@ that can modify the content of the 'Happlets.GUI.Happlet'
 -- container in response to events received from the operating system's window manager.
 --
--- Note that it is possible to detach a 'Happlets.GUI.Happlet' container from a @window@ and
--- re-attach the @window@ to an entirely different type of 'Happlets.GUI.Happlet' container using
+-- Note that it is possible to detach a 'Happlets.GUI.Happlet' container from a @provider@ and
+-- re-attach the @provider@ to an entirely different type of 'Happlets.GUI.Happlet' container using
 -- the 'Happlets.GUI.windowChangeHapplet' function as the program is running and receiving
--- events. This allows a single @window@ to switch between multiple 'Happlets.GUI.Happlet's during
+-- events. This allows a single @provider@ to switch between multiple 'Happlets.GUI.Happlet's during
 -- program execution. Please refer to the 'Happlets.GUI.windowChangeHapplet' function documentation
 -- for information about how to do this.
 attachWindow
   :: Bool          -- ^ make visible immediately?
-  -> window        -- ^ the window to which the happlet will be attached
+  -> provider      -- ^ the provider function that will actually realize the window
   -> Happlet model -- ^ the happlet to attach
-  -> (PixSize -> GUI window model ()) -- ^ the GUI initializer that will install event handlers
-  -> Initialize window ()
+  -> (PixSize -> GUI provider model ()) -- ^ the GUI initializer that will install event handlers
+  -> Initialize provider ()
 attachWindow vis win happ init = liftIO =<<
   asks doWindowAttach <*> pure vis <*> pure win <*> pure happ <*> pure init
 
 ---- | This function launches the GUI event loop. This function is called automatically by the
 ---- functions 'happlet' and 'simpleHapplet', so it should generally not be called. This function is
 ---- exported for those who wish to 
---launchGUIEventLoop :: Initialize window ()
+--launchGUIEventLoop :: Initialize provider ()
 --launchGUIEventLoop = get >>= \ config -> asks doGUIEventLoopLaunch >>= liftIO . ($ config)
 
 ---- | Delete a window. It almost never necessary to delete a Happlet window because usually once the

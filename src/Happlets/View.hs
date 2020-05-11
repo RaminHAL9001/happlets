@@ -6,7 +6,7 @@
 -- @happlets-draw-ext@, which provides extended drawing primitives for a practical 2D graphics
 -- library that can export to and import from SVG data, however no plans for such an extension have
 -- been made at the time of this writing.
-module Happlets.Draw
+module Happlets.View
   ( -- * 2D Graphics Typeclass
     Happlet2DGraphics(..), BlitOperator(..), modifyPixel,
     -- ** Fill Types
@@ -20,17 +20,19 @@ module Happlets.Draw
     -- * Image Buffers
     Happlet2DBuffersPixels(..), Source, Target,
     -- * Re-Exports
-    module Happlets.Draw.Color,
-    module Happlets.Draw.SampCoord,
-    module Happlets.Draw.Text,
-    module Happlets.Draw.Types2D
+    module Happlets.View.Color,
+    module Happlets.View.SampCoord,
+    module Happlets.View.Text,
+    module Happlets.View.Types2D,
+    module Happlets.View.Window,
   ) where
 
-import           Happlets.Draw.Color
-import           Happlets.Draw.SampCoord
-import           Happlets.Draw.Text
-import           Happlets.Draw.Types2D
-import           Happlets.Variable
+import           Happlets.View.Color
+import           Happlets.View.SampCoord
+import           Happlets.View.Text
+import           Happlets.View.Types2D
+import           Happlets.View.Window
+import           Happlets.Provider.Variable
 
 import           Control.Lens (Lens', lens)
 import           Control.Monad.IO.Class
@@ -200,6 +202,10 @@ class Happlet2DGraphics render => Happlet2DGeometry render dim where
   -- | Before blitting, you can also set a transformation matrix that tells the blit operation to
   -- rotate, scale, translate, or skew, or any of the above.
   blitTransform :: Variable render (Transform2D dim)
+
+  -- | If the 'PaintSource' is a gradient, or perhaps a pixel buffer given by the 'fillPattern'
+  -- 'Variable', then you may want to apply a transformation to the pattern before blitting.
+  patternTransform :: Variable render (Transform2D dim)
 
 -- | This class extends the 'Happlet2DGraphics' class with operators for copying sections of the
 -- operand canvas into a pixel buffer.

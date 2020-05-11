@@ -4,8 +4,8 @@
 module Happlets.Provider where
 
 import           Happlets.Config
-import           Happlets.Draw.SampCoord
-import           Happlets.GUI
+import           Happlets.View.SampCoord
+import           Happlets.Model.GUI
 
 ----------------------------------------------------------------------------------------------------
 

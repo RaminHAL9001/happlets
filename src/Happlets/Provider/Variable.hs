@@ -2,7 +2,7 @@
 -- that is to say, these are impure, stateful setters and getters.  Unlike lenses, can modify impure
 -- stateful values and also, as a side effect, send a signal triggering an update to respond to a
 -- change in state.
-module Happlets.Variable where
+module Happlets.Provider.Variable where
 
 import           Control.Lens (Lens', assign, use)
 import           Control.Monad.State.Class

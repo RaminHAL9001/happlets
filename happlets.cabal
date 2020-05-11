@@ -21,18 +21,28 @@ library
   hs-source-dirs: src
   exposed-modules:
     Happlets
-    Happlets.Audio
     Happlets.Config
-    Happlets.Draw
-    Happlets.Draw.Color
-    Happlets.Draw.SampCoord
-    Happlets.Draw.Text
-    Happlets.Draw.Types2D
-    Happlets.Event
-    Happlets.Initialize
+    Happlets.Model
+    Happlets.Model.Audio
+    Happlets.Model.Initialize
+    Happlets.Model.GUI
+    Happlets.Control
+    Happlets.Control.Animate
+    Happlets.Control.InputDevice
+    Happlets.Control.Keyboard
+    Happlets.Control.Mouse
+    Happlets.Control.Resize
+    Happlets.Control.Trackpad
+    Happlets.Control.WindowManager
     Happlets.Provider
-    Happlets.Variable
-    Happlets.GUI
+    Happlets.Provider.React
+    Happlets.Provider.Variable
+    Happlets.View
+    Happlets.View.Audio
+    Happlets.View.Color
+    Happlets.View.SampCoord
+    Happlets.View.Text
+    Happlets.View.Types2D
   other-modules:
     Paths_happlets
   default-extensions:

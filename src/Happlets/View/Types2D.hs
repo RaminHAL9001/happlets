@@ -4,7 +4,7 @@
 -- a rectangular region. These primitives, along with the functionality in the
 -- 'Happlets.GUI.CanBufferImages' type class to load from disk and blit to screen bitmap images,
 -- should be enough to construct minimalist user interfaces.
-module Happlets.Draw.Types2D
+module Happlets.View.Types2D
   ( -- * Typeclasses
     WidgetType(..), Has2DOrigin(..), Is2DShape(..),
     -- * Primitives
@@ -31,12 +31,12 @@ module Happlets.Draw.Types2D
     -- ** Matrix Transformations
     Transform2D,
     -- * Re-exports
-    module Happlets.Draw.SampCoord,
+    module Happlets.View.SampCoord,
     module Linear.V2,
     module Linear.Matrix,
   ) where
 
-import           Happlets.Draw.SampCoord
+import           Happlets.View.SampCoord
 
 import           Control.Arrow
 import           Control.Lens
