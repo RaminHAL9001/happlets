@@ -56,6 +56,7 @@ module Happlets.Model.GUI
     Worker, workerThreadId, workerName, relieveGovWorkers,
     WorkerStatus(..), getWorkerStatus, workerNotBusy, workerNotDone, workerBusy, workerFailed,
     WorkerUnion, newWorkerUnion, unionizeWorker, retireWorker,
+
     -- ** Worker Providers
     WorkerSignal(..), WorkerNotification(..), setWorkerStatus, runWorkerTask,
     WorkerID, workerIDtoInt,
@@ -66,13 +67,19 @@ module Happlets.Model.GUI
     guiModel, guiProvider, guiIsLive, execGUI, runGUI, guiCatch,
     makeHapplet, onHapplet, peekModel, sameHapplet,
     getGUIState, putGUIState, modifyGUIState, askHapplet, govWorkerUnion,
+
     -- ** Functions for Providers
-    MonadProvider(..), ProviderStateLock,
-    runProviderOnLock, providerLiftGUI,
-    -- guiLiftProvider, checkGUIContinue, -- <- TODO 
+    MonadProvider(..), EventSetup(..), simpleSetup, installEventHandler,
+
+    -- *** Locking and Updating a Provider's State
+    --
+    -- This functions are called by 'installEventHandler', you should not need to use them yourself.
+    ProviderStateLock, runProviderOnLock, providerLiftGUI, liftGUIProvider, checkGUIContinue,
   ) where
 
 import           Prelude hiding ((.), id)
+
+import           Happlets.Provider.React
 
 import           Control.Arrow
 import           Control.Category
@@ -519,10 +526,21 @@ govWorkerUnion = GUI $ EventHandlerContinue <$> gets theGUIWorkers
 
 ----------------------------------------------------------------------------------------------------
 
-class (MonadIO m, MonadState provider m)
-  => MonadProvider provider m | provider -> m where
+class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider -> m where
+  -- | This function should work like 'runStateT' for the function type @m@.
   runProviderIO :: m a -> provider -> IO (a, provider)
+  -- | When a context switch is performed, this value is set with a continuation to be called after
+  -- the 'windowChangeHapplet' function completes. After evaluation of the 'GUI' function completes,
+  -- the state is evaluated -- every single event handler will evaluate this function. To ensure
+  -- that nothing happens unless it is set, this lens is used to set the callback to @return ()@ (a
+  -- no-op) prior to evaluation of the 'GUI' procedure in the 'providerLiftGUI' function.
   contextSwitcher :: Lens' provider (m (EventHandlerControl ()))
+  -- | The 'provider' data structure must contain a reference to an 'MVar' which contains
+  -- itself. This 'MVar' is to be shared by all threads that have access to the @provider@'s state,
+  -- especially threads being evaluated by callback functions that are executed in response to
+  -- events by the low-level system executive.
+  providerSharedLock :: provider -> MVar provider
+  -- | Should report that a callback function failed, and report the reason for failure.
   signalFatalError :: Strict.Text -> m ()
 
 data ProviderStateLock provider
@@ -543,6 +561,22 @@ runProviderOnLock lock f = case lock of
 
 -- | This function should always be called within a callback function that is installed into the
 -- provider for handling events coming into the program from the operating system.
+liftGUIProvider
+  :: (MonadIO m, MonadState provider m, MonadProvider provider m)
+  => m a -> GUI provider model a
+liftGUIProvider f = getGUIState >>= \ gui -> case theGUIProvider gui of
+  ProviderUnlocked{} -> error $ "liftGUIProvider: " ++
+    "Evaluated a provider function within a GUI function on a locked ProviderStateLock."
+  ProviderLocked env -> do
+    (a, env) <- liftIO $ runProviderIO f env
+    putGUIState $ gui{ theGUIProvider = ProviderLocked env }
+    return a
+
+-- | This function evaluates 'GUI' functions within event handlers. It evaluates to a function of
+-- type @m@ (which must be a stateful function that has a @provider@ as part of it's state), which
+-- means you are required to have first evaluated 'runProviderOnLock'. This function will then lock
+-- the 'Happlet' and then evaluate the 'GUI' function. The 'EventHandlerControl' returned indicates
+-- how the evaluation of the 'GUI' function was terminated.
 providerLiftGUI
   :: (MonadIO m, MonadState provider m, MonadProvider provider m, CanRecruitWorkers provider)
   => Happlet model -> GUI provider model a -> m (EventHandlerControl a)
@@ -575,6 +609,90 @@ providerLiftGUI happlet f = do
       _                    -> return ()
     _                  -> return ()
   return result
+
+-- | This function is intended to be used within the 'doReact' action of a 'ConnectReact' function.
+-- If the 'GUI' function evaluation given to 'providerLiftGUI' evaluates to 'fail' or 'empty', the
+-- callback for this particular event type needs to be removed and unregistered from the low-level
+-- system executive, and the 'ConnectReact' needs to be set to 'Disconected' within the @provider@
+-- state, which is what this function does.
+--
+-- Call this function within the 'doReact' function, which is installed into a callback that is
+-- executed by the low-level system executive when an event is received, it will call
+-- 'providerLiftGUI' to begin evaluating the 'GUI' reaction function for that event type. The result
+-- of 'providerLiftGUI' function should be passed to this 'checkGUIContinue' function, if it is
+-- 'EventHandlerHalt' or 'EventHandlerFail', then 'forceDisconnect' is called on the 'ConnectReact'
+-- function for this lens.
+checkGUIContinue
+  :: (MonadIO m, MonadProvider provider m)
+  => Lens' provider (ConnectReact m event) -> EventHandlerControl a -> m ()
+checkGUIContinue connectReact = \ case
+  EventHandlerHalt       -> forceDisconnect connectReact
+  EventHandlerFail   msg -> forceDisconnect connectReact >> signalFatalError msg
+  EventHandlerCancel     -> return ()
+  EventHandlerContinue{} -> return ()
+
+----------------------------------------------------------------------------------------------------
+
+data EventSetup provider m event model
+  = EventSetup
+    { eventDescription  :: String
+      -- ^ A human-readble description of which event handler installer this is, to be reported in
+      -- debug logs.
+    , eventLensReaction :: Lens' provider (ConnectReact m event)
+      -- ^ A lens that can get and set one of the 'ConnectReact' functions in the Gtk window state.
+    , eventPreInstall   :: m ()
+      -- ^ An action to perform prior installing the Gtk event handler callback.
+    , eventInstall      :: provider -> (event -> IO ()) -> IO (IO ())
+      -- ^ Register an event handler callback which triggers event reactions into the low-level
+      -- system executive. This function must return another function which un-registers this
+      -- callback.
+    , eventGUIReaction  :: event -> GUI provider model ()
+      -- ^ The GUI function provided by the end users (programmers) of this library that reacts to
+      -- the event with a state update.
+    }
+
+-- | An 'EventSetup' that does nothing more than install a 'ConnectReact' function.
+simpleSetup
+  :: (MonadIO m, MonadProvider provider m)
+  => Lens' provider (ConnectReact m event)
+  -> (event -> GUI provider model ())
+  -> EventSetup provider m event model
+simpleSetup connectReact react = EventSetup
+  { eventDescription  = ""
+  , eventLensReaction = connectReact
+  , eventPreInstall   = return ()
+  , eventInstall      = \ _ _ -> return $ pure ()
+  , eventGUIReaction  = react
+  }
+
+-- | This function enables an event handler, and takes a continuation which will be evaluated by
+-- this function call to do the low-level work of install the event handler into the Gtk
+-- window. This function also does the work of taking a 'Happlets.GUI.GUI' function to be evaluated
+-- on each event, converting this function to a 'ConnectReact' function, and installing it into the
+-- 'GtkWindow's internal state so that it can be actually evaluated every time the low-level event
+-- handler is evaluated. The result is a function that can be used to instantiate any of the
+-- "Happlets.GUI" module's event handler classes.
+installEventHandler
+  :: (MonadIO m, MonadProvider provider m, CanRecruitWorkers provider)
+  => EventSetup provider m event model -> GUI provider model ()
+installEventHandler setup = do
+  happ <- askHapplet
+  liftGUIProvider $ do
+    forceDisconnect (eventLensReaction setup)
+    eventPreInstall setup
+    env <- get
+    disconnect <- liftIO $ eventInstall setup env $
+      -- Here we install an IO function into a callback. As soon as this callback is executed, the
+      -- provider must be locked using 'runProviderOnLock' in order to begin evaluating the 'GUI'
+      -- function associated with this event callback.
+      runProviderOnLock (ProviderUnlocked $ providerSharedLock env) .
+      evalConnectReact (eventLensReaction setup)
+    eventLensReaction setup .= ConnectReact
+      { doDisconnect = liftIO disconnect
+      , reactTo =
+          providerLiftGUI happ . eventGUIReaction setup >=>
+          checkGUIContinue (eventLensReaction setup)
+      }
 
 ----------------------------------------------------------------------------------------------------
 

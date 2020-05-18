@@ -82,7 +82,7 @@ data GradientStop
   deriving Eq
 
 data GradientType
-  = GradLinear !(Angle Double)
+  = GradLinear !(Point2D Float) !(Point2D Float)
   | GradRadial !(Point2D Float) !(Magnitude Float) !(Point2D Float) !(Magnitude Float)
     -- ^ Specify two circles, the gradient will transition between these two circles.
   deriving Eq
