@@ -39,6 +39,7 @@ library
     Happlets.Provider.Variable
     Happlets.View
     Happlets.View.Audio
+    Happlets.View.Canvas
     Happlets.View.Color
     Happlets.View.SampCoord
     Happlets.View.Text

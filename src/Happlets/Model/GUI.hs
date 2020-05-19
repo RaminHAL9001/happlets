@@ -36,40 +36,48 @@ module Happlets.Model.GUI
   ( -- * The Happlet Data Type
     Happlet, getWaitingThreads,
 
-    -- * The Display Typeclass
-    Display(..), DrawableRef(..), drawableEmptyRef,
-
     -- * The GUI Function Type
     GUI, onSubModel, getModel, getSubModel, putModel, modifyModel,
-    cancelNow, cancelIfBusy, howBusy, deleteEventHandler, bracketGUI,
+    changeRootHapplet, cancelNow, cancelIfBusy, howBusy, deleteEventHandler, bracketGUI,
 
-    -- * Workers
+    -- ** The Display Typeclass
+    Display(..), DrawableRef(..), drawableEmptyRef,
+
+    -- ** Workers and Threads
     -- $Workers
     CanRecruitWorkers(..),
+
+    -- *** Thread "Workspaces"
     Workspace, newWorkspace, copyWorkspace,
     WorkerName, guiWorker, recruitWorker, relieveWorker, relieveWorkersIn,
     WorkCycleTime(..),
+
+    -- *** Posts: where assigned workers can do work
     WorkPost, postWorkersUnion, pushWork, checkWork,
     postWorkers, postTaskWorkers, guiPostWorkers, closeWorkPost,
     WorkPostStats(..), getWorkPostStats, resetWorkPostStats, instantThroughput, totalThroughput,
     WorkerTask,  govWorker, taskPause, thisWorker, taskDone, taskSkip, taskFail, taskCatch,
+
+    -- *** The 'Worker' abstraction
     Worker, workerThreadId, workerName, relieveGovWorkers,
     WorkerStatus(..), getWorkerStatus, workerNotBusy, workerNotDone, workerBusy, workerFailed,
+
+    -- *** Unions: Groups of Worker Threads
     WorkerUnion, newWorkerUnion, unionizeWorker, retireWorker,
 
-    -- ** Worker Providers
+    -- *** Worker Providers
     WorkerSignal(..), WorkerNotification(..), setWorkerStatus, runWorkerTask,
     WorkerID, workerIDtoInt,
 
-    -- * Low-level details
+    -- * Functions for Providers
+    MonadProvider(..), EventSetup(..), simpleSetup, installEventHandler, switchContext,
+
+    -- ** Low-level details
     -- $LowLevel_Details
     GUIState(..), EventHandlerControl(..),
     guiModel, guiProvider, guiIsLive, execGUI, runGUI, guiCatch,
     makeHapplet, onHapplet, peekModel, sameHapplet,
     getGUIState, putGUIState, modifyGUIState, askHapplet, govWorkerUnion,
-
-    -- ** Functions for Providers
-    MonadProvider(..), EventSetup(..), simpleSetup, installEventHandler,
 
     -- *** Locking and Updating a Provider's State
     --
@@ -80,6 +88,7 @@ module Happlets.Model.GUI
 import           Prelude hiding ((.), id)
 
 import           Happlets.Provider.React
+import           Happlets.View.SampCoord
 
 import           Control.Arrow
 import           Control.Category
@@ -487,6 +496,34 @@ putModel = put
 modifyModel :: (model -> model) -> GUI provider model ()
 modifyModel = modify
 
+-- | Force the OS window (view port) to change the 'Happlet' model that is currently being displayed
+-- as the root model. This function takes the new 'Happlet' and an initializer action which must
+-- setup the event handlers for the OS window to use with the new 'Happlet' model.
+--
+-- Note that this function evaluates to a 'GUI' function type for the @oldModel@, so expected that
+-- this function will never return, rather the next 'GUI' functions to be evaluated in this OS
+-- window will be the event handlers for the @newModel@ set by the initializer given to this
+-- function.
+changeRootHapplet
+  :: forall m provider newModel oldModel
+  .  (MonadProvider provider m, CanRecruitWorkers provider)
+  => Happlet newModel -> (PixSize -> GUI provider newModel ()) -> GUI provider oldModel ()
+changeRootHapplet newHapp init = do
+  -- Here we set the 'contextSwithcer' field to a function that evaluates 'switchContext'.
+  modifyGUIState $ \ guist -> case guist ^. guiProvider of
+    ProviderUnlocked{} -> error "changeRootHapplet was evaluated on an unlocked provider state"
+    ProviderLocked env -> guist & guiProvider .~
+      ( ProviderLocked
+        (env & contextSwitcher .~ switchContext (env ^. detatchHandler) newHapp init)
+      )
+  cancelNow
+  -- Here ^ we use 'cancelNow' instead of 'deleteEventHandler' because 'disconnectAll' was already
+  -- called so we do not want any disconnect function to be evaluated again (which shouldn't cause
+  -- any harm, but doing so is an unnnecessary step). It is also for this reason that the
+  -- 'providerLiftGUI' function only bothers to evaluate the context switcher when the return
+  -- signal is 'HappletEventCancel'. Please refer to the 'liftGUIintoGtkState' function to see
+  -- exactly what happens next, after the above 'cancelNow' is evaluated.
+
 ----------------------------------------------------------------------------------------------------
 
 -- $LowLevel_Details
@@ -512,7 +549,7 @@ putGUIState :: GUIState provider model -> GUI provider model ()
 putGUIState = GUI . fmap EventHandlerContinue . put
 
 -- | Modify the 'GUIState' data structure for the current context. This function should never be
--- used unless you are programming a Happlet 'Happlets.Provider.Provider'
+-- used unless you are programming a Happlet 'Happlets.Provider.Provider'.
 modifyGUIState :: (GUIState provider model -> GUIState provider model) -> GUI provider model ()
 modifyGUIState = GUI . fmap EventHandlerContinue . modify
 
@@ -529,19 +566,41 @@ govWorkerUnion = GUI $ EventHandlerContinue <$> gets theGUIWorkers
 class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider -> m where
   -- | This function should work like 'runStateT' for the function type @m@.
   runProviderIO :: m a -> provider -> IO (a, provider)
+
   -- | When a context switch is performed, this value is set with a continuation to be called after
   -- the 'windowChangeHapplet' function completes. After evaluation of the 'GUI' function completes,
   -- the state is evaluated -- every single event handler will evaluate this function. To ensure
   -- that nothing happens unless it is set, this lens is used to set the callback to @return ()@ (a
   -- no-op) prior to evaluation of the 'GUI' procedure in the 'providerLiftGUI' function.
   contextSwitcher :: Lens' provider (m (EventHandlerControl ()))
+
   -- | The 'provider' data structure must contain a reference to an 'MVar' which contains
   -- itself. This 'MVar' is to be shared by all threads that have access to the @provider@'s state,
   -- especially threads being evaluated by callback functions that are executed in response to
   -- events by the low-level system executive.
   providerSharedLock :: provider -> MVar provider
+
   -- | Should report that a callback function failed, and report the reason for failure.
   signalFatalError :: Strict.Text -> m ()
+
+  -- | Return the size of the viewport window provided to the Happlet by the low-level system
+  -- executive.
+  getProviderWindowSize :: m PixSize
+
+  -- | All providers will probably have a reaction for initializing the Happlet, which should get
+  -- called after the window system has been initialized, and resources for the Happlet window have
+  -- been allocated and are ready to begin drawing. The event type of the 'ConnectReact' action is
+  -- the size of the window in which the 'Happlet' will be drawn.
+  initReaction :: MonadState provider m => Lens' provider (ConnectReact m PixSize)
+
+  -- | All providers will probably have a reaction for cleaning-up when the Happlet is shut down, or
+  -- when a context switch occurs. The event type of the 'ConnectReact' action is @()@.
+  detatchHandler :: MonadState provider m => Lens' provider (ConnectReact m ())
+
+  -- | All providers will probably have more than one 'ConnectReact' value stored within it's
+  -- state. This function must call 'forceDisconnect' on every 'ConnectReact' value wihin the
+  -- @provider@'s state.
+  disconnectAll :: MonadState provider m => m ()
 
 data ProviderStateLock provider
   = ProviderUnlocked (MVar provider)
@@ -602,7 +661,7 @@ providerLiftGUI happlet f = do
   -- switch occurred. The context switcher is always evaluated on a cancel signal. If the context
   -- switcher was not changed by @f@ between (1) and (2), the 'contextSwitcher' field has therefore
   -- not been changed from the (return ()) value (a no-op) set at (1) and so no context switch
-  -- occurs.
+  -- occurs. (See the 'changeRootHapplet' function for the mechanism we are actuating here).
   case result of
     EventHandlerCancel -> (provider ^. contextSwitcher) >>= \ case
       EventHandlerFail msg -> signalFatalError msg
@@ -610,7 +669,7 @@ providerLiftGUI happlet f = do
     _                  -> return ()
   return result
 
--- | This function is intended to be used within the 'doReact' action of a 'ConnectReact' function.
+-- | This function is intended to be used within the 'reactTo' action of a 'ConnectReact' function.
 -- If the 'GUI' function evaluation given to 'providerLiftGUI' evaluates to 'fail' or 'empty', the
 -- callback for this particular event type needs to be removed and unregistered from the low-level
 -- system executive, and the 'ConnectReact' needs to be set to 'Disconected' within the @provider@
@@ -630,6 +689,39 @@ checkGUIContinue connectReact = \ case
   EventHandlerFail   msg -> forceDisconnect connectReact >> signalFatalError msg
   EventHandlerCancel     -> return ()
   EventHandlerContinue{} -> return ()
+
+-- | This function constructs a stateful @provider@ function of type @m@ which performs a context
+-- switch. The constructed function @m@ function is stored in the 'contextSwitcher' field of the
+-- @provider@. Before 'contextSwitcher' is replaced, the old 'contextSwitcher' is evaluated. The
+-- result of this function is the result of the evaluation of the old 'contextSwitcher'.
+switchContext
+  :: (MonadIO m, MonadProvider provider m, CanRecruitWorkers provider)
+  => ConnectReact m ()
+    -- ^ The ation to be evaluated when this next 'Happlet' is detached. The @event@ type of this
+    -- action is @()@.
+  -> Happlet newmodel
+    -- ^ The next 'Happlet' to take control over the GUI.
+  -> (PixSize -> GUI provider newmodel ())
+    -- ^ Initailizer that sets up event handlers for the next 'Happlet'
+  -> m (EventHandlerControl ())
+switchContext detatch newHapp init = do
+  case detatch of
+    ConnectReact{reactTo=detatch} -> detatch ()
+    Disconnected                  -> pure ()
+  disconnectAll
+  env  <- get
+  size <- getProviderWindowSize
+  (>>= state . const) $ liftIO $ fmap fst $ onHapplet newHapp $ \ model -> do
+    (guiContin, guist) <- runGUI (init size) GUIState
+      { theGUIProvider = ProviderLocked env
+      , theGUIHapplet  = newHapp
+      , theGUIModel    = model
+      , theGUIWorkers  = governmentWorkerUnion env
+      }
+    case theGUIProvider guist of
+      ProviderLocked winst -> return ((guiContin, winst), theGUIModel guist)
+      ProviderUnlocked{}   -> fail $
+        "'runGUI' was given an unlocked provider state, but it returned a locked provider state"
 
 ----------------------------------------------------------------------------------------------------
 

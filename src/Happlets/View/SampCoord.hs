@@ -1,6 +1,9 @@
 -- | This is a primitive data type for representing screen sizes and points on a screen in discrete
 -- using 'Data.Int.Int32' values.
-module Happlets.View.SampCoord where
+module Happlets.View.SampCoord
+  ( module Happlets.View.SampCoord
+  , module Linear.V2
+  ) where
 
 import           Data.Int
 

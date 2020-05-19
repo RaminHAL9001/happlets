@@ -24,14 +24,14 @@ module Happlets.View
     module Happlets.View.SampCoord,
     module Happlets.View.Text,
     module Happlets.View.Types2D,
-    module Happlets.View.Window,
+    module Happlets.View.Canvas,
   ) where
 
+import           Happlets.View.Canvas
 import           Happlets.View.Color
 import           Happlets.View.SampCoord
 import           Happlets.View.Text
 import           Happlets.View.Types2D
-import           Happlets.View.Window
 import           Happlets.Provider.Variable
 
 import           Control.Lens (Lens', lens)

@@ -1,7 +1,7 @@
 -- | This module defines abstractions for working with top-level windows provided by an operating
 -- system with a GUI. It is a good idea for window providers instantiaing these typeclasses to also
 -- intantiate the typeclasses in 'Happlet.Control.Resize' and 'Happlet.Control.WindowManager'.
-module Happlets.View.Window where
+module Happlets.View.Canvas where
 
 import           Happlets.Model.GUI
 import           Happlets.View.Types2D
@@ -14,11 +14,6 @@ import           Control.Monad.IO.Class
 import qualified Data.Text                as Strict
 
 ----------------------------------------------------------------------------------------------------
-
-data CanvasIOError
-  = CanvasIOFilePath IOException
-  | CanvasIOFileType Strict.Text
-  deriving (Eq, Show)
 
 -- | All Happlet back-end 'Happlets.Provider.Provider's must instantiate this type class at the very
 -- least. The functions in this typeclass allow you to draw images that become visible on screen.
@@ -43,25 +38,6 @@ data CanvasIOError
 -- temporary image and redrawing that part of the window with the __canvas__ buffer, and draw the
 -- cursor again at the new mouse location.
 class HappletWindow provider render | provider -> render where
-
-  -- | Return the size of the window. As you can see from the type of this function, it can only be
-  -- evaluated from within a GUI, which guarantees the window size is valid for the duration of the
-  -- function evaluation. After a 'GUI' function finishes evaluation, it is not called again until a
-  -- new event comes in, at which time the size of the window may have changed and you will need to
-  -- call this function again to obtain the new size. It is a good idea to call this function first
-  -- before doing anyting else, if you need the window size for your 'GUI' computation.
-  getWindowSize :: GUI provider model PixSize
-
-  -- | Similar to 'doWindowNewHapplet', except places an existing 'Happlet' into the @provider@,
-  -- removing the previous 'Happlet'. This is effectivel a context switch that occurs within a
-  -- single @provider@. This function disables all event handlers, then evaluates the given 'GUI'
-  -- function which should install new event handlers. This function then evaluates to 'disable', so
-  -- any line of code in the @do@ block written after this function is called will never execute.
-  windowChangeHapplet
-    :: forall newmodel oldmodel . Happlet newmodel
-    -> (OldPixSize -> GUI provider newmodel ())
-    -> GUI provider oldmodel ()
-
   -- | This event handler is called when 'windowChangeHapplet' is called, allowing one final event
   -- handler to be called for cleaning-up, before the current 'Happlet' is detached from the
   -- @provider@.
@@ -118,6 +94,11 @@ class HappletWindow provider render | provider -> render where
   refreshWindow :: GUI provider model ()
 
 ----------------------------------------------------------------------------------------------------
+
+data CanvasIOError
+  = CanvasIOFilePath IOException
+  | CanvasIOFileType Strict.Text
+  deriving (Eq, Show)
 
 class HappletPixelBuffer pixbuf where
   -- | Change the 'CanvasResizeMode' value associated with the @image@ value. Example of how to you might
