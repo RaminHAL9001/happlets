@@ -26,6 +26,7 @@ library
     Happlets.Model.Audio
     Happlets.Model.Initialize
     Happlets.Model.GUI
+    Happlets.Model.Worker
     Happlets.Control
     Happlets.Control.Animate
     Happlets.Control.InputDevice

@@ -34,55 +34,28 @@
 -- type class.
 module Happlets.Model.GUI
   ( -- * The Happlet Data Type
-    Happlet, getWaitingThreads,
+    Happlet, makeHapplet, onHapplet, peekModel, switchContext,
+    sameHapplet, getWaitingThreads,
 
     -- * The GUI Function Type
     GUI, onSubModel, getModel, getSubModel, putModel, modifyModel,
-    changeRootHapplet, cancelNow, cancelIfBusy, howBusy, deleteEventHandler, bracketGUI,
+    changeRootHapplet, cancelNow, cancelIfBusy, howBusy, deleteEventHandler,
+    forkGUI, bracketGUI,
 
     -- ** The Display Typeclass
     Display(..), DrawableRef(..), drawableEmptyRef,
 
-    -- ** Workers and Threads
-    -- $Workers
-    CanRecruitWorkers(..),
-
-    -- *** Thread "Workspaces"
-    Workspace, newWorkspace, copyWorkspace,
-    WorkerName, guiWorker, recruitWorker, relieveWorker, relieveWorkersIn,
-    WorkCycleTime(..),
-
-    -- *** Posts: where assigned workers can do work
-    WorkPost, postWorkersUnion, pushWork, checkWork,
-    postWorkers, postTaskWorkers, guiPostWorkers, closeWorkPost,
-    WorkPostStats(..), getWorkPostStats, resetWorkPostStats, instantThroughput, totalThroughput,
-    WorkerTask,  govWorker, taskPause, thisWorker, taskDone, taskSkip, taskFail, taskCatch,
-
-    -- *** The 'Worker' abstraction
-    Worker, workerThreadId, workerName, relieveGovWorkers,
-    WorkerStatus(..), getWorkerStatus, workerNotBusy, workerNotDone, workerBusy, workerFailed,
-
-    -- *** Unions: Groups of Worker Threads
-    WorkerUnion, newWorkerUnion, unionizeWorker, retireWorker,
-
-    -- *** Worker Providers
-    WorkerSignal(..), WorkerNotification(..), setWorkerStatus, runWorkerTask,
-    WorkerID, workerIDtoInt,
-
     -- * Functions for Providers
-    MonadProvider(..), EventSetup(..), simpleSetup, installEventHandler, switchContext,
+    EventHandlerControl(..), MonadProvider(..),
+    EventSetup(..), simpleSetup, installEventHandler,
 
-    -- ** Low-level details
-    -- $LowLevel_Details
-    GUIState(..), EventHandlerControl(..),
-    guiModel, guiProvider, guiIsLive, execGUI, runGUI, guiCatch,
-    makeHapplet, onHapplet, peekModel, sameHapplet,
-    getGUIState, putGUIState, modifyGUIState, askHapplet, govWorkerUnion,
+    -- ** Multi-Threading
+    CanRecruitWorkers(..), ProviderStateRef, initProviderState, otherThreadRunProviderIO,
 
-    -- *** Locking and Updating a Provider's State
-    --
-    -- This functions are called by 'installEventHandler', you should not need to use them yourself.
-    ProviderStateLock, runProviderOnLock, providerLiftGUI, liftGUIProvider, checkGUIContinue,
+    --ProviderStateLock, runProviderOnLock, providerLiftGUI, liftGUIProvider, checkGUIContinue,
+    --GUIState(..), guiModel, guiProvider, guiIsLive, execGUI, runGUI, guiCatch,
+    --getGUIState, putGUIState, modifyGUIState, askHapplet, govWorkerUnion,
+
   ) where
 
 import           Prelude hiding ((.), id)
@@ -92,9 +65,7 @@ import           Happlets.View.SampCoord
 
 import           Control.Arrow
 import           Control.Category
-import           Control.Concurrent (ThreadId, myThreadId, yield, forkOS, threadDelay, throwTo)
-import           Control.Concurrent.MVar
-import           Control.Concurrent.QSem
+import           Control.Concurrent
 import           Control.Exception
 import           Control.Lens
 import           Control.Monad.Except
@@ -102,11 +73,7 @@ import qualified Control.Monad.Fail    as Monad
 import           Control.Monad.Reader
 import           Control.Monad.State
 
-import           Data.List             (intercalate)
-import qualified Data.Sequence         as Seq
-import qualified Data.Set              as Set
 import qualified Data.Text             as Strict
-import           Data.Time.Clock
 import           Data.Typeable
 
 import           System.IO.Unsafe (unsafePerformIO) -- used for generating unique Happlet IDs.
@@ -311,7 +278,7 @@ data GUIState provider model
     { theGUIModel    :: !model
     , theGUIHapplet  :: !(Happlet model)
     , theGUIProvider :: !(ProviderStateLock provider)
-    , theGUIWorkers  :: !WorkerUnion
+--  , theGUIWorkers  :: !WorkerUnion
     }
 
 instance Applicative (GUI provider model) where { pure = return; (<*>) = ap; }
@@ -354,11 +321,11 @@ instance Monoid a => Monoid (GUI provider model a) where
   mempty = return mempty
   mappend a b = mappend <$> a <*> b
 
--- | 'Control.Lens.Lens' for manipulating the 'GUIState'. It is better to use 'getModel',
--- 'updateModel', 'putModel', 'subModel', or 'liftGUI' instead of manipulating a 'GUIState'
--- directly.
-guiModel :: Lens' (GUIState provider model) model
-guiModel = lens theGUIModel $ \ a b -> a{ theGUIModel = b }
+---- | 'Control.Lens.Lens' for manipulating the 'GUIState'. It is better to use 'getModel',
+---- 'updateModel', 'putModel', 'subModel', or 'liftGUI' instead of manipulating a 'GUIState'
+---- directly.
+--guiModel :: Lens' (GUIState provider model) model
+--guiModel = lens theGUIModel $ \ a b -> a{ theGUIModel = b }
 
 -- | 'Control.Lens.Lens' for manipulating the 'GUIState'. It is better to not use this function at
 -- all.
@@ -376,21 +343,21 @@ runGUI
   -> IO (EventHandlerControl a, GUIState provider model)
 runGUI (GUI f) st = runStateT f st
 
--- | Like 'runGUI' but discards the @a@ typed return value. This is analogous to
--- 'Control.Monad.State.execStateT' in the "Control.Monad.State" module.
-execGUI
-  :: GUI provider model a -- ^ the 'GUI' function to evaluate
-  -> GUIState provider model
-  -> IO (GUIState provider model)
-execGUI f = fmap snd . runGUI f
+---- | Like 'runGUI' but discards the @a@ typed return value. This is analogous to
+---- 'Control.Monad.State.execStateT' in the "Control.Monad.State" module.
+--execGUI
+--  :: GUI provider model a -- ^ the 'GUI' function to evaluate
+--  -> GUIState provider model
+--  -> IO (GUIState provider model)
+--execGUI f = fmap snd . runGUI f
 
--- | Evaluate a 'GUI' function but catch calls to 'cancelNow', 'deleteEventHandler', and
--- 'Control.Monad.Fail.fail'.
-guiCatch
-  :: GUI provider model a
-  -> (EventHandlerControl a -> GUI provider model b)
-  -> GUI provider model b
-guiCatch (GUI f) = ((GUI $ f >>= \ result -> return (EventHandlerContinue result)) >>=)
+---- | Evaluate a 'GUI' function but catch calls to 'cancelNow', 'deleteEventHandler', and
+---- 'Control.Monad.Fail.fail'.
+--guiCatch
+--  :: GUI provider model a
+--  -> (EventHandlerControl a -> GUI provider model b)
+--  -> GUI provider model b
+--guiCatch (GUI f) = ((GUI $ f >>= \ result -> return (EventHandlerContinue result)) >>=)
 
 -- | Like the 'Control.Exception.bracket' function, but works in the 'GUI' monad.
 bracketGUI
@@ -425,13 +392,13 @@ onSubModel submodel subgui = do
     { theGUIModel    = modst
     , theGUIHapplet  = subHapplet $ theGUIHapplet guist
     , theGUIProvider = theGUIProvider guist
-    , theGUIWorkers  = theGUIWorkers  guist
+--  , theGUIWorkers  = theGUIWorkers  guist
     }
   putGUIState $ guist
     { theGUIModel    = theGUIModel    guist & submodel .~ theGUIModel new
     , theGUIHapplet  = theGUIHapplet  guist
     , theGUIProvider = theGUIProvider guist
-    , theGUIWorkers  = theGUIWorkers  guist
+--  , theGUIWorkers  = theGUIWorkers  guist
     }
   GUI $ return a
 
@@ -506,7 +473,7 @@ modifyModel = modify
 -- function.
 changeRootHapplet
   :: forall m provider newModel oldModel
-  .  (MonadProvider provider m, CanRecruitWorkers provider)
+  .  (MonadProvider provider m, CanRecruitWorkers provider m)
   => Happlet newModel -> (PixSize -> GUI provider newModel ()) -> GUI provider oldModel ()
 changeRootHapplet newHapp init = do
   -- Here we set the 'contextSwithcer' field to a function that evaluates 'switchContext'.
@@ -526,16 +493,16 @@ changeRootHapplet newHapp init = do
 
 ----------------------------------------------------------------------------------------------------
 
--- $LowLevel_Details
+---- $LowLevel_Details
+----
+---- These are functions that should only be used by the back-end
+---- 'Happlets.Provider.Provider'. If you think you need to use these functions when programming an
+---- ordinary Happlet, ask an expert how you might solve your problem without using them.
 --
--- These are functions that should only be used by the back-end
--- 'Happlets.Provider.Provider'. If you think you need to use these functions when programming an
--- ordinary Happlet, ask an expert how you might solve your problem without using them.
-
--- | Tests if a the 'GUIState' produced after evaluating 'GUI' function with 'evalGUI' is still
--- ready to receive further input signals.
-guiIsLive :: EventHandlerControl a -> Bool
-guiIsLive = \ case { EventHandlerContinue{} -> True; _ -> False; }
+---- | Tests if a the 'GUIState' produced after evaluating 'GUI' function with 'evalGUI' is still
+---- ready to receive further input signals.
+--guiIsLive :: EventHandlerControl a -> Bool
+--guiIsLive = \ case { EventHandlerContinue{} -> True; _ -> False; }
 
 -- | Obtain a copy of the entire 'GUIState' data structure set for the current 'GUI' evaluation
 -- context. This function should never be used unless you are programming a Happlet
@@ -557,11 +524,35 @@ modifyGUIState = GUI . fmap EventHandlerContinue . modify
 askHapplet :: GUI provider model (Happlet model)
 askHapplet = ask
 
--- | Obtain a reference to the "government" 'WorkerUnion' for this GUI.
-govWorkerUnion :: GUI provider model WorkerUnion
-govWorkerUnion = GUI $ EventHandlerContinue <$> gets theGUIWorkers
+---- | Obtain a reference to the "government" 'WorkerUnion' for this GUI.
+--govWorkerUnion :: GUI provider model WorkerUnion
+--govWorkerUnion = GUI $ EventHandlerContinue <$> gets theGUIWorkers
 
 ----------------------------------------------------------------------------------------------------
+
+-- | Every Happlets provider must initialize the 'MonadProvider' class defining a monad that wraps
+-- all stateful information necessary to interface Happlets to the low-level system executive. The
+-- data structure that contains all of this state information must wrap it all in this
+-- 'ProviderStateRef', and define exactly one 'ProviderStateRef' to be used for the duration of the
+-- application process lifespan. Construct a 'ProviderStateRef' with the 'initProviderState'
+-- function below.
+--
+-- Also, the 'MonadProvider' class has a function 'providerSharedState' which must produce the one
+-- 'ProviderStateRef', and so it will be necessary for providers to store the 'ProviderStateRef'
+-- within itself.
+newtype ProviderStateRef provider = ProviderStateRef (MVar provider)
+  deriving Eq
+
+-- | This function creates a new 'ProviderStateRef', and then evaluates a continuation which must
+-- initialize the @provider@ and return it. A reference to the 'ProviderStateRef' is passed to the
+-- continuation, it is expected that this reference be stored into the @provider@ data structure so
+-- that it can be retrieved with the 'providerSharedState' function.
+initProviderState :: (ProviderStateRef provider -> IO provider) -> IO (ProviderStateRef provider)
+initProviderState init = do
+  mvar <- newEmptyMVar
+  let ref = ProviderStateRef mvar
+  init ref >>= putMVar mvar
+  return ref
 
 class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider -> m where
   -- | This function should work like 'runStateT' for the function type @m@.
@@ -578,7 +569,7 @@ class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider 
   -- itself. This 'MVar' is to be shared by all threads that have access to the @provider@'s state,
   -- especially threads being evaluated by callback functions that are executed in response to
   -- events by the low-level system executive.
-  providerSharedLock :: provider -> MVar provider
+  providerSharedState :: provider -> ProviderStateRef provider
 
   -- | Should report that a callback function failed, and report the reason for failure.
   signalFatalError :: Strict.Text -> m ()
@@ -603,7 +594,7 @@ class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider 
   disconnectAll :: MonadState provider m => m ()
 
 data ProviderStateLock provider
-  = ProviderUnlocked (MVar provider)
+  = ProviderUnlocked (ProviderStateRef provider)
     -- ^ Unocked means we have not yet called 'modifyMVar', but we can do so on the 'MVar' given
     -- here.
   | ProviderLocked   provider
@@ -615,8 +606,8 @@ runProviderOnLock
   :: (MonadIO m, MonadProvider provider m)
   => ProviderStateLock provider -> m a -> IO a
 runProviderOnLock lock f = case lock of
-  ProviderUnlocked mvar -> modifyMVar mvar $ fmap (\ (a,b) -> (b,a)) . runProviderIO f
-  ProviderLocked{}      -> fail $ "runProviderOnLock: evaluated on already locked provider."
+  ProviderUnlocked ref -> otherThreadRunProviderIO f ref
+  ProviderLocked{}     -> fail $ "runProviderOnLock: evaluated on already locked provider."
 
 -- | This function should always be called within a callback function that is installed into the
 -- provider for handling events coming into the program from the operating system.
@@ -637,7 +628,7 @@ liftGUIProvider f = getGUIState >>= \ gui -> case theGUIProvider gui of
 -- the 'Happlet' and then evaluate the 'GUI' function. The 'EventHandlerControl' returned indicates
 -- how the evaluation of the 'GUI' function was terminated.
 providerLiftGUI
-  :: (MonadIO m, MonadState provider m, MonadProvider provider m, CanRecruitWorkers provider)
+  :: (MonadIO m, MonadState provider m, MonadProvider provider m, CanRecruitWorkers provider m)
   => Happlet model -> GUI provider model a -> m (EventHandlerControl a)
 providerLiftGUI happlet f = do
   -- (1) Always set 'contextSwitcher' to a no-op, it may be set to something else by @f@.
@@ -649,7 +640,7 @@ providerLiftGUI happlet f = do
       { theGUIHapplet  = happlet
       , theGUIProvider = ProviderLocked provider
       , theGUIModel    = model
-      , theGUIWorkers  = governmentWorkerUnion provider
+--    , theGUIWorkers  = governmentWorkerUnion provider
       }
     case theGUIProvider guiState of
       ProviderLocked provider -> return ((guiContin, provider), theGUIModel guiState)
@@ -695,7 +686,7 @@ checkGUIContinue connectReact = \ case
 -- @provider@. Before 'contextSwitcher' is replaced, the old 'contextSwitcher' is evaluated. The
 -- result of this function is the result of the evaluation of the old 'contextSwitcher'.
 switchContext
-  :: (MonadIO m, MonadProvider provider m, CanRecruitWorkers provider)
+  :: (MonadIO m, MonadProvider provider m, CanRecruitWorkers provider m)
   => ConnectReact m ()
     -- ^ The ation to be evaluated when this next 'Happlet' is detached. The @event@ type of this
     -- action is @()@.
@@ -716,7 +707,7 @@ switchContext detatch newHapp init = do
       { theGUIProvider = ProviderLocked env
       , theGUIHapplet  = newHapp
       , theGUIModel    = model
-      , theGUIWorkers  = governmentWorkerUnion env
+--    , theGUIWorkers  = governmentWorkerUnion env
       }
     case theGUIProvider guist of
       ProviderLocked winst -> return ((guiContin, winst), theGUIModel guist)
@@ -765,7 +756,7 @@ simpleSetup connectReact react = EventSetup
 -- handler is evaluated. The result is a function that can be used to instantiate any of the
 -- "Happlets.GUI" module's event handler classes.
 installEventHandler
-  :: (MonadIO m, MonadProvider provider m, CanRecruitWorkers provider)
+  :: (MonadIO m, MonadProvider provider m, CanRecruitWorkers provider m)
   => EventSetup provider m event model -> GUI provider model ()
 installEventHandler setup = do
   happ <- askHapplet
@@ -777,7 +768,7 @@ installEventHandler setup = do
       -- Here we install an IO function into a callback. As soon as this callback is executed, the
       -- provider must be locked using 'runProviderOnLock' in order to begin evaluating the 'GUI'
       -- function associated with this event callback.
-      runProviderOnLock (ProviderUnlocked $ providerSharedLock env) .
+      runProviderOnLock (ProviderUnlocked $ providerSharedState env) .
       evalConnectReact (eventLensReaction setup)
     eventLensReaction setup .= ConnectReact
       { doDisconnect = liftIO disconnect
@@ -785,623 +776,6 @@ installEventHandler setup = do
           providerLiftGUI happ . eventGUIReaction setup >=>
           checkGUIContinue (eventLensReaction setup)
       }
-
-----------------------------------------------------------------------------------------------------
-
--- $Workers
--- Multi-threaded Happlets made easy.
---
--- All worker related functions evaluate to a function of type: @forall m a . 'MonadIO' m => m a@.
--- This means it is possible to use any of these functions to create and manage 'Worker's and
--- 'WorkerUnions' in @IO@, 'Initialize', 'GUI', and the worker-specific 'WorkerTask' function type.
---
--- The Happlets library also defines the concept of a "government", which are 'Worker's that are
--- members of the default 'WorkerUnion' provided by the 'GUI' function'. All Happlet
--- 'Happlet.Provider.Provider's must provide a government 'WorkerUnion' as an element of the
--- 'GUIState'. To recruit government 'Worker's, evaluate 'guiWorker' or 'govWorker'.
-
--- Is either 'Control.Concurrent.Yield' or @return ()@, whichever one has the expected behavior.
-blink :: IO ()
-blink = yield
-
--- | Obtain a 'WorkerStatus' using the 'getWorkerStatus' function. 
-data WorkerStatus
-  = WorkerInit      -- ^ is getting started
-  | WorkerWaiting   -- ^ is waiting for a lock to open
-  | WorkerPaused    -- ^ is waiting for a timer to go off
-  | WorkerBusy      -- ^ is working normally
-  | WorkerHalted    -- ^ evaluated to 'taskDone'
-  | WorkerFlagged   -- ^ signaled with 'relieveWorker'
-  | WorkerFailed  Strict.Text -- ^ worker evaluated to 'fail'
-  deriving (Eq, Show)
-
--- | Is the 'WorkerStatus' set to 'WorkerInit', 'WorkerWaiting', or 'WorkerPaused'?
-workerNotBusy :: WorkerStatus -> Bool
-workerNotBusy = \ case
-  WorkerInit    -> True
-  WorkerWaiting -> True
-  WorkerPaused  -> True
-  _             -> False
-
--- | Is the 'WorkerStatus' set to 'WorkerCompleted', 'WorkerCanceled', 'WorkerHalted',
--- 'WorkerFlaggeed', or 'WorkerFailed'?
-workerNotDone :: WorkerStatus -> Bool
-workerNotDone = \ case
-  WorkerHalted    -> True
-  WorkerFlagged   -> True
-  WorkerFailed{}  -> True
-  _               -> False
-
--- | Is the 'WorkerStatus' set to 'WorkerBusy'?
-workerBusy :: WorkerStatus -> Bool
-workerBusy = \ case { WorkerBusy -> True; _ -> False; }
-
--- | Is the 'WorkerStatus' set to 'WorkerFailed'? If so, get the error message.
-workerFailed :: WorkerStatus -> Maybe Strict.Text
-workerFailed = \ case { WorkerFailed msg -> Just msg; _ -> Nothing; }
-
--- | This is just an arbitrary string you can use to identify 'Workers'. Nothing prevents you from
--- giving two different workers the same handle.
-type WorkerName = Strict.Text
-
--- | 'Worker's always evaluate in loops. When recruiting a worker using 'recruitWorker',
--- 'guiWorker', or 'govWorker', specify this value to limit the rate of work being done. This can be
--- useful when you need slow but periodic updates. One example would be for a Happlet that shows a
--- clock which updates every second, for this you would pass @('WorkCycle' 1.0)@ to the 'guiWorker'
--- function.
-data WorkCycleTime
-  = WorkCycleASAP
-    -- ^ Indicates that the worker thread should never delay, each next cycle should begin as soon
-    -- as the previous cycle ends. Usually this would be used when spawining workers to do intensive
-    -- computations on a large set of data in the backgroud.
-  | WorkCycleWait !Double
-    -- ^ indicates that the 'Worker' should rest the given number of seconds between each cycle.
-  | WorkWaitCycle !Double
-    -- ^ Like 'WorkCycle' but rests before work begins, rather than after each cycle ends. The
-    -- difference is whether the first cycle occurs immediately or not after a worker is recruited.
-  deriving (Eq, Ord, Show)
-
--- | This data structure contains information about an individual worker. It contains a 'workerName'
--- which can contain an arbitrary string you can use to identify them, although nothing prevents you
--- from giving two different workers the same name. The truly unique identifier is 'workerThreadId'
--- which is assigned to each worker by the Haskell runtime system and is always unique throughout
--- the duration of a program's process lifetime.
---
--- This data structure is only an identity for an actual worker thread. Once the 'WorkerTask' is
--- done, the worker leaves the 'WorkerUnion' and will never return under the same identity.
-data Worker
-  = Worker
-    { workerThreadId :: !WorkerID
-    , workerHalt     :: !(IO ())
-    , workerName     :: !WorkerName
-    , workerStatus   :: !(MVar WorkerStatus)
-    }
-
-instance Eq   Worker where { a == b = workerThreadId a == workerThreadId b; }
-instance Ord  Worker where
-  compare a b = compare (workerThreadId a) (workerThreadId b) <>
-    compare (workerName a) (workerName b)
-instance Show Worker where
-  show  worker = '(':showWorker worker++")"
-  showList lst = ('[' :) . ((intercalate "," (showWorker <$> lst)) ++) . (']' :)
-
-newtype WorkerID = WorkerID{ workerIDtoInt :: Int } deriving (Eq, Ord, Show)
-
-_workerIDMVar :: MVar Int
-_workerIDMVar = unsafePerformIO $ newMVar 0
-{-# NOINLINE _workerIDMVar #-}
-
-newWorkerID :: IO WorkerID
-newWorkerID = modifyMVar _workerIDMVar $ \ a -> return (a+1, WorkerID $ a+1)
-
-showWorker :: Worker -> String
-showWorker (Worker{workerThreadId=tid,workerName=name}) = show tid++": "++Strict.unpack name
-
--- | The 'GUI' provides access to a default 'WorkerUnion' referred to as the "government" union. You
--- can easily recruit new workers using 'govWorker'. Government workers are equal to any other
--- worker, so you can relieve them using 'relieveWorker' function.
---
--- It is also possible to create local 'WorkerUnion's using 'newWorkerUnion', and manage work using
--- 'recruitWorker' and 'relieveWorker'.
-newtype WorkerUnion = WorkerUnion (MVar (Set.Set Worker))
-
--- | A 'WorkerSignal' is a message sent to a worker when you need them to quit the task they are
--- working on. Use 'relieveWorkersIn' or 'relieveGovWorkers' to inspect the 'Worker' of each worker
--- and send them a signal of this data type.
-newtype WorkerSignal = WorkerSignal () deriving (Eq, Ord, Show)
-instance Exception WorkerSignal
-
--- | A 'Workspace' contains @work@ piece for a worker to work on. It is a thread-safe mutex
--- variable.
-newtype Workspace work = Workspace{ unwrapWorkspace :: MVar work }
-
--- | This is the worker thread type. Workers loop continuously by default, you can cancel any time
--- by evaluating 'taskDone', you can cancel the current work item by evaluating 'taskSkip', you can
--- report a failure with 'taskFail'.
---
--- Notice the 'WorkerTask' type takes a @work@ type, this is the contents of a 'Workspace'.
-newtype WorkerTask work a
-  = WorkerTask { unwrapWorkerTask :: ReaderT Worker (StateT work IO) (EventHandlerControl a) }
-
--- | Evaluae a 'WorkerTask' using a given 'Worker' by locking an 'Control.Concurrent.MVar.MVar' and
--- evaluating the 'WorkerTask' function to work on the content of this
--- 'Control.Concurrent.MVar.MVar'.
-runWorkerTask :: Worker -> WorkerTask work a -> MVar work -> IO (EventHandlerControl a)
-runWorkerTask worker (WorkerTask f) mvar = modifyMVar' mvar $ runStateT (runReaderT f worker)
-
--- | A 'WorkPost' is an area where 'Worker's waits to recieve work. Send work to the post using the
--- 'postWork' function, and check on the result using 'postCheck' function. 'Worker's are assigned
--- to a post using 'postWorkers' or 'guiPostWorkers'. 'Worker's working in a 'WorkPost' will form
--- their own 'WorkerUnion', rather than being assigned to some other 'WorkerUnion' or the government
--- 'WorkerUnion'.
---
--- Be warned that posting too much work faster than the 'Worker's can handle it will result in a
--- "space leak", a situation in which unprocessed work piles up taking more and more memory until
--- your program is forcibly halted by the operating system.
---
--- You can check throughput statistics on a 'WorkPost' as well.
-data WorkPost inWork outWork
-  = WorkPost
-    { postWorkersUnion :: !WorkerUnion
-    , workPostStats    :: !(MVar WorkPostStats)
-    , workPostInSema   :: !QSem -- inbox semaphore
-    , workPostInbox    :: !(MVar (Seq.Seq inWork))
-    , workPostOutbox   :: !(MVar (Seq.Seq outWork))
-    }
-
--- | Statistics on a 'WorkPost'.
-data WorkPostStats
-  = WorkPostStats
-    { workPostTotalOutput   :: !Int
-      -- ^ The total number of elements produced. This value is never reset
-    , workPostTotalInput    :: !Int
-      -- ^ The total number of elements received. This value is never reset.
-    , workPostRecentOutput  :: !Int
-      -- ^ The number of elements produced since these statistics were last reset by
-      -- 'resetWorkPostStats'.
-    , workPostRecentInput   :: !Int
-      -- ^ The number of elements recieved since these statistics were last reset by
-      -- 'resetWorkPostStats'.
-    , workPostWaitingOutput :: !Int
-      -- ^ The number of completed items not yet retrieved.
-    , workPostWaitingInput  :: !Int
-      -- ^ The number of pushed items not yet processed.
-    , workPostStartTime     :: !UTCTime
-      -- ^ The time this post was created. This value is never reset.
-    , workPostResetTime     :: !UTCTime
-      -- ^ The time at which this statistics report was last reset with 'resetWorkPostStats'.
-    , workPostCheckTime     :: !UTCTime
-      -- ^ The time at which this statistics report was created.
-    }
-
-instance Functor (WorkerTask work) where
-  fmap f (WorkerTask m) = WorkerTask $ fmap (fmap f) m
-
-instance Applicative (WorkerTask work) where { pure = return; (<*>) = ap; }
-
-instance Monad (WorkerTask work) where
-  return = WorkerTask . return . EventHandlerContinue
-  (WorkerTask a) >>= f = WorkerTask $ a >>= \ case
-    EventHandlerContinue a -> unwrapWorkerTask $ f a
-    EventHandlerHalt       -> return EventHandlerHalt
-    EventHandlerCancel     -> return EventHandlerCancel
-    EventHandlerFail   msg -> return $ EventHandlerFail msg
-  fail   = taskFail . Strict.pack
-
-instance MonadState work (WorkerTask work) where
-  state = WorkerTask . fmap EventHandlerContinue . lift . state
-
--- | When a 'WorkerTask' is being evaluated, a 'Worker' may refer to one's self by obtaining a copy
--- of it's identification (a union membership card).
-thisWorker :: WorkerTask work Worker
-thisWorker = WorkerTask $ EventHandlerContinue <$> ask
-
--- | This function obtains status information from a given 'Worker'. The worker may update it's
--- own status at any time, so the returned 'WorkerStatus' is only a snapshot of the status at a
--- given time, it may even change the very moment after this function returns.
-getWorkerStatus :: MonadIO m => Worker -> m WorkerStatus
-getWorkerStatus = liftIO . readMVar . workerStatus
-
--- | The task should stop looping and close-up shop.
-taskDone :: WorkerTask work void
-taskDone = WorkerTask $ return EventHandlerHalt
-
--- | The task should skip this loop and wait for the next loop.
-taskSkip :: WorkerTask work void
-taskSkip = WorkerTask $ return EventHandlerCancel
-
--- | Signal a failure occured.
-taskFail :: Strict.Text -> WorkerTask work void
-taskFail = WorkerTask . return . EventHandlerFail
-
--- | Catch a 'taskSkip' or 'taskFail' signal, or really any signal at all.
-taskCatch :: WorkerTask work a -> (EventHandlerControl a -> WorkerTask work b) -> WorkerTask work b
-taskCatch (WorkerTask f) catch = WorkerTask $ f >>= unwrapWorkerTask . catch
-
--- | This function is used by Happlet 'Happlets.Initialize.Provider's when creating 'Worker'
--- threads, namely in instances of 'launchWorkerThread', to notify the outside world of the status
--- of the 'Worker' as it is evaluated in the parallel thread.
-setWorkerStatus :: MonadIO m => Worker -> WorkerStatus -> m WorkerStatus
-setWorkerStatus (Worker{workerStatus=mvar}) = liftIO . swapMVar mvar
-
--- | Pause for some number of seconds. The pause time can be very small, but the smallest pause time
--- is dependent on the operating system and computer hardware. Haskell's runtime system on stock
--- computer hardware can control time to within a millionth of a second with some reliability.
-taskPause :: Double -> WorkerTask work ()
-taskPause t = WorkerTask $ ReaderT $ \ self -> liftIO $ do
-  oldStat <- setWorkerStatus self WorkerPaused
-  if t <= 0 then blink else threadDelay $ round $ t * 1000 * 1000
-  setWorkerStatus self oldStat
-  return $ EventHandlerContinue ()
-
--- | Create a new 'Workspace' for a worker to work on, containing a initial @work@ piece.
-newWorkspace :: MonadIO m => work -> m (Workspace work)
-newWorkspace = liftIO . fmap Workspace . newMVar
-
--- | Get a copy of the @work@ piece from the 'Workspace' without disturbing the current
--- 'WorkerTask'. The copy is just a snapshot, unless the 'Worker' has completed it's 'WorkerTask',
--- this snapshot will likely go out of date the moment this function call returns.
-copyWorkspace :: MonadIO m => Workspace work -> m work
-copyWorkspace = liftIO . readMVar . unwrapWorkspace
-
--- | Happlet 'Happlet.Initialize.Provider's should instantiate the 'launchWorkerThread' function
--- such that the 'Worker' threads correctly report on their status. Use the functions provided by
--- this data structure to notify whether they are waiting, busy, halted, or failed.
-newtype WorkerNotification = WorkerNotification (WorkerStatus -> IO ())
-
--- | This function starts a worker on a 'WorkerTask', returning an identifier you can use to query
--- information about the 'Worker's status. In this idylic little world, workers stay with a
--- 'WorkerUnion' until they retire, so there are no APIs for moving a 'Worker' from one
--- 'WorkerUnion' to another, you can only signal to them that their work is done using the
--- 'relieveWorker' function, at which point they happily leave.
-recruitWorker
-  :: MonadIO m
-  => WorkerUnion -> Workspace work
-  -> WorkerName -> WorkCycleTime -> WorkerTask work void -> m Worker
-recruitWorker = _recruitWorker defaultLaunchWorkerThread
-
-_recruitWorker
-  :: MonadIO m
-  => ForkWorkerThread void
-  -> WorkerUnion -> Workspace work
-  -> WorkerName -> WorkCycleTime -> WorkerTask work void -> m Worker
-_recruitWorker fork wu (Workspace mvar) handl cycle (WorkerTask f) =
-  newWorker fork wu handl cycle $ \ worker -> do
-    setWorkerStatus worker WorkerWaiting
-    modifyMVar' mvar $ \ work -> do
-      setWorkerStatus worker WorkerBusy
-      runStateT (runReaderT f worker) work
-
--- | Similar to 'recruitWorker' but works for the "government" and operates on the current @model@
--- in of the 'GUI' function which recruits this 'Worker'. This function is also similar to
--- 'govWorker', but notice that the task to be performed is not an ordinary 'WorkerTask' function,
--- but a 'GUI' function. This allows the worker to update the GUI directly, as if there were an
--- event handler constantly responding to a stream of events being generated in a parallel process.
---
--- The 'Happlet.Provider.Provider' must instantiate 'CanRecruitWorkers' in order for this function
--- to be usable -- we hope that all 'Happlet.Provider.Provider's will do this.
-guiWorker
-  :: CanRecruitWorkers provider
-  => WorkerName -> WorkCycleTime
-  -> GUI provider model void -> GUI provider model Worker
-guiWorker handl cycle f = do
-  guist <- getGUIState
-  newWorker (launchWorkerThread guist) (theGUIWorkers guist) handl cycle $ \ worker -> do
-    setWorkerStatus worker WorkerWaiting
-    inOtherThreadRunGUI guist (liftIO (setWorkerStatus worker WorkerBusy) >> f)
-
--- | Similar to 'recruitWorker' but works in the "government" 'WorkerUnion'.
---
--- Notice that this function must be evaluate to a 'GUI' function, unlike many of the other
--- 'Worker'-related functions here which can be evaluated to any function type of the 'MonadIO' type
--- class. The default "government" 'WorkerUnion' is only available during 'GUI' evaluation.
-govWorker
-  :: CanRecruitWorkers provider
-  => Workspace work -> WorkerName -> WorkCycleTime
-  -> WorkerTask work void -> GUI provider model Worker
-govWorker workspace handl cycle f = do
-  st  <- getGUIState
-  gov <- govWorkerUnion
-  _recruitWorker (launchWorkerThread st) gov workspace handl cycle f
-
--- | Relieve every worker in the 'postWorkersUnion' using the 'relieveWorkersIn' function, where the
--- filter given to 'relieveWorkersIn' is @('const' 'True')@, resulting in all workers being
--- relieved.
-closeWorkPost :: MonadIO m => WorkPost inWork outWork -> m ()
-closeWorkPost = flip relieveWorkersIn (const True) . postWorkersUnion
-
--- | Get a statistical snapshot of the current state of a given 'WorkPost'. With this you can
--- evaluate 'totalThroughput' or 'instantThroughput', or compute your own statistics.
-getWorkPostStats :: MonadIO m => WorkPost inWork outWork -> m WorkPostStats
-getWorkPostStats = liftIO . readMVar . workPostStats
-
--- | Like 'getWorkPostStats', but after this function returns, some of the 'WorkPostStats' will be
--- reset, namely the 'workPostRecentInput', 'workPostRecentOutput', and 'workPostResetTime' fields.
-resetWorkPostStats :: MonadIO m => WorkPost inWork outWork -> m WorkPostStats
-resetWorkPostStats post = liftIO $ do
-  t <- getCurrentTime
-  modifyMVar (workPostStats post) $ \ st -> return $ flip (,) st $ st
-    & (_workPostRecentInput  .~ 0)
-    & (_workPostRecentOutput .~ 0)
-    & (_workPostResetTime    .~ t)
-
--- | Construct a group of 'WorkPost' workers, each running the same 'WorkerTask'. Pass a list of
--- 'workerName's, one 'Worker' will be created for each name, all workers will wait on the same
--- 'WorkPost'. The 'closeWorkPost' function does this and halts all workers, at which point the
--- 'WorkPost' can no longer be used.
---
--- Notice the type of the 'WorkerTask': it takes an @inWork@ type, is stateful over the @()@ type
--- (is stateless), and returns an @outWork@ type. This means to yield output, this function merely
--- needs to return a value. The 'WorkerTask' can still evaluate 'taskSkip' to avoid yielding a
--- value.
-postWorkers
-  :: MonadIO m
-  => [WorkerName] -> (inWork -> WorkerTask () outWork)
-  -> m (WorkPost inWork outWork)
-postWorkers names f =
-  postal defaultLaunchWorkerThread names $ \ self work ->
-  evalStateT (runReaderT (unwrapWorkerTask $ f work) self) ()
-
--- | Similar to 'postWorkers' but also allows the workers access to a 'Workspace'. The content of
--- 'Workspace' can be thought of as a @fold@ed value that may be updated after each @inWork@ element
--- is recieved.
-postTaskWorkers
-  :: MonadIO m
-  => Workspace fold -> [WorkerName] -> (inWork -> WorkerTask fold outWork)
-  -> m (WorkPost inWork outWork)
-postTaskWorkers (Workspace mvar) handls f =
-  postal defaultLaunchWorkerThread handls $ \ self work -> do
-    setWorkerStatus self WorkerWaiting
-    modifyMVar' mvar $ \ fold -> do
-      setWorkerStatus self WorkerBusy
-      runStateT (runReaderT (unwrapWorkerTask $ f work) self) fold
-
--- | Similar to 'postWorkers', but the task evaluated is of type 'GUI', allowing full access to the
--- 'GUI's state as each work item is posted.
-guiPostWorkers
-  :: CanRecruitWorkers provider
-  => [WorkerName] -> (inWork -> GUI provider model outWork)
-  -> GUI provider model (WorkPost inWork outWork)
-guiPostWorkers names f = getGUIState >>= \ st ->
-  postal (launchWorkerThread st) names $ \ self work -> do
-    setWorkerStatus self WorkerWaiting
-    inOtherThreadRunGUI st (setWorkerStatus self WorkerBusy >> f work)
-
--- not for export
-postal
-  :: MonadIO m
-  => ForkWorkerThread outWork
-  -> [WorkerName]
-  -> (Worker -> inWork -> IO (EventHandlerControl outWork))
-  -> m (WorkPost inWork outWork)
-postal launch names f = liftIO $ do
-  stats  <- newWorkPostStats >>= newMVar
-  insema <- newQSem 0
-  inbox  <- newMVar Seq.empty
-  outbox <- newMVar Seq.empty
-  unmvar <- newMVar Set.empty
-  let un   = WorkerUnion unmvar
-  let post = WorkPost
-        { postWorkersUnion = WorkerUnion unmvar
-        , workPostStats    = stats
-        , workPostInSema   = insema
-        , workPostInbox    = inbox
-        , workPostOutbox   = outbox
-        }
-  let make handl = newWorker launch un handl WorkCycleASAP $ \ self -> do
-        setWorkerStatus self WorkerWaiting
-        waitQSem insema
-        setWorkerStatus self WorkerBusy
-        work <- modifyMVar inbox $ \ worker -> return $ case Seq.viewl worker of
-          a Seq.:< ax -> (ax, a)
-          Seq.EmptyL  -> (,) Seq.empty $ error $ "Worker "++show handl++
-            " discovered PostWork semaphore signalled without"++
-            " having first inserted an element in the inbox."
-        postStats post
-          $ (_workPostWaitingInput %~ subtract 1)
-          . (_workPostTotalInput   %~ (+ 1))
-          . (_workPostRecentInput  %~ (+ 1))
-        result <- f self work >>= evaluate
-        case result of
-          EventHandlerContinue result -> seq result $! do
-            modifyMVar_ outbox $ pure . (Seq.|> result)
-            postStats post
-              $ (_workPostWaitingOutput %~ (+ 1))
-              . (_workPostTotalOutput   %~ (+ 1))
-              . (_workPostRecentOutput  %~ (+ 1))
-          _                           -> return ()
-        return result
-  Set.fromList <$> mapM make names >>= swapMVar unmvar
-  return post
-
--- | This is a type of function used to fork a thread for a 'Worker'.
-type ForkWorkerThread a
-  =  WorkerUnion
-      -- ^ use to call 'unionizeWorker' when thread begins and 'retireWorker' when thread ends.
-  -> WorkCycleTime -- ^ requests the cycle time of the work thread that is forked here.
-  -> IO Worker     -- ^ used to obtain a copy of the 'Worker' which represents thread forked here.
-  -> (Worker -> IO (EventHandlerControl a))
-     -- ^ the task to be perofmred during each work cycle.
-  -> IO (IO ())    -- ^ returns a function that can be used to halt the thread that is forked here.
-
--- not for export
-newWorker
-  :: MonadIO m
-  => ForkWorkerThread void
-  -> WorkerUnion -> WorkerName -> WorkCycleTime
-  -> (Worker -> IO (EventHandlerControl void))
-  -> m Worker
-newWorker fork wu handl cycle f = liftIO $ do
-  stat <- newMVar WorkerInit
-  wid  <- newWorkerID
-  mvar <- newMVar Worker
-    { workerThreadId = wid
-    , workerName     = handl
-    , workerStatus   = stat
-    , workerHalt     = return ()
-    }
-  halt <- fork wu cycle (readMVar mvar) f
-  modifyMVar mvar $ \ worker' -> do
-    let worker = worker'{ workerHalt = halt }
-    return (worker, worker)
-
--- | This function can be used as a default instance of 'launchWorkerThread'. This function makes
--- use of Haskell's own runtime threading system, namely 'Control.Concurrent.forkOS' to launch a
--- thread. Not all 'Happlet.Initialize.Provider's should use this function, however, especially
--- those which cannot provide thread safety when evaluating functions of type @GUI@.
-defaultLaunchWorkerThread
-  :: WorkerUnion
-  -> WorkCycleTime
-  -> IO Worker
-  -> (Worker -> IO (EventHandlerControl void))
-  -> IO (IO ())
-defaultLaunchWorkerThread wu cycle getWorker f = do
-  let delay t = threadDelay $ round $ t * 1000 * 1000
-  let workerLoop self = do
-        let loop   = setWorkerStatus self WorkerPaused >>
-              (case cycle of { WorkCycleWait t -> delay t; _ -> blink; }) >>
-              workerLoop self
-        result <- f self
-        case result of
-          EventHandlerContinue{} -> loop
-          EventHandlerCancel     -> loop
-          EventHandlerHalt       -> void $ setWorkerStatus self WorkerHalted
-          EventHandlerFail   msg -> void $ setWorkerStatus self $ WorkerFailed msg
-  tid <- forkOS $ catches
-    (do self <- getWorker
-        bracket_ (unionizeWorker wu self) (retireWorker wu self) $ do
-          case cycle of
-            WorkWaitCycle t -> setWorkerStatus self WorkerPaused >> delay t
-            _               -> return ()
-          workerLoop self
-    )
-    [ Handler $ \ (WorkerSignal ()) -> do
-        self <- getWorker
-        void $ setWorkerStatus self WorkerFlagged
-    , Handler $ \ (SomeException e) -> do
-        self <- getWorker
-        setWorkerStatus self $ WorkerFailed $ Strict.pack $ show e
-        throw e
-    ]
-  return $ throwTo tid $ WorkerSignal ()
-
--- | Signal a worker that they no longer need to perform their task. In this idylic little world, a
--- worker happily leaves when there is no more work to do, and they abandon their 'Worker' identity,
--- which is their membership in a 'WorkerUnion'. Calling 'relieveWorker' on the same 'Worker' ID
--- that is already retired does nothing.
-relieveWorker :: MonadIO m => Worker -> m ()
-relieveWorker = liftIO . workerHalt
-
--- | Relieve members in a given 'WorkerUnion' which match a given predicate.
-relieveWorkersIn :: MonadIO m => WorkerUnion -> (Worker -> Bool) -> m ()
-relieveWorkersIn (WorkerUnion mvar) toBeRelieved = liftIO $ modifyMVar_ mvar $ \ set -> do
-  let (toBe, notToBe) = Set.partition toBeRelieved set
-  mapM_ relieveWorker $ Set.toList toBe
-  return notToBe
-
--- | Like 'relieveWorkersIn' but the signals are sent to the workers default "government"
--- 'WorkerUnion'.
-relieveGovWorkers :: (Worker -> Bool) -> GUI provider model ()
-relieveGovWorkers toBeRelieved = govWorkerUnion >>= liftIO . flip relieveWorkersIn toBeRelieved
-
--- | Define a new 'WorkerUnion'. 
-newWorkerUnion :: MonadIO m => m WorkerUnion
-newWorkerUnion = liftIO $ WorkerUnion <$> newMVar Set.empty
-
--- | This function must only be called by Happlet 'Happlets.Initialize.Provider's when instantiating
--- the 'launchWorkerThread' function.
-unionizeWorker :: WorkerUnion -> Worker -> IO ()
-unionizeWorker (WorkerUnion mvar) worker = liftIO $
-  modifyMVar_ mvar $ return . Set.insert worker
-
--- | This function must only be called by Happlet 'Happlets.Initialize.Provider's when instantiating
--- the 'launchWorkerThread' function.
-retireWorker :: WorkerUnion -> Worker -> IO ()
-retireWorker (WorkerUnion mvar) worker = liftIO $
-  modifyMVar_ mvar $ return . Set.delete worker
-
--- not for export
-postStats :: WorkPost inWork outWork -> (WorkPostStats -> WorkPostStats) -> IO ()
-postStats (WorkPost{workPostStats=mvar}) = modifyMVar_ mvar . (return .)
-
--- | Place @work@ into the 'WorkPost' for it to be processed by 'Worker's. This function is
--- asyncrhonouse.
---
--- Be warned that posting too much work faster than the 'Worker's can handle it will
--- result in a "space leak", a situation in which unprocessed work piles up taking more and more
--- memory until your program is forcibly halted by the operating system.
-pushWork :: MonadIO m => WorkPost inWork outWork -> inWork -> m ()
-pushWork post work = liftIO $ do
-  modifyMVar_ (workPostInbox post) $ pure . (Seq.|> work)
-  postStats post $ _workPostWaitingInput %~ (+ 1)
-  signalQSem $ workPostInSema post
-
--- | Check if @work@ being processed in a 'WorkPost' has completed. This function is
--- asynchronous. If there is no @work@ completed yet, 'Prelude.Nothing' is returned.
-checkWork :: MonadIO m => WorkPost inWork outWork -> m (Maybe outWork)
-checkWork post = liftIO $ do
-  a <- modifyMVar (workPostOutbox post) $ \ workers -> return $ case Seq.viewl workers of
-    Seq.EmptyL  -> (Seq.empty, Nothing)
-    a Seq.:< ax -> (ax, Just a)
-  case a of
-    Nothing -> return ()
-    Just{}  -> postStats post $ _workPostWaitingOutput %~ subtract 1
-  return a
-
--- | 'WorkPost' instantaneous throughput measured in elements per second. "Instantaneous" means the
--- number of elements processed (taken from the output by 'checkPost') since the last time the
--- 'WorkPost' was reset with 'resetWorkPostStats'.
-instantThroughput :: WorkPostStats -> Double
-instantThroughput stats = realToFrac (workPostRecentOutput stats) /
-  realToFrac (workPostCheckTime stats `diffUTCTime` workPostResetTime stats)
-
--- | 'WorkPost' total throughput measured in elements per second. "Total" means the number of
--- elements processed (taken from the output by 'checkPost') since the 'WorkPost' was created.
-totalThroughput :: WorkPostStats -> Double
-totalThroughput stats = realToFrac (workPostTotalOutput stats) /
-  realToFrac (workPostCheckTime stats `diffUTCTime` workPostStartTime stats)
-
-_workPostTotalOutput   :: Lens' WorkPostStats Int
-_workPostTotalOutput   = lens workPostTotalOutput $ \ a b -> a{ workPostTotalOutput = b }
-
-_workPostTotalInput    :: Lens' WorkPostStats Int
-_workPostTotalInput    = lens workPostTotalInput $ \ a b -> a{ workPostTotalInput = b }
-
-_workPostRecentOutput  :: Lens' WorkPostStats Int
-_workPostRecentOutput  = lens workPostRecentOutput $ \ a b -> a{ workPostRecentOutput = b }
-
-_workPostRecentInput   :: Lens' WorkPostStats Int
-_workPostRecentInput   = lens workPostRecentInput $ \ a b -> a{ workPostRecentInput = b }
-
-_workPostWaitingOutput :: Lens' WorkPostStats Int
-_workPostWaitingOutput = lens workPostWaitingOutput $ \ a b -> a{ workPostWaitingOutput = b }
-
-_workPostWaitingInput  :: Lens' WorkPostStats Int
-_workPostWaitingInput  = lens workPostWaitingInput $ \ a b -> a{ workPostWaitingInput = b }
-
-_workPostStartTime     :: Lens' WorkPostStats UTCTime
-_workPostStartTime     = lens workPostStartTime $ \ a b -> a{ workPostStartTime = b }
-
-_workPostResetTime     :: Lens' WorkPostStats UTCTime
-_workPostResetTime     = lens workPostResetTime $ \ a b -> a{ workPostResetTime = b }
-
-_workPostCheckTime     :: Lens' WorkPostStats UTCTime
-_workPostCheckTime     = lens workPostCheckTime $ \ a b -> a{ workPostCheckTime = b }
-
-newWorkPostStats :: IO WorkPostStats
-newWorkPostStats = do
-  t <- getCurrentTime
-  return WorkPostStats
-    { workPostTotalOutput   = 0
-    , workPostTotalInput    = 0
-    , workPostRecentOutput  = 0
-    , workPostRecentInput   = 0
-    , workPostWaitingOutput = 0
-    , workPostWaitingInput  = 0
-    , workPostStartTime     = t
-    , workPostResetTime     = t
-    , workPostCheckTime     = t
-    }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1414,44 +788,84 @@ newWorkPostStats = do
 -- 'MVar's which contain the resources shared with the operating system.
 --
 -- To perform any @IO@ computation which may cause the thread to block, or otherwise require a lot
--- of time to run to completion, call 'forkGUI' which creates a thread-safe evaluator for functions
--- of type 'GUI' that can be safely evaluated in the @IO@ context of the thread.
-class CanRecruitWorkers provider where
-  governmentWorkerUnion :: provider -> WorkerUnion
+-- of time to run to completion, call 'providerForkGUI' which creates a thread-safe evaluator for
+-- functions of type 'GUI' that can be safely evaluated in the @IO@ context of the thread.
+--
+-- It should be noted that these APIs are modeled after the Glib Haskell library, which has
+-- abstractions for programming single-threaded, cooperative multi-tasking platforms.
+class (MonadIO m, MonadProvider provider m) => CanRecruitWorkers provider m | m -> provider where
+--  governmentWorkerUnion :: provider -> WorkerUnion
 
-  -- | This function creates a new Haskell thread and passes an evaluator (a continuation function)
-  -- of type @('GUI' window model a -> IO ('EventHandlerControl' a)@. This Haskell thread can safely
-  -- spawn other threads, it can evaluate 'threadDelay', it can safely wait on 'MVar's or 'QSem's,
-  -- and it can loop indefinitely. When it comes time to perform an action in the 'GUI', the thread
-  -- function can call the given evaluator function to perform an update in the GUI.
-  forkGUI
-    :: ((GUI provider model a -> IO (EventHandlerControl a)) -> IO ())
-       -- ^ Use this function to evaluate a 'GUI' function within the @IO@ context of the 'Worker'
-       -- thread.
-    -> GUI provider model ThreadId
-  -- | This function must assume that the given 'GUI' function will be evaluated in a new thread
-  -- with the given 'GUIState'. This function must perform all locking of mutex variables necessary
-  -- to evaluate the 'GUI' function, and update all mutexes with the results of evaluation.
-  inOtherThreadRunGUI :: GUIState provider model -> GUI provider model a -> IO (EventHandlerControl a)
-  -- | Launch a worker thread that can safely interact with the GUI. Many GUI libraries do not
-  -- provide thread safety, instead using a cooperative mutlithreading model, and so launching
-  -- worker threads must make use of the GUI's own cooperative multithread functionality. In Gtk+
-  -- trying to use Haskell threads all but guarantees deadlocks, or race conditions which lead to
-  -- segmentation faults.
+  -- | This function provides an abstraction for cooperative multi-tasking. In these systems, the
+  -- main thread (sometimes the only thread) runs in a tight loop listening for input events. On
+  -- each cycle of the loop, updates the the global @provider@ state are constantly being made. If
+  -- another thread were to try to update this global @provider@ state without locking, race
+  -- conditions will occur. So instead, cooperative multi-tasking frameworks let you set a hook
+  -- function that can be run in sequence with other global state updates in the main thread, so no
+  -- race conditions occur.
   --
-  -- This function takes a delay time, an @IO ('EventHandlerControl' void)@ (usually a function
-  -- evaluated by 'inOtherThreadRunGUI' above) which is called repeatedly and returns a control
-  -- value that can optionally stop it's own thread loop, and returns an @IO ()@ function that can
-  -- be used to halt the thread.
-  launchWorkerThread
-    :: GUIState provider model -- ^ provides access to the @provider@
-    -> WorkerUnion
-       -- ^ use to call 'unionizeWorker' when thread begins and 'retireWorker' when thread
-       -- ends. Usually this union is the same as 'theGUIWorkers' ("government" union), but not
-       -- necessarily, therefore it is passed as an argument to this function.
-    -> WorkCycleTime -- ^ requests the cycle time of the work thread that is forked here.
-    -> IO Worker
-        -- ^ used to obtain a copy of the 'Worker' which represents thread forked here.
-    -> (Worker -> IO (EventHandlerControl void))
-        -- ^ the task to be perofmred during each work cycle.
-    -> IO (IO ())    -- ^ returns a function that used to halt the thread that is forked here.
+  -- The Happlets framework offers arbitrary use of Haskell threads. In order for Haskell threads to
+  -- update the global state, a thread has to be able to set a hook that locks the global @provider@
+  -- state using 'otherThreadRunProviderIO', and makes updates to it. The Haskell thread must block
+  -- until the hook is executed in the main thread.
+  --
+  -- Providers overriding this 'providerRunSync' function must take an action function of type @m()@
+  -- and set a hook that evaluates it in the main thread, and this function must block until the
+  -- hook is evaluated.
+  --
+  -- __NOTE:__ that this function __MUST__ evaluate the continuation given here using
+  -- 'otherThreadRunProviderIO', which must obtains the lock on the 'ProviderStateRef' given by
+  -- 'providerSharedState'.
+  --
+  -- For providers in which the global @provider@ state is already thread safe without needing a
+  -- cooperative multi-tasking mechanism, the default implementation of this function is thread
+  -- safe, and makes the necessary call to 'otherThreadRunProviderIO'.
+  providerRunSync :: m () -> m ()
+  providerRunSync f = do
+    shared <- gets providerSharedState
+    liftIO (otherThreadRunProviderIO (f >> get) shared) >>= put
+
+-- | This thread acquires a lock on the 'ProviderStateRef', so be absolutely certain that this
+-- function is only ever evaluated in a separate thread.
+otherThreadRunProviderIO
+  :: MonadProvider provider m
+  => m a -> ProviderStateRef provider -> IO a
+otherThreadRunProviderIO f (ProviderStateRef mvar) = modifyMVar' mvar $ runProviderIO f
+
+-- This function must be run on 'GUIState' containing a locked 'ProviderStateLock'. Using this
+-- provider state, the 'providerRunSync' function is evaluated, which in turn evaluates the given
+-- 'GUI' function in a different thread.
+--
+-- Before evaluating the 'GUI' function, 'providerRunSync' is required to use 'providerSharedState'
+-- to obtain the same 'ProviderStateRef' that would be extracted from an unlocked
+-- 'ProviderStateLock'. Then 'providerRunSync' sends to another thread a function which uses
+-- 'otherThreadRunProviderIO' to evaluate the 'ProviderStateRef' that it obtained from
+-- 'providerSharedState', and finally, within 'otherThreadRunProviderIO', the 'providerLiftGUI'
+-- function is used to evaluate the 'GUI' continuation function was passed here to
+-- 'inOtherThreadRunGUI'.
+--
+-- So this function does operate on an unlocked 'ProviderStateLock', but does not modify it, rather
+-- it uses the 'ProviderStateRef' within to creates a new function and sends this new function to
+-- 'providerRunSync' which then does perform locking on the 'ProviderStateRef' and evaluates the
+-- new function which evaluates the given 'GUI' function using 'providerLiftGUI'.
+--
+-- The 'providerRunSync' is responsible for updating the MVar in the 'providerSharedState', and the
+-- 'providerLiftGUI' function is responsible for updating the 'GUIState', so this function discards
+-- both the 'providerSharedState' and the 'GUIState' that it receives after evaluating this
+-- function, because it is not the responsibility of this function to update those MVars.
+inOtherThreadRunGUI
+  :: CanRecruitWorkers provider m
+  => GUIState provider model -> GUI provider model a -> IO ()
+inOtherThreadRunGUI guist f = case theGUIProvider guist of
+  ProviderLocked prost -> fmap fst $ flip runProviderIO prost $
+    providerRunSync $ void $ providerLiftGUI (theGUIHapplet guist) f
+  ProviderUnlocked{}   -> error
+    "inOtherThreadGUI: was given GUIState containing an unlocked window."
+
+-- | Works just like 'forkIO' but for the 'GUI' function type.
+forkGUI
+  :: CanRecruitWorkers provider m
+  => GUI provider model () -> GUI provider model ThreadId
+forkGUI f = do
+  st <- getGUIState
+  liftIO $ forkIO $ void $ inOtherThreadRunGUI st f
