@@ -478,9 +478,9 @@ changeRootHapplet
 changeRootHapplet newHapp init = do
   -- Here we set the 'contextSwithcer' field to a function that evaluates 'switchContext'.
   modifyGUIState $ \ guist -> case guist ^. guiProvider of
-    ProviderUnlocked{} -> error "changeRootHapplet was evaluated on an unlocked provider state"
-    ProviderLocked env -> guist & guiProvider .~
-      ( ProviderLocked
+    ThisThreadCanTryToLock{} -> error "changeRootHapplet was evaluated on an unlocked provider state"
+    ThisThreadHasTheLock env -> guist & guiProvider .~
+      ( ThisThreadHasTheLock
         (env & contextSwitcher .~ switchContext (env ^. detatchHandler) newHapp init)
       )
   cancelNow
@@ -594,11 +594,11 @@ class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider 
   disconnectAll :: MonadState provider m => m ()
 
 data ProviderStateLock provider
-  = ProviderUnlocked (ProviderStateRef provider)
-    -- ^ Unocked means we have not yet called 'modifyMVar', but we can do so on the 'MVar' given
-    -- here.
-  | ProviderLocked   provider
-    -- ^ Locked means we are within 'modifyMVar' and we have the @provider@ state value.
+  = ThisThreadCanTryToLock (ProviderStateRef provider)
+  | ThisThreadHasTheLock   provider
+    -- ^ This means that this current thread can modify the @provider@ state freely. This thread is
+    -- within 'modifyMVar' continuation of the 'MVar' that contains the @provider@ state value and
+    -- can modify it freely, and hopefully very quickly.
 
 -- | Lock a 'ProviderStateLock' and then evaluate 'runProviderIO' on the given 'MonadProvider'
 -- function @m@.
@@ -606,8 +606,8 @@ runProviderOnLock
   :: (MonadIO m, MonadProvider provider m)
   => ProviderStateLock provider -> m a -> IO a
 runProviderOnLock lock f = case lock of
-  ProviderUnlocked ref -> otherThreadRunProviderIO f ref
-  ProviderLocked{}     -> fail $ "runProviderOnLock: evaluated on already locked provider."
+  ThisThreadCanTryToLock ref -> otherThreadRunProviderIO f ref
+  ThisThreadHasTheLock{}     -> fail $ "runProviderOnLock: evaluated on already locked provider."
 
 -- | This function should always be called within a callback function that is installed into the
 -- provider for handling events coming into the program from the operating system.
@@ -615,11 +615,11 @@ liftGUIProvider
   :: (MonadIO m, MonadState provider m, MonadProvider provider m)
   => m a -> GUI provider model a
 liftGUIProvider f = getGUIState >>= \ gui -> case theGUIProvider gui of
-  ProviderUnlocked{} -> error $ "liftGUIProvider: " ++
+  ThisThreadCanTryToLock{} -> error $ "liftGUIProvider: " ++
     "Evaluated a provider function within a GUI function on a locked ProviderStateLock."
-  ProviderLocked env -> do
+  ThisThreadHasTheLock env -> do
     (a, env) <- liftIO $ runProviderIO f env
-    putGUIState $ gui{ theGUIProvider = ProviderLocked env }
+    putGUIState $ gui{ theGUIProvider = ThisThreadHasTheLock env }
     return a
 
 -- | This function evaluates 'GUI' functions within event handlers. It evaluates to a function of
@@ -638,13 +638,13 @@ providerLiftGUI happlet f = do
   (result, provider) <- liftIO $ fmap fst $ onHapplet happlet $ \ model -> do
     (guiContin, guiState) <- runGUI f GUIState
       { theGUIHapplet  = happlet
-      , theGUIProvider = ProviderLocked provider
+      , theGUIProvider = ThisThreadHasTheLock provider
       , theGUIModel    = model
 --    , theGUIWorkers  = governmentWorkerUnion provider
       }
     case theGUIProvider guiState of
-      ProviderLocked provider -> return ((guiContin, provider), theGUIModel guiState)
-      ProviderUnlocked{}      -> fail $
+      ThisThreadHasTheLock provider -> return ((guiContin, provider), theGUIModel guiState)
+      ThisThreadCanTryToLock{}      -> fail $
         "providerLiftGUI: runGUI succesfull, but provider in GUIState is still locked"
   -- (3) Put the newly updated provider state back into the monad state
   put provider
@@ -704,14 +704,14 @@ switchContext detatch newHapp init = do
   size <- getProviderWindowSize
   (>>= state . const) $ liftIO $ fmap fst $ onHapplet newHapp $ \ model -> do
     (guiContin, guist) <- runGUI (init size) GUIState
-      { theGUIProvider = ProviderLocked env
+      { theGUIProvider = ThisThreadHasTheLock env
       , theGUIHapplet  = newHapp
       , theGUIModel    = model
 --    , theGUIWorkers  = governmentWorkerUnion env
       }
     case theGUIProvider guist of
-      ProviderLocked winst -> return ((guiContin, winst), theGUIModel guist)
-      ProviderUnlocked{}   -> fail $
+      ThisThreadHasTheLock winst -> return ((guiContin, winst), theGUIModel guist)
+      ThisThreadCanTryToLock{}   -> fail $
         "'runGUI' was given an unlocked provider state, but it returned a locked provider state"
 
 ----------------------------------------------------------------------------------------------------
@@ -768,7 +768,7 @@ installEventHandler setup = do
       -- Here we install an IO function into a callback. As soon as this callback is executed, the
       -- provider must be locked using 'runProviderOnLock' in order to begin evaluating the 'GUI'
       -- function associated with this event callback.
-      runProviderOnLock (ProviderUnlocked $ providerSharedState env) .
+      runProviderOnLock (ThisThreadCanTryToLock $ providerSharedState env) .
       evalConnectReact (eventLensReaction setup)
     eventLensReaction setup .= ConnectReact
       { doDisconnect = liftIO disconnect
@@ -857,12 +857,28 @@ inOtherThreadRunGUI
   :: CanRecruitWorkers provider m
   => GUIState provider model -> GUI provider model a -> IO ()
 inOtherThreadRunGUI guist f = case theGUIProvider guist of
-  ProviderLocked prost -> fmap fst $ flip runProviderIO prost $
+  ThisThreadHasTheLock prost -> fmap fst $ flip runProviderIO prost $
     providerRunSync $ void $ providerLiftGUI (theGUIHapplet guist) f
-  ProviderUnlocked{}   -> error
+  ThisThreadCanTryToLock{}   -> error
     "inOtherThreadGUI: was given GUIState containing an unlocked window."
 
--- | Works just like 'forkIO' but for the 'GUI' function type.
+-- | Works similar to 'forkIO' but for the 'GUI' function type, with one very big caveat:
+--
+-- Some providers, notably providers with cooperative multi-tasking, rather than true
+-- multi-threading, will not actually allow you to make modifiations to the GUI's internal state in
+-- a separate thread. For these providers, what 'forkGUI' will actually do is create a new Haskell
+-- thread (using 'forkIO', which creates a ligthweight thread in Haskell's runtime system), and this
+-- thread will actually send the 'GUI' function you give it here synchronously to the task
+-- dispatcher in the GUI provider to be evaluated. Since it is synchronous, Haskell thread will
+-- block until the GUI task dispatcher fully evalutes the 'GUI' function. The task dispatcher
+-- prevents race conditions by ensuring that only one task can update the GUI's internal state at a
+-- time, by running only one task at a time, so it is really not parallel function evaluation at
+-- all.
+--
+-- However, the Haskell thread created that blocks on the GUI provider's task dispatcher will not
+-- block other Haskell threads, so if the Happlet application is compiled with the @-threaded@ flag,
+-- there can still be true multi-threading in the application, just not multiple updates to the GUI
+-- at once.
 forkGUI
   :: CanRecruitWorkers provider m
   => GUI provider model () -> GUI provider model ThreadId
