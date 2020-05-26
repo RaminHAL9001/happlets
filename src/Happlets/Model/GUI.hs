@@ -50,9 +50,10 @@ module Happlets.Model.GUI
     EventSetup(..), simpleSetup, installEventHandler,
 
     -- ** Multi-Threading
-    CanRecruitWorkers(..), ProviderStateRef, initProviderState, otherThreadRunProviderIO,
+    CanRecruitWorkers(..), ProviderStateRef, initProviderState,
+    liftGUIProvider, otherThreadRunProviderIO,
 
-    --ProviderStateLock, runProviderOnLock, providerLiftGUI, liftGUIProvider, checkGUIContinue,
+    --ProviderStateLock, runProviderOnLock, providerLiftGUI, checkGUIContinue,
     --GUIState(..), guiModel, guiProvider, guiIsLive, execGUI, runGUI, guiCatch,
     --getGUIState, putGUIState, modifyGUIState, askHapplet, govWorkerUnion,
 
