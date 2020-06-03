@@ -9,7 +9,6 @@ import           Happlets.Control.Resize
 import           Happlets.Provider.Variable
 
 import           Control.Exception
-import           Control.Monad.IO.Class
 
 import qualified Data.Text                as Strict
 
@@ -100,7 +99,8 @@ data CanvasIOError
   | CanvasIOFileType Strict.Text
   deriving (Eq, Show)
 
-class HappletPixelBuffer pixbuf where
+class MonadIO render
+  => HappletPixelBuffer provider render pixbuf | provider -> render, render -> pixbuf where
   -- | Change the 'CanvasResizeMode' value associated with the @image@ value. Example of how to you might
   -- use this variable:
   --
@@ -108,10 +108,10 @@ class HappletPixelBuffer pixbuf where
   -- img <- 'newImageBuffer' ('V2' 540 270) ('clearScreen' 'white')
   -- 'setVal' ('imageCanvasResizeMode' img) 'CanvasResizeClear'
   -- @
-  imageCanvasResizeMode :: MonadIO m => pixbuf -> Variable m CanvasResizeMode
+  imageCanvasResizeMode :: pixbuf -> Variable (GUI provider model) CanvasResizeMode
 
   -- | Resize the image buffer.
-  resizeImageBuffer :: MonadIO m => pixbuf -> PixSize -> render a -> m a
+  resizeImageBuffer :: pixbuf -> PixSize -> render a -> GUI provider model a
 
 -- | Similar to the typeclass 'HappletWindow', but provides additional functions for loading pixel
 -- buffers from a file, and saving to a file.
@@ -121,7 +121,7 @@ class HappletPixelBufferIO provider render pixbuf | provider -> render, render -
 
 -- | The back-end provider may provide it's own abstraction for an image buffer that satisfies the
 -- functions of this type class.
-class HappletPixelBuffer image
+class HappletPixelBuffer provider render image
   => CanBufferPixels provider render image | provider -> render, render -> image where
 
   -- | Create a new image buffer.

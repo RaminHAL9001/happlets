@@ -40,7 +40,7 @@ module Happlets.Model.GUI
     -- * The GUI Function Type
     GUI, onSubModel, getModel, getSubModel, putModel, modifyModel,
     changeRootHapplet, cancelNow, cancelIfBusy, howBusy, deleteEventHandler,
-    forkGUI, bracketGUI,
+    forkGUI, bracketGUI, guiCatch,
 
     -- ** The Display Typeclass
     Display(..), DrawableRef(..), drawableEmptyRef,
@@ -51,12 +51,15 @@ module Happlets.Model.GUI
 
     -- ** Multi-Threading
     CanRecruitWorkers(..), ProviderStateRef, initProviderState,
-    liftGUIProvider, otherThreadRunProviderIO,
+    liftGUIProvider, providerLiftGUI, otherThreadRunProviderIO,
 
-    --ProviderStateLock, runProviderOnLock, providerLiftGUI, checkGUIContinue,
-    --GUIState(..), guiModel, guiProvider, guiIsLive, execGUI, runGUI, guiCatch,
+    --ProviderStateLock, runProviderOnLock, checkGUIContinue,
+    --GUIState(..), guiModel, guiProvider, guiIsLive, execGUI, runGUI,
     --getGUIState, putGUIState, modifyGUIState, askHapplet, govWorkerUnion,
 
+    -- * Re-exports
+    module Control.Monad.State,
+    module Control.Monad.Except,
   ) where
 
 import           Prelude hiding ((.), id)
@@ -352,13 +355,13 @@ runGUI (GUI f) st = runStateT f st
 --  -> IO (GUIState provider model)
 --execGUI f = fmap snd . runGUI f
 
----- | Evaluate a 'GUI' function but catch calls to 'cancelNow', 'deleteEventHandler', and
----- 'Control.Monad.Fail.fail'.
---guiCatch
---  :: GUI provider model a
---  -> (EventHandlerControl a -> GUI provider model b)
---  -> GUI provider model b
---guiCatch (GUI f) = ((GUI $ f >>= \ result -> return (EventHandlerContinue result)) >>=)
+-- | Evaluate a 'GUI' function but catch calls to 'cancelNow', 'deleteEventHandler', and
+-- 'Control.Monad.Fail.fail'.
+guiCatch
+  :: GUI provider model a
+  -> (EventHandlerControl a -> GUI provider model b)
+  -> GUI provider model b
+guiCatch (GUI f) = ((GUI $ f >>= \ result -> return (EventHandlerContinue result)) >>=)
 
 -- | Like the 'Control.Exception.bracket' function, but works in the 'GUI' monad.
 bracketGUI

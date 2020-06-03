@@ -29,7 +29,6 @@ import           Control.Concurrent
 import           Control.Exception
 import           Control.Lens
 import           Control.Monad.Reader
-import           Control.Monad.State
 
 import           Data.Time.Clock
 import           Data.List             (intercalate)

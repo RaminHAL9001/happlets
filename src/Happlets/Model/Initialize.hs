@@ -83,7 +83,6 @@ import           Happlets.Model.GUI
 import           Happlets.Provider
 
 import           Control.Monad.Reader
-import           Control.Monad.State
 
 ----------------------------------------------------------------------------------------------------
 
