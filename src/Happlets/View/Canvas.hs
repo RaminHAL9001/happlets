@@ -100,7 +100,7 @@ data CanvasIOError
   deriving (Eq, Show)
 
 class MonadIO render
-  => HappletPixelBuffer provider render pixbuf | provider -> render, render -> pixbuf where
+  => HappletPixelBuffer provider render | provider -> render where
   -- | Change the 'CanvasResizeMode' value associated with the @image@ value. Example of how to you might
   -- use this variable:
   --
@@ -108,26 +108,13 @@ class MonadIO render
   -- img <- 'newImageBuffer' ('V2' 540 270) ('clearScreen' 'white')
   -- 'setVal' ('imageCanvasResizeMode' img) 'CanvasResizeClear'
   -- @
-  imageCanvasResizeMode :: pixbuf -> Variable (GUI provider model) CanvasResizeMode
+  imageCanvasResizeMode :: Variable (GUI provider model) CanvasResizeMode
 
   -- | Resize the image buffer.
-  resizeImageBuffer :: pixbuf -> PixSize -> render a -> GUI provider model a
+  resizeImageBuffer :: PixSize -> render a -> GUI provider model a
 
 -- | Similar to the typeclass 'HappletWindow', but provides additional functions for loading pixel
 -- buffers from a file, and saving to a file.
-class HappletPixelBufferIO provider render pixbuf | provider -> render, render -> pixbuf where
-  loadPixelBuffer :: FilePath -> GUI provider model (Either CanvasIOError pixbuf)
-  savePixelBuffer :: FilePath -> pixbuf -> GUI provider model (Either IOException ())
-
--- | The back-end provider may provide it's own abstraction for an image buffer that satisfies the
--- functions of this type class.
-class HappletPixelBuffer provider render image
-  => CanBufferPixels provider render image | provider -> render, render -> image where
-
-  -- | Create a new image buffer.
-  newImageBuffer :: forall model a . PixSize -> render a -> GUI provider model (a, image)
-
-  -- | Draw to the image buffer using a @render@ function.
-  drawImage :: forall model a . image -> render a -> GUI provider model a
-  -- | Blit an image buffer to the current @provider@. You can offset the location of the blit
-  -- operation by passing an offset value as the 'Happlets.Readraw.PixCoord'.
+class HappletPixelBufferIO provider render | provider -> render where
+  loadPixelBuffer :: FilePath -> GUI provider model ()
+  savePixelBuffer :: FilePath -> GUI provider model ()
