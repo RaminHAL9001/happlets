@@ -189,7 +189,7 @@ happlet provider (Initialize f) = do
 -- the 'Happlets.Model.GUI.GUI' back-end 'Happlets.Provider.Provider', it does not do anything on
 -- it's own. This function does not place a window on the screen, only the 'attachProvider' function
 -- can do that.
-newProvider :: Initialize provider (ProviderStateRef provider)
+newProvider :: Initialize provider (ProviderStateLock provider)
 newProvider = liftIO =<< asks doProviderNew <*> get
 
 -- | Create a new 'Happlets.Model.GUI.Happlet', which contains a document object model of any
@@ -219,7 +219,7 @@ newHapplet = liftIO . makeHapplet
 -- this.
 attachProvider
   :: Bool -- ^ make visible immediately?
-  -> (ProviderStateRef provider)
+  -> (ProviderStateLock provider)
       -- ^ the provider function that will actually realize the window
   -> Happlet model
       -- ^ the happlet to attach

@@ -3,8 +3,6 @@ module Happlets.Control.Keyboard where
 import           Happlets.Model.GUI
 import           Happlets.Control.InputDevice
 
-import           Control.Monad
-
 import           Data.Bits
 import qualified Data.Text as Strict
 import           Data.Word

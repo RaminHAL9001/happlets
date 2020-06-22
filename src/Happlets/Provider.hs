@@ -37,21 +37,22 @@ data Provider provider
 
       -- | This function creates a @provider@ without installing any event handlers, and without
       -- making the window visible. The @provider@ craeted can then have 'Happlet's attached to it
-      -- using 'doWindowAttach'.
-    , doProviderNew :: Config -> IO (ProviderStateRef provider)
+      -- using 'doWindowAttach'. In order to return a 'ProviderStateLock', it is necessary to
+      -- evaluate 'initProviderState'.
+    , doProviderNew :: Config -> IO (ProviderStateLock provider)
 
       -- | This function asks the operating system or desktop environment to delete the window
       -- associated with the given @provider@. If the 'Happlets.Config.quitOnWindowClose'
       -- configuration parameter is 'Prelude.True', calling this function should also quit the whole
       -- application.
-    , doProviderDelete :: ProviderStateRef provider -> IO ()
+    , doProviderDelete :: ProviderStateLock provider -> IO ()
 
       -- | This function deletes all event handlers currently installed into the @provider@ and
       -- evaluate a new 'Happlets.GUI.GUI' function which can install new event handlers.
     , doProviderAttach
         :: forall model
         .  Bool -- ^ whether or not to make the window visible
-        -> ProviderStateRef provider
+        -> ProviderStateLock provider
             -- ^ the window to which the 'Happlets.Happlet.Happlet' will be attached
         -> Happlet model -- ^ the 'Happlets.Happlet.Happlet' to attach.
         -> (PixSize -> GUI provider model ())
