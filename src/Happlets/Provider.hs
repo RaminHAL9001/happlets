@@ -49,6 +49,10 @@ data Provider provider
 
       -- | This function deletes all event handlers currently installed into the @provider@ and
       -- evaluate a new 'Happlets.GUI.GUI' function which can install new event handlers.
+      --
+      -- This function should only install the given initializing event handler and then immediately
+      -- return, it should not otherwise launch any threads, update the 'Happlet' model, or make any
+      -- synchronous calls.
     , doProviderAttach
         :: forall model
         .  Bool -- ^ whether or not to make the window visible

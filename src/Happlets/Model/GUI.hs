@@ -530,9 +530,9 @@ askHapplet = ask
 
 ----------------------------------------------------------------------------------------------------
 
--- Every Happlets provider must initialize the 'MonadProvider' class defining a monad that wraps all
--- stateful information necessary to interface Happlets to the low-level system executive. The data
--- structure that contains all of this state information must wrap it all in this
+-- | Every Happlets provider must initialize the 'MonadProvider' class defining a monad that wraps
+-- all stateful information necessary to interface Happlets to the low-level system executive. The
+-- data structure that contains all of this state information must wrap it all in this
 -- 'ProviderStateRef', and define exactly one 'ProviderStateRef' to be used for the duration of the
 -- application process lifespan. Construct a 'ProviderStateRef' with the 'initProviderState'
 -- function below.
@@ -611,7 +611,7 @@ class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider 
 -- The 'installEventHandler' function evaluates this function automatically while evaluating an
 -- event handler callback continuation.
 --
--- This thread acquires a lock on the 'ProviderStateRef', so when evaluating this function you be
+-- This thread acquires a lock on the 'ProviderStateLock', so when evaluating this function you be
 -- absolutely certain that either of the two following conditions are true:
 --
 -- 1. either this function is only ever evaluated in thread that is NOT the main GUI event handler
@@ -620,10 +620,10 @@ class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider 
 --    event handler loop to relenquish the lock on the 'ProviderStateRef' before the function
 --    continuation function @m a@ can be evaluated...
 --
--- 2. or, the main GUI event handler loop releases the 'ProviderStateRef' lock before dispatching to
---    all of the continuation functions to be evaluated in it's own thread, as each time a
---    continuation is evaluated the 'ProviderStateRef' is re-acquired for the duration of that
---    continuation's evaluation.
+-- 2. or, the main GUI event handler loop releases the 'ProviderStateLock' before dispatching to all
+--    of the continuation functions to be evaluated in it's own thread, as each time a continuation
+--    is evaluated the 'ProviderStateLock' is re-acquired for the duration of that continuation's
+--    evaluation.
 --
 runProviderOnLock
   :: (MonadIO m, MonadProvider provider m)

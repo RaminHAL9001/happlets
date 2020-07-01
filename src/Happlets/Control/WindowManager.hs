@@ -27,10 +27,8 @@ class Managed provider where
 
   -- | Set the window size. The window manager may disallow this. The new window size is returned
   -- after resizing.
-  setWindowRectangle :: Rect2D SampCoord -> GUI provider model (Rect2D SampCoord)
-
   windowSize :: Variable (GUI provider model) (Rect2D SampCoord)
 
   -- | Set or get whether the window is decorated (meaning, whether or not it has a border and title
   -- bar).
-  windowDecorated :: Variable (GUI provider model) PixSize
+  windowDecorated :: Variable (GUI provider model) Bool

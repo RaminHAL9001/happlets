@@ -63,7 +63,7 @@ library
     ScopedTypeVariables
     StandaloneDeriving
   ghc-options:
-    -Wall -fno-warn-name-shadowing -fno-warn-unused-do-bind
+    -Wall -Werror -fno-warn-name-shadowing -fno-warn-unused-do-bind
   build-depends:
       base
     , containers
