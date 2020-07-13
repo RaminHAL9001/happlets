@@ -6,7 +6,7 @@ module Happlets.View.Canvas where
 import           Happlets.Model.GUI
 import           Happlets.View.Types2D
 import           Happlets.Control.Resize
-import           Happlets.Provider.Variable
+import           Happlets.Provider.ConfigState
 
 import           Control.Exception
 
@@ -51,7 +51,7 @@ class HappletWindow provider render | provider -> render where
   --
   -- This function is essential to widget libraries, as every widget must set it's own clip region
   -- before drawing itself.
-  windowClipRegion :: Variable (GUI provider model) (Maybe (Rect2D SampCoord))
+  windowClipRegion :: ConfigState (GUI provider model) (Maybe (Rect2D SampCoord))
 
   -- | Construct a 'GUI' function which evaluates a @render@ function that updates the happlet's own
   -- "canvas", which is an image buffer accessible only to your happlet, (it serves as the invisible
@@ -111,7 +111,7 @@ class MonadIO render
   -- img <- 'newImageBuffer' ('V2' 540 270) ('clearScreen' 'white')
   -- 'setEnv' ('imageCanvasResizeMode' img) 'CanvasResizeClear'
   -- @
-  imageCanvasResizeMode :: Variable (GUI provider model) CanvasResizeMode
+  imageCanvasResizeMode :: ConfigState (GUI provider model) CanvasResizeMode
 
   -- | Resize the image buffer.
   resizeImageBuffer :: PixSize -> render a -> GUI provider model a

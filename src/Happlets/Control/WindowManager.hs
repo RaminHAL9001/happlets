@@ -5,7 +5,7 @@
 module Happlets.Control.WindowManager where
 
 import           Happlets.Model.GUI
-import           Happlets.Provider.Variable
+import           Happlets.Provider.ConfigState
 import           Happlets.View.Types2D
 
 -- | Windows that are manageable are part of multi-window GUI operating systems where a window
@@ -23,12 +23,12 @@ class Managed provider where
   -- | This function asks the operating system or desktop environment to show or hide the window
   -- associated with the given @provider@. This should trigger a call to the event handler set by
   -- 'visibleEvents'.
-  windowVisible :: Variable (GUI provider model) Bool
+  windowVisible :: ConfigState (GUI provider model) Bool
 
   -- | Set the window size. The window manager may disallow this. The new window size is returned
   -- after resizing.
-  windowSize :: Variable (GUI provider model) (Rect2D SampCoord)
+  windowSize :: ConfigState (GUI provider model) (Rect2D SampCoord)
 
   -- | Set or get whether the window is decorated (meaning, whether or not it has a border and title
   -- bar).
-  windowDecorated :: Variable (GUI provider model) Bool
+  windowDecorated :: ConfigState (GUI provider model) Bool

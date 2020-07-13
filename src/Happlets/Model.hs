@@ -1,8 +1,8 @@
 module Happlets.Model
-  ( module Happlets.Model.Initialize,
+  ( module Happlets.Initialize,
     module Happlets.Model.GUI
   )
   where
 
-import Happlets.Model.Initialize
+import Happlets.Initialize
 import Happlets.Model.GUI

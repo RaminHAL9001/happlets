@@ -2,7 +2,7 @@ module Happlets.Control.Resize where
 
 import           Happlets.Model.GUI
 import           Happlets.View.SampCoord
-import           Happlets.Provider.Variable
+import           Happlets.Provider.ConfigState
 
 ----------------------------------------------------------------------------------------------------
 
@@ -60,4 +60,4 @@ class CanResize provider where
     -> (OldPixSize -> NewPixSize -> GUI provider model ())
     -> GUI provider model ()
 
-  windowResizeMode :: Variable (GUI provider model) CanvasResizeMode
+  windowResizeMode :: ConfigState (GUI provider model) CanvasResizeMode

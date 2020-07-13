@@ -21,10 +21,8 @@ library
   hs-source-dirs: src
   exposed-modules:
     Happlets
-    Happlets.Config
     Happlets.Model
     Happlets.Model.Audio
-    Happlets.Model.Initialize
     Happlets.Model.GUI
     Happlets.Model.Worker
     Happlets.Control
@@ -35,9 +33,9 @@ library
     Happlets.Control.Resize
     Happlets.Control.Trackpad
     Happlets.Control.WindowManager
-    Happlets.Provider
+    Happlets.Initialize
     Happlets.Provider.React
-    Happlets.Provider.Variable
+    Happlets.Provider.ConfigState
     Happlets.View
     Happlets.View.Audio
     Happlets.View.Canvas

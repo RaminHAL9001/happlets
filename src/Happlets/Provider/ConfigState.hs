@@ -2,7 +2,7 @@
 -- that is to say, these are impure, stateful setters and getters.  Unlike lenses, can modify impure
 -- stateful values and also, as a side effect, send a signal triggering an update to respond to a
 -- change in state.
-module Happlets.Provider.Variable where
+module Happlets.Provider.ConfigState where
 
 import           Control.Lens (Lens', assign, use)
 import           Control.Monad.State.Class
@@ -25,28 +25,28 @@ import           Control.Monad.State.Class
 -- @
 -- 'setEnv' 'Happlets.Draw.foreColor' 'Happlets.Draw.Color.red'
 -- @
-data Variable m a
-  = Variable
-    { getEnv :: m a
+data ConfigState m a
+  = ConfigState
+    { getConfig :: m a
       -- ^ Get a value from the context, and possibly execute a side-effect (like setting a counter)
-    , setEnv :: a -> m ()
+    , setConfig :: a -> m ()
       -- ^ Set a value in the context, and possibly execute a side-effect (like redrawing an image).
     }
 
-updateEnv :: Monad m => Variable m a -> (a -> a) -> m ()
-updateEnv ctx f = getEnv ctx >>= setEnv ctx . f
+updateConfig :: Monad m => ConfigState m a -> (a -> a) -> m ()
+updateConfig ctx f = getConfig ctx >>= setConfig ctx . f
 
-variableFromLens :: MonadState st m => Lens' st a -> Variable m a
-variableFromLens lens = Variable
-  { setEnv = assign lens
-  , getEnv = use lens
+configStateWithLens :: MonadState st m => Lens' st a -> ConfigState m a
+configStateWithLens lens = ConfigState
+  { setConfig = assign lens
+  , getConfig = use lens
   }
 
-fmapVariableMonad
+fmapConfigStateMonad
   :: (Monad m0, Monad m1)
   => (forall any . m0 any -> m1 any)
-  -> Variable m0 a -> Variable m1 a
-fmapVariableMonad f var = Variable
-  { setEnv = f <$> setEnv var
-  , getEnv = f $ getEnv var
+  -> ConfigState m0 a -> ConfigState m1 a
+fmapConfigStateMonad f var = ConfigState
+  { setConfig = f <$> setConfig var
+  , getConfig = f $ getConfig var
   }
