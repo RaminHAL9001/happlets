@@ -26,10 +26,13 @@
 -- After setting the 'Happlets.Config.Config' paramters, you must:
 --
 -- 1. call 'newProvider' to create a new provider,
+--
 -- 2. call 'newHapplet' to create a new 'Happlets.Model.GUI.Happlet' container which contains your
 --    document object model.
--- 3. call 'attachProvider' to attach the 'Happlets.Model.GUI.Happlet' to the provider, passing an
+--
+-- 3. call 'attachWindow' to attach the 'Happlets.Model.GUI.Happlet' to the provider, passing an
 --    initializing 'Happlets.Model.GUI.GUI' function to setup the event handlers.
+--
 -- 4. if necessary, call 'deleteProvider'.
 --
 -- @
@@ -55,10 +58,10 @@
 --     ---
 --     --- attaching the happlet container to the window and initializing the event handlers ---
 --     ---
---     'attachProvider' pro happ initMyHapplet
+--     'attachWindow' pro happ initMyHapplet
 -- @
 --
--- The initializing function passed to 'attachProvider' takes a 'Happlets.Draw.SampCoord.PixSize',
+-- The initializing function passed to 'attachWindow' takes a 'Happlets.Draw.SampCoord.PixSize',
 -- so if your document model contains information sensitive to the geometry of the window, you can
 -- initialize your document model using the given window size.
 --
@@ -107,7 +110,7 @@ instance MonadState Config (Initialize provider) where
 -- 'Happlets.Provider.Provider', a stateful function for updating the default
 -- 'Happlets.Config.Config', an initial @model@, and an initial 'Happlets.Model.GUI.GUI' function
 -- for installing the 'Happlets.Model.GUI.Happlet' event handlers. This function will automatically
--- call 'newHapplet', 'newProvider', 'attachProvider', 'happlet', and then
+-- call 'newHapplet', 'newProvider', 'attachWindow', 'happlet', and then
 -- return when the GUI event loop halts. Here is an example of how you might use it:
 --
 -- @
@@ -185,15 +188,18 @@ happlet provider (Initialize f) = do
   liftIO $ doGUIEventLoopLaunch provider config
   return a
 
--- | Create a new @provider@. The @provider@ itself only contains stateful information relevant to
--- the 'Happlets.Model.GUI.GUI' back-end 'Happlets.Provider.Provider', it does not do anything on
--- it's own. This function does not place a window on the screen, only the 'attachProvider' function
--- can do that.
+-- | The @provider@ is the abstraction for the operating system and desktop environment that hosts
+-- the Happlet API, before you begin creating Happlets you must have had a provider libary
+-- installed.
+--
+-- This function creates a new @provider@ state data structure and keep it in a thread-safe lock of
+-- type 'ProviderStateLock', but it does not place a window on the screen. Only the 'attachWindow'
+-- function can place a window on the screen.
 newProvider :: Initialize provider (ProviderStateLock provider)
 newProvider = liftIO =<< asks doProviderNew <*> get
 
 -- | Create a new 'Happlets.Model.GUI.Happlet', which contains a document object model of any
--- type. When you call 'attachProvider' you must supply this 'Happlets.Model.GUI.Happlet' container
+-- type. When you call 'attachWindow' you must supply this 'Happlets.Model.GUI.Happlet' container
 -- along with a 'Happlets.Model.GUI.GUI' function that installs all the necessary event handlers
 -- into the @provider@. As the @provider@ begins reciving events from the operating system's window
 -- manager, these event handlers are evaluated, and the content of this 'Happlets.Model.GUI.Happlet'
@@ -205,28 +211,25 @@ newProvider = liftIO =<< asks doProviderNew <*> get
 newHapplet :: model -> Initialize provider (Happlet model)
 newHapplet = liftIO . makeHapplet
 
--- | This function evaluates the given 'Happlets.Model.GUI.GUI' function to install
--- 'Happlets.Model.GUI.GUI' event handlers into the @provider@ that can modify the content of the
--- 'Happlets.Model.GUI.Happlet' container in response to events received from the operating system's
--- window manager.
+-- | This function evaluates the "main" 'Happlets.Model.GUI.GUI' function with a Happlet system
+-- provider created by 'newProvider'. The 'ProviderStateLock' creates
 --
 -- Note that it is possible to detach a 'Happlets.Model.GUI.Happlet' container from a @provider@ and
 -- re-attach the @provider@ to an entirely different type of 'Happlets.Model.GUI.Happlet' container
--- using the 'Happlets.Model.GUI.providerChangeHapplet' function as the program is running and
--- receiving events. This allows a single @provider@ to switch between multiple
--- 'Happlets.Model.GUI.Happlet's during program execution. Please refer to the
--- 'Happlets.Model.GUI.providerChangeHapplet' function documentation for information about how to do
--- this.
-attachProvider
-  :: Bool -- ^ make visible immediately?
-  -> (ProviderStateLock provider)
+-- using the 'Happlets.Model.GUI.changeRootHapplet' function as the program is running and receiving
+-- events. This allows a single @provider@ to switch between multiple 'Happlets.Model.GUI.Happlet's
+-- during program execution. Please refer to the 'Happlets.Model.GUI.changeRootHapplet' function
+-- documentation for information about how to do this.
+attachWindow
+  :: ProviderStateLock provider
       -- ^ the provider function that will actually realize the window
+  -> Bool -- ^ make visible immediately?
   -> Happlet model
       -- ^ the happlet to attach
   -> (PixSize -> GUI provider model ())
       -- ^ the GUI initializer that will install event handlers
   -> Initialize provider ()
-attachProvider vis win happ init = liftIO =<<
+attachWindow win vis happ init = liftIO =<<
   asks doProviderAttach <*> pure vis <*> pure win <*> pure happ <*> pure init
 
 ---- | This function launches the GUI event loop. This function is called automatically by the

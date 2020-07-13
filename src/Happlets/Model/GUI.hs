@@ -564,7 +564,7 @@ class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider 
   runProviderIO :: m a -> provider -> IO (a, provider)
 
   -- | When a context switch is performed, this value is set with a continuation to be called after
-  -- the 'windowChangeHapplet' function completes. After evaluation of the 'GUI' function completes,
+  -- the 'changeRootHapplet' function completes. After evaluation of the 'GUI' function completes,
   -- the state is evaluated -- every single event handler will evaluate this function. To ensure
   -- that nothing happens unless it is set, this lens is used to set the callback to @return ()@ (a
   -- no-op) prior to evaluation of the 'GUI' procedure in the 'providerLiftGUI' function.

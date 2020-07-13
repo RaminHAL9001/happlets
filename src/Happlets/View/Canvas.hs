@@ -37,7 +37,7 @@ import qualified Data.Text                as Strict
 -- temporary image and redrawing that part of the window with the __canvas__ buffer, and draw the
 -- cursor again at the new mouse location.
 class HappletWindow provider render | provider -> render where
-  -- | This event handler is called when 'windowChangeHapplet' is called, allowing one final event
+  -- | This event handler is called when 'changeRootHapplet' is called, allowing one final event
   -- handler to be called for cleaning-up, before the current 'Happlet' is detached from the
   -- @provider@.
   changeEvents :: GUI provider oldmodel () -> GUI provider oldmodel ()
@@ -48,6 +48,9 @@ class HappletWindow provider render | provider -> render where
   -- function. Only the top element of the clip region stack is used, the remainder of the stack is
   -- ignored. Setting 'Nothing' clears the region so that drawing operations can be applied to the
   -- entire window.
+  --
+  -- This function is essential to widget libraries, as every widget must set it's own clip region
+  -- before drawing itself.
   windowClipRegion :: Variable (GUI provider model) (Maybe (Rect2D SampCoord))
 
   -- | Construct a 'GUI' function which evaluates a @render@ function that updates the happlet's own
@@ -101,8 +104,8 @@ data CanvasIOError
 
 class MonadIO render
   => HappletPixelBuffer provider render | provider -> render where
-  -- | Change the 'CanvasResizeMode' value associated with the @image@ value. Example of how to you might
-  -- use this variable:
+  -- | Change the 'CanvasResizeMode' value associated with the @image@ value. Example of how to you
+  -- might use this variable:
   --
   -- @
   -- img <- 'newImageBuffer' ('V2' 540 270) ('clearScreen' 'white')
