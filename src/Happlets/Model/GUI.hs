@@ -40,7 +40,9 @@ module Happlets.Model.GUI
     -- * The GUI Function Type
     GUI, onSubModel, getModel, getSubModel, putModel, modifyModel,
     changeRootHapplet, cancelNow, cancelIfBusy, howBusy, deleteEventHandler,
-    forkGUI, bracketGUI, guiCatch,
+
+    -- ** GUI Threads
+    SendGUISignal, forkGUI, bracketGUI, guiCatch,
 
     -- ** The Display Typeclass
     Display(..), DrawableRef(..), drawableEmptyRef,
@@ -823,27 +825,53 @@ class (MonadIO m, MonadProvider provider m) =>
     providerRunSync :: ProviderStateLock provider -> m () -> IO ()
     providerRunSync = runProviderOnLock
 
--- | Works similar to 'forkIO' but for the 'GUI' function type, with one very big caveat:
+-- | Functions of this type are created by the 'forkGUI' function and passed as an argument to the
+-- function that will be evaluated in a separate parallel thread. Functions of this type take a
+-- signal function of type 'GUI'. The 'SendGUISignal' function sends the 'GUI' function as a signql
+-- to be evaluated in the 'GUI' @provider@ and @model@ context that created this function.
+type SendGUISignal provider model = GUI provider model () -> IO ()
+
+-- | The 'forkGUI' function is evaluated in a 'GUI' function context, let's call this the "parent"
+--  context, and will copy the @'Happlet' model@ and provider of the parent 'GUI' context. Then it
+--  will create two things:
 --
+-- 1. a 'SendGUISignal' function which can be evaluated an unlimited number of times, and
+--
+-- 2. a new parallel thread of computation (using 'forkIO') that operates independently of the
+--    'GUI', let's call this the "child" thread.
+-- 
+-- The "child thread" will evaluate a function of type 'IO' (which would typically be used to make
+-- observations or stateful changes to the operating system environment), and the child can make
+-- updates to the @model@ and @provider@ of the parent context by sending a 'GUI' function as a
+-- signal via a 'SendGUISignal' function. Every time a 'GUI' function is sent, it is evaluated in
+-- the parent 'GUI' function context, possibly causing an update in the @model@ and @provider@.
+--
+-- 'forkGUI' is a good way to create threads that block while waiting for some external event, for
+-- example to receive some information on a socket, and then when the event occurs, it call the
+-- given 'SendGUISignal' to send it's own event signal that performs some update on the 'GUI'.
+--
+-- __Note for providers:__
+-- 
 -- Some providers, notably providers with cooperative multi-tasking, rather than true
 -- multi-threading, will not actually allow you to make modifiations to the GUI's internal state in
 -- a separate thread. For these providers, what 'forkGUI' will actually do is create a new Haskell
--- thread (using 'forkIO', which creates a ligthweight thread in Haskell's runtime system), and this
--- thread will actually send the 'GUI' function you give it here synchronously to the task
--- dispatcher in the GUI provider to be evaluated. Since it is synchronous, Haskell thread will
--- block until the GUI task dispatcher fully evalutes the 'GUI' function. The task dispatcher
--- prevents race conditions by ensuring that only one task can update the GUI's internal state at a
--- time, by running only one task at a time, so it is really not parallel function evaluation at
--- all.
+-- thread (using 'forkIO', which creates a ligthweight thread in Haskell's runtime system), and the
+-- resultant 'SendGUISignal' function will actually send the 'GUI' function you give it here
+-- synchronously to the task dispatcher in the GUI provider to be evaluated. Since it is
+-- synchronous, the Haskell thread will block until the GUI task dispatcher fully evalutes the 'GUI'
+-- function. The task dispatcher prevents race conditions by ensuring that only one task can update
+-- the GUI's internal state at a time, by running only one task at a time, so it is really not
+-- parallel function evaluation at all.
 --
 -- However, the Haskell thread created that blocks on the GUI provider's task dispatcher will not
--- block other Haskell threads, so if the Happlet application is compiled with the @-threaded@ flag,
--- there can still be true multi-threading in the application.
+-- block other Haskell threads, so as long as the Happlet application is compiled with the
+-- @-threaded@ flag, there can still be true multi-threading in the application (e.g. while waiting
+-- for messags on a socket) even if there is no multi-threading in the GUI.
 forkGUI
   :: ProviderSyncCallback provider m
-  => GUI provider model () -> GUI provider model ThreadId
-forkGUI f = do
+  => (SendGUISignal provider model -> IO ()) -> GUI provider model ThreadId
+forkGUI child = do
   guist <- getGUIState
-  liftIO $ forkIO $
-    providerRunSync (providerSharedState $ theGUIProvider guist) $
-    void $ providerLiftGUI (theGUIHapplet guist) f
+  liftIO $ forkIO $ child $
+    providerRunSync (providerSharedState $ theGUIProvider guist) .
+    void . providerLiftGUI (theGUIHapplet guist)
