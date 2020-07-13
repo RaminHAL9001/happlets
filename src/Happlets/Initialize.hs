@@ -92,7 +92,7 @@ module Happlets.Initialize
     -- 'Happlets.Provider.ConfigState.ConfigState' settings can be changed while the Happlet program
     -- is running.
 
-    HappletInitConfig,
+    HappletInitConfig, happletInitConfig,
     InitConfigException(..), StrictFilePath,
     sanitizeName, initConfigErrorsOnLoad, clearInitConfigErrors, initConfigFilePath,
     registeredAppName, initWindowTitleBar, initBackgroundTransparency, initBackgroundGreyValue,
@@ -303,7 +303,7 @@ instance Exception InitConfigException where {}
 data HappletInitConfig
   = HappletInitConfig
     { theConfigErrorsOnLoad      :: [InitConfigException]
-    , theConfigFilePath          :: StrictFilePath
+    , theInitConfigFilePath      :: StrictFilePath
     , theRegisteredAppName       :: Strict.Text
     , theWindowTitleBar          :: Strict.Text
     , theBackgroundTransparency  :: (Maybe Double)
@@ -316,6 +316,22 @@ data HappletInitConfig
     , willDeleteWindowOnClose    :: Bool
     }
   deriving (Eq, Show)
+
+happletInitConfig :: HappletInitConfig
+happletInitConfig = HappletInitConfig
+  { theConfigErrorsOnLoad = []
+  , theInitConfigFilePath = ""
+  , theRegisteredAppName = "Happlet"
+  , theWindowTitleBar = "Happlet"
+  , theBackgroundTransparency = Nothing
+  , theBackgroundGreyValue = 1.0
+  , theRecommendWindowPosition = (0, 0)
+  , theRecommendWindowSize = (768, 512)
+  , theAnimationFrameRate = 24.0
+  , willDecorateWindow = True
+  , willQuitOnWindowClose = True
+  , willDeleteWindowOnClose = True
+  }
 
 -- | A string sanitizer for applied to strings assigned to 'registeredAppName' and 'initWindowTitleBar'.
 sanitizeName :: Strict.Text -> Strict.Text
@@ -345,22 +361,22 @@ clearInitConfigErrors c = c{ theConfigErrorsOnLoad = [] }
 
 -- | Reports the file path from which this config file was loaded, or a null string if this has not
 -- been set.
-initConfigFilePath :: HappletInitConfig -> StrictFilePath
-initConfigFilePath = theConfigFilePath
+initConfigFilePath :: Lens' HappletInitConfig StrictFilePath
+initConfigFilePath = lens theInitConfigFilePath $ \ a b -> a{ theInitConfigFilePath = b }
 
 -- | Gtk+ apps can register your GHCi/Happlet process with the window manager under a specific name,
 -- which you can specify here. Using this lens to set a null name will not result in an error but
 -- the update will not occur.
 registeredAppName :: Lens' HappletInitConfig Strict.Text
-registeredAppName = lens theRegisteredAppName $ \ b -> sanitizeName >>> \ a ->
-  if Strict.null a then b else b{ theRegisteredAppName = sanitizeName a }
+registeredAppName = lens theRegisteredAppName $ \ a -> sanitizeName >>> \ b ->
+  if Strict.null b then a else a{ theRegisteredAppName = sanitizeName b }
 
 -- | Most window managers depict a title bar above every window that displays a descriptive name of
 -- the content of that window. Specify that name here. Using this lens to set a title name will not
 -- result in an error but the update will not occur.
 initWindowTitleBar :: Lens' HappletInitConfig Strict.Text
-initWindowTitleBar = lens theWindowTitleBar $ \ b -> sanitizeName >>> \ a ->
-  if Strict.null a then b else b{ theWindowTitleBar = sanitizeName a }
+initWindowTitleBar = lens theWindowTitleBar $ \ a -> sanitizeName >>> \ b ->
+  if Strict.null b then a else a{ theWindowTitleBar = sanitizeName b }
 
 -- | When the window is created, setting this parameter to a non-'Prelude.Nothing' value determines
 -- whether an image buffer in memory is allocated with enough memory for an alpha channel, so that
@@ -369,27 +385,27 @@ initWindowTitleBar = lens theWindowTitleBar $ \ b -> sanitizeName >>> \ a ->
 -- opaque. However not all window managers will allow for windows with alpha channels, so this may
 -- not work depending on how the GUI of your opreating system has been configured.
 initBackgroundTransparency :: Lens' HappletInitConfig (Maybe Double)
-initBackgroundTransparency = lens theBackgroundTransparency $ \ b a -> b{ theBackgroundTransparency=a }
+initBackgroundTransparency = lens theBackgroundTransparency $ \ a b -> a{ theBackgroundTransparency=b }
 
 -- | The default background "color", actually a gray value since no one in their right mind would
 -- choose a non-grey solid color background for their applet. 0 is black, 1 is white, and everything
 -- in between 0 and 1 are valid grey values.
 initBackgroundGreyValue :: Lens' HappletInitConfig Double
-initBackgroundGreyValue = lens theBackgroundGreyValue $ \ b a -> b{ theBackgroundGreyValue=a }
+initBackgroundGreyValue = lens theBackgroundGreyValue $ \ a b -> a{ theBackgroundGreyValue=b }
 
 -- | Recommend to the window manager where to place the window. Pass @(0,0)@ to let the window
 -- manager choose.
 recommendWindowPosition :: Lens' HappletInitConfig (Int, Int)
-recommendWindowPosition = lens theRecommendWindowPosition $ \ b a -> b{ theRecommendWindowPosition=a }
+recommendWindowPosition = lens theRecommendWindowPosition $ \ a b -> a{ theRecommendWindowPosition=b }
 
 -- | Recommend to the window manager how large to make the window. Pass @(0,0)@ to let the
 -- window manager choose.
 recommendWindowSize :: Lens' HappletInitConfig (Int, Int)
-recommendWindowSize = lens theRecommendWindowSize $ \ b a -> b{ theRecommendWindowSize=a }
+recommendWindowSize = lens theRecommendWindowSize $ \ a b -> a{ theRecommendWindowSize=b }
 
 -- | Recommend the frame rate to use when installing animation event handlers.
 animationFrameRate :: Lens' HappletInitConfig Double
-animationFrameRate = lens theAnimationFrameRate $ \ b a -> b{ theAnimationFrameRate=a }
+animationFrameRate = lens theAnimationFrameRate $ \ a b -> a{ theAnimationFrameRate=b }
 
 -- | For window managers that allow windows to be created without a titlebar, close\/minimize\/hide
 -- buttons, or other visible controls (on Linux systems, "reparenting" window managers will do
@@ -399,21 +415,21 @@ animationFrameRate = lens theAnimationFrameRate $ \ b a -> b{ theAnimationFrameR
 -- always set to 'Prelude.True'. Other reparenting window managers may simply ignore this option, in
 -- which case the Happlet window will behave as if this parameters is always set to 'Prelude.False'.
 initDecorateWindow :: Lens' HappletInitConfig Bool
-initDecorateWindow = lens willDecorateWindow $ \ b a -> b{ willDecorateWindow = a }
+initDecorateWindow = lens willDecorateWindow $ \ a b -> a{ willDecorateWindow = b }
 
 -- | If the Happlet window is closed, halt the GUI event loop, returning control to the @main@
 -- function. If the 'gtkLaunchEventLoop' is the final function called in @main@ the Haskell program
 -- will end. If you would like your GUI application to have multiple windows open, this value should
 -- be set to 'False'. By default, this value should be set to 'True'.
 quitOnWindowClose :: Lens' HappletInitConfig Bool
-quitOnWindowClose = lens willQuitOnWindowClose $ \ b a -> b{ willQuitOnWindowClose = a }
+quitOnWindowClose = lens willQuitOnWindowClose $ \ a b -> a{ willQuitOnWindowClose = b }
 
 -- | If the Happlet window is closed, the image buffer allocated for it should be
 -- deleted. Otherwise, the Happlet window is simply made invisible when it is closed, and the image
 -- buffer is not deleted. Of course, if 'quitOnWindowClose' is set to 'Prelude.True', the entire
 -- program may quit even if this parameter is set to 'Prelude.False'.
 deleteWindowOnClose :: Lens' HappletInitConfig Bool
-deleteWindowOnClose = lens willDeleteWindowOnClose $ \ b a -> b{ willDeleteWindowOnClose = a }
+deleteWindowOnClose = lens willDeleteWindowOnClose $ \ a b -> a{ willDeleteWindowOnClose = b }
 
 ----------------------------------------------------------------------------------------------------
 
