@@ -260,12 +260,12 @@ line2D :: Num n => Line2D n
 line2D = Line2D point2D point2D
 
 -- | The point at which drawing of a line segment begins.
-line2DHead :: Lens' (Line2D n) (Point2D n)
-line2DHead = lens (\ (Line2D a _) -> a) $ \ (Line2D _ b) a -> Line2D a b
+line2DTail :: Lens' (Line2D n) (Point2D n)
+line2DTail = lens (\ (Line2D a _) -> a) $ \ (Line2D _ b) a -> Line2D a b
 
 -- | The point at which drawing of a line segment ends.
-line2DTail :: Lens' (Line2D n) (Point2D n)
-line2DTail = lens (\ (Line2D _ b) -> b) $ \ (Line2D a _) b -> Line2D a b
+line2DHead :: Lens' (Line2D n) (Point2D n)
+line2DHead = lens (\ (Line2D _ b) -> b) $ \ (Line2D a _) b -> Line2D a b
 
 -- | Expresses a 'Line2D' as a tuple of 'Point2D' values.
 line2DPoints :: Iso' (Line2D n) (Point2D n, Point2D n)
@@ -278,17 +278,17 @@ rect2D :: Num n => Rect2D n
 rect2D = Rect2D point2D point2D
 
 -- | The point at which drawing of a bounding rectangle begins.
-rect2DHead :: Lens' (Rect2D n) (Point2D n)
-rect2DHead = lens (\ (Rect2D a _) -> a) $ \ (Rect2D a _) b -> Rect2D a b
+rect2DTail :: Lens' (Rect2D n) (Point2D n)
+rect2DTail = lens (\ (Rect2D tail _) -> tail) $ \ (Rect2D _ head) tail -> Rect2D tail head
 
 -- | The point at which drawing of a bounding rectangle ends.
-rect2DTail :: Lens' (Rect2D n) (Point2D n)
-rect2DTail = lens (\ (Rect2D _ b) -> b) $ \ (Rect2D _ b) a -> Rect2D a b
+rect2DHead :: Lens' (Rect2D n) (Point2D n)
+rect2DHead = lens (\ (Rect2D _ head) -> head) $ \ (Rect2D tail _) head -> Rect2D tail head
 
 -- | The width and height of a 'Rect2D'. Note that this is not a lens, since there are multiple
 -- possible ways to "set" the size of a 'Rect2D'.
 rect2DSize :: Num n => Rect2D n -> Size2D n
-rect2DSize (Rect2D a b) = b - a
+rect2DSize (Rect2D tail head) = head - tail
 
 -- | Computes the center point of the given 'Rect2D'.
 rect2DCenter :: Fractional n => Rect2D n -> Point2D n
@@ -347,8 +347,8 @@ rect2DDiagonal (Rect2D a b) = Line2D a b
 -- | Evaluate 'floor' on the 'rect2DHead and 'ceiling' on the 'rect2DTail'.
 rect2DtoInt :: (RealFrac n, Integral i) => Rect2D n -> Rect2D i
 rect2DtoInt r = rect2D
-  & rect2DHead .~ (floor <$> (r ^. rect2DHead))
-  & rect2DTail .~ (ceiling <$> (r ^. rect2DTail))
+  & rect2DTail .~ (floor <$> (r ^. rect2DTail))
+  & rect2DHead .~ (ceiling <$> (r ^. rect2DHead))
 
 ----------------------------------------------------------------------------------------------------
 
