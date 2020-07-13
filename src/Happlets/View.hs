@@ -13,12 +13,12 @@ module Happlets.View
     PaintSource(..), GradientType(..), GradientStopList, GradientStop(..),
     gradStopsFromList, gradStopsToList, gradStopPoint, gradStopColor,
     -- * Geometric Shapes
-    Happlet2DGeometry(..),
+    Happlet2DGeometry(..), Happlet2DHasDrawing(..), defaultClearScreen,
     -- ** Line Style
     HasLineStyle(..), LineStyle(..), theLineColour,
     makeLineStyle, lineColor, lineColour, lineWeight,
     -- * Image Buffers
-    Happlet2DBuffersPixels(..), Source, Target,
+    Happlet2DBuffersPixels(..), Happlet2DHasPattern(..), Source, Target,
     -- * Re-Exports
     module Happlets.View.Color,
     module Happlets.View.SampCoord,
@@ -34,8 +34,9 @@ import           Happlets.View.Text
 import           Happlets.View.Types2D
 import           Happlets.Provider.ConfigState
 
-import           Control.Lens (Lens', lens)
+import           Control.Lens (Lens', lens, (.=))
 import           Control.Monad.IO.Class
+import           Control.Monad.State.Class(MonadState)
 
 import qualified Data.Vector.Unboxed as UVec
 import           Data.Word
@@ -156,29 +157,38 @@ class (Functor render, Applicative render, Monad render, MonadIO render)
   -- not been set, then this function does nothing.
   stroke :: render ()
 
-  -- | Set the blit operator used when drawing pixels with 'fill' and 'stroke'. The default operator
-  -- should always be 'BlitSource'.
-  blitOperator :: ConfigState render BlitOperator
+  -- | Set all pixels in the screen graphics to the same color value given by the 'fillColor',
+  -- deleting all graphics that existed prior. This function does not reset the 'clipRegion'.
+  clearScreen :: Happlet2DGraphics render => Color -> render ()
 
-  -- | Set the forground paint source, which could be a solid color or a gradient.
-  fillColor :: ConfigState render PaintSource
-
-  -- | Set the line paint source, which could be a solid color or a gradient.
-  strokeColor :: ConfigState render PaintSource
+class Happlet2DHasDrawing renderState where
 
   -- | Set the clipping rectangle. This is used when you want to restrict the drawing to a
   -- sub-region of the canvas. Note that this clip region will be a sub-region of the
   -- 'Happlets.GUI.windowClipRegion'.
-  clipRegion :: ConfigState render (Rect2D SampCoord)
+  clipRegion :: Lens' renderState (Rect2D SampCoord)
 
-  -- | Set all pixels in the screen graphics to the same color value given by the 'fillColor',
-  -- deleting all graphics that existed prior. This function does not reset the 'clipRegion'.
-  clearScreen :: Happlet2DGraphics render => Color -> render ()
-  clearScreen c = tempContext $ do
-    resetGraphicsContext
-    setConfig fillColor $ PaintSolidColor c
-    setConfig blitOperator BlitSource
-    fill
+  -- | Set the blit operator used when drawing pixels with 'fill' and 'stroke'. The default operator
+  -- should always be 'BlitSource'.
+  blitOperator :: Lens' renderState BlitOperator
+
+  -- | Set the forground paint source, which could be a solid color or a gradient.
+  fillColor :: Lens' renderState PaintSource
+
+  -- | Set the line paint source, which could be a solid color or a gradient.
+  strokeColor :: Lens' renderState PaintSource
+
+-- | This function provides a default implementation for 'clearScreen' for the 'Happlet2DGraphics'
+-- typeclass, as long as the @render@ function that instantiates the 'Happlet2DGraphics' typeclass
+-- also instantiates the 'Happle2DHasDrawing' typeclass as well.
+defaultClearScreen
+  :: (MonadState renderState render, Happlet2DHasDrawing renderState, Happlet2DGraphics render)
+  => Color -> render ()
+defaultClearScreen c = tempContext $ do
+  resetGraphicsContext
+  fillColor    .= PaintSolidColor c
+  blitOperator .= BlitSource
+  fill
 
 -- | The primitive functions given in this typeclass, namely the 'shape' drawing functions, should
 -- install image drawing procedures into the @render@'s internal state and then the 'fill' and
@@ -190,43 +200,46 @@ class (Functor render, Applicative render, Monad render, MonadIO render)
 -- which will typically be 'Int', or perhaps 'Float' or 'Double' (as is the case with Cairo
 -- Graphics). However, this class does not care what the @dim@ type is, only that it be instantiated
 -- in conjunction with the @render@ function type.
-class Happlet2DGraphics render => Happlet2DGeometry render dim where
+class Happlet2DGeometry renderState dim where
 
   -- | Set the 'Draw2DShape' function to be used for a 'stroke' or 'fill' operation.
-  shape :: ConfigState render (Draw2DShape dim)
+  shape :: Lens' renderState (Draw2DShape dim)
 
   -- | Set the thickness or "weight" of the lines drawn by 'strokeLine', 'strokeRect', and
   -- 'strokeArc' functions.
-  strokeWeight :: ConfigState render (LineWidth dim)
+  strokeWeight :: Lens' renderState (LineWidth dim)
 
   -- | Before blitting, you can also set a transformation matrix that tells the blit operation to
   -- rotate, scale, translate, or skew, or any of the above.
-  blitTransform :: ConfigState render (Transform2D dim)
+  blitTransform :: Lens' renderState (Transform2D dim)
 
   -- | If the 'PaintSource' is a gradient, or perhaps a pixel buffer given by the 'fillPattern'
   -- 'ConfigState', then you may want to apply a transformation to the pattern before blitting.
-  patternTransform :: ConfigState render (Transform2D dim)
+  patternTransform :: Lens' renderState (Transform2D dim)
 
 -- | This class extends the 'Happlet2DGraphics' class with operators for copying sections of the
 -- operand canvas into a pixel buffer.
-class Happlet2DGraphics render => Happlet2DBuffersPixels render pixbuf where
+class (Functor render, Applicative render, Monad render, MonadIO render)
+  => Happlet2DBuffersPixels render pixbuf where
+    -- | Create a copy of a portion of the canvas
+    copyRegion :: Rect2D SampCoord -> render pixbuf
+
+    -- | Create a new blank canvas
+    newSubCanvas :: Size2D SampCoord -> render pixbuf
+
+    -- | Evaluate a @render@ continuation function on a given @pixbuf@ canvas. When 'withSubCanvas'
+    -- returns, drawing operations will continue to work on the main canvas.
+    withSubCanvas :: pixbuf -> render a -> render a
+
+class Happlet2DHasPattern renderState pixbuf where
   -- | This function is similar to the 'fillColor' function, but allows you to use another pixel
   -- buffer (a pattern), rather than a solid color or gradient, to be blitted to the canvas.
-  fillPattern :: ConfigState render pixbuf
+  fillPattern :: Lens' renderState pixbuf
 
   -- | This function is similar to the 'strokeColor' function, but allows you to use another pixel
   -- buffer (a pattern), rather than a solid color or gradient, to be blitted to the canvas.
-  strokePattern :: ConfigState render pixbuf
+  strokePattern :: Lens' renderState pixbuf
 
-  -- | Create a copy of a portion of the canvas
-  copyRegion :: Rect2D SampCoord -> render pixbuf
-
-  -- | Create a new blank canvas
-  newSubCanvas :: Size2D SampCoord -> render pixbuf
-
-  -- | Evaluate a @render@ continuation function on a given @pixbuf@ canvas. When 'withSubCanvas'
-  -- returns, drawing operations will continue to work on the main canvas.
-  withSubCanvas :: pixbuf -> render a -> render a
 
 -- | Calls @'getEnv' 'pixel'@, applies a function @f@, then calls @'setEnv' 'pixel'@ with the
 -- result.
