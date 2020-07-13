@@ -134,10 +134,10 @@ class (Functor render, Applicative render, Monad render, MonadIO render)
   --
   -- @
   -- -- Set the pixel at point 30, 50 to 'Happlets.Draw.Color.red'
-  -- 'pixel' ('Linear.V2.V2' 30 50) `'setVal'` 'red'
+  -- 'pixel' ('Linear.V2.V2' 30 50) `'setEnv'` 'red'
   --
   -- -- Get the color at point 45, 45
-  -- @ 'getVal' $ 'pixel' $ 'Linear.V2.V2 45 45
+  -- @ 'getEnv' $ 'pixel' $ 'Linear.V2.V2 45 45
   pixel :: Point2D SampCoord -> Variable render Color
 
   -- | This function should save the current drawing context, then evaluate a continuation function
@@ -176,8 +176,8 @@ class (Functor render, Applicative render, Monad render, MonadIO render)
   clearScreen :: Happlet2DGraphics render => Color -> render ()
   clearScreen c = tempContext $ do
     resetGraphicsContext
-    setVal fillColor $ PaintSolidColor c
-    setVal blitOperator BlitSource
+    setEnv fillColor $ PaintSolidColor c
+    setEnv blitOperator BlitSource
     fill
 
 -- | The primitive functions given in this typeclass, namely the 'shape' drawing functions, should
@@ -228,12 +228,12 @@ class Happlet2DGraphics render => Happlet2DBuffersPixels render pixbuf where
   -- returns, drawing operations will continue to work on the main canvas.
   withSubCanvas :: pixbuf -> render a -> render a
 
--- | Calls @'getVal' 'pixel'@, applies a function @f@, then calls @'setVal' 'pixel'@ with the
+-- | Calls @'getEnv' 'pixel'@, applies a function @f@, then calls @'setEnv' 'pixel'@ with the
 -- result.
 modifyPixel
   :: (Monad render, Happlet2DGraphics render)
   => Point2D SampCoord -> (Color -> Color) -> render ()
-modifyPixel p f = getVal (pixel p) >>= setVal (pixel p) . f
+modifyPixel p f = getEnv (pixel p) >>= setEnv (pixel p) . f
 
 ----------------------------------------------------------------------------------------------------
 

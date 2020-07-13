@@ -109,7 +109,7 @@ class MonadIO render
   --
   -- @
   -- img <- 'newImageBuffer' ('V2' 540 270) ('clearScreen' 'white')
-  -- 'setVal' ('imageCanvasResizeMode' img) 'CanvasResizeClear'
+  -- 'setEnv' ('imageCanvasResizeMode' img) 'CanvasResizeClear'
   -- @
   imageCanvasResizeMode :: Variable (GUI provider model) CanvasResizeMode
 

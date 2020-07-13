@@ -26,11 +26,11 @@ type NewPixSize = PixSize
 -- However, sometimes you don't need to redraw everything, maybe you want the same exact image as
 -- before, just with a new cropping frame, and if the window is larger than before you'll only
 -- redraw the part of the buffer that was recently exposed. This can be done easily by setting
--- 'CopyCanvasMode', the Happlet back-end provider will automatically copy the old canvas buffer to
+-- 'CanvasResizeCopy', the Happlet back-end provider will automatically copy the old canvas buffer to
 -- the new one after a resize event and before it calls your event handler.
 --
--- You also have the option of using 'ScaleCanvasMode', which is like 'CopyCanvasMode' but scales
--- the image to the new buffer size.
+-- You also have the option of using 'CanvasResizeScale', which is like 'CanvasResizeCopy' but
+-- scales the image to the new buffer size.
 --
 -- For resize functions more complicated than what is provided these options, it is best to set
 -- 'CanvasResizeClear' and perform the redraw yourself.

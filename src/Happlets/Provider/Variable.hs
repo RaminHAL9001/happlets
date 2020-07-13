@@ -7,9 +7,10 @@ module Happlets.Provider.Variable where
 import           Control.Lens (Lens', assign, use)
 import           Control.Monad.State.Class
 
--- | This data structure contains two functions, one for updating the state, and one for querying
--- the state. It is like a lens, but must evaluate in a monadic function type @m@ which can perform
--- a side effect as a result of the change to the state.
+-- | This data structure represents an __environment variable__, usually defined within the context
+-- of a GUI type of function. It contains two functions, one for updating the state, and one for
+-- querying the state. It is like a lens, but must evaluate in a monadic function type @m@ which can
+-- perform a side effect as a result of the change to the state.
 --
 -- Throughout the Happlets framework, there are classes in which the member functions are
 -- 'Context's. For example, the 'Happlets.Draw' module has the 'Happlet2DGraphics' class providing
@@ -22,23 +23,23 @@ import           Control.Monad.State.Class
 -- So to set the fore color of the @render@ context, you would write:
 --
 -- @
--- 'setVal' 'Happlets.Draw.foreColor' 'Happlets.Draw.Color.red'
+-- 'setEnv' 'Happlets.Draw.foreColor' 'Happlets.Draw.Color.red'
 -- @
 data Variable m a
   = Variable
-    { getVal :: m a
+    { getEnv :: m a
       -- ^ Get a value from the context, and possibly execute a side-effect (like setting a counter)
-    , setVal :: a -> m ()
+    , setEnv :: a -> m ()
       -- ^ Set a value in the context, and possibly execute a side-effect (like redrawing an image).
     }
 
-updateVal :: Monad m => Variable m a -> (a -> a) -> m ()
-updateVal ctx f = getVal ctx >>= setVal ctx . f
+updateEnv :: Monad m => Variable m a -> (a -> a) -> m ()
+updateEnv ctx f = getEnv ctx >>= setEnv ctx . f
 
 variableFromLens :: MonadState st m => Lens' st a -> Variable m a
 variableFromLens lens = Variable
-  { setVal = assign lens
-  , getVal = use lens
+  { setEnv = assign lens
+  , getEnv = use lens
   }
 
 fmapVariableMonad
@@ -46,6 +47,6 @@ fmapVariableMonad
   => (forall any . m0 any -> m1 any)
   -> Variable m0 a -> Variable m1 a
 fmapVariableMonad f var = Variable
-  { setVal = f <$> setVal var
-  , getVal = f $ getVal var
+  { setEnv = f <$> setEnv var
+  , getEnv = f $ getEnv var
   }
