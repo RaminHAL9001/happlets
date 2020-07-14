@@ -822,37 +822,48 @@ class (MonadIO m, MonadProvider provider m) =>
   ProviderSyncCallback provider m | m -> provider where
     -- | This function is called by 'forkGUI', it should only be instantiated by Happlet providers.
     -- This function otherwise must never be used anywhere else.
-    providerRunSync :: ProviderStateLock provider -> m () -> IO ()
+    providerRunSync :: ProviderStateLock provider -> m a -> IO a
     providerRunSync = runProviderOnLock
 
 -- | Functions of this type are created by the 'forkGUI' function and passed as an argument to the
 -- function that will be evaluated in a separate parallel thread. Functions of this type take a
 -- signal function of type 'GUI'. The 'SendGUISignal' function sends the 'GUI' function as a signql
 -- to be evaluated in the 'GUI' @provider@ and @model@ context that created this function.
-type SendGUISignal provider model = GUI provider model () -> IO ()
+type SendGUISignal provider model a = GUI provider model a -> IO (EventHandlerControl a)
 
--- | The 'forkGUI' function is evaluated in a 'GUI' function context, let's call this the "parent"
---  context, and will copy the @'Happlet' model@ and provider of the parent 'GUI' context. Then it
---  will create two things:
---
--- 1. a 'SendGUISignal' function which can be evaluated an unlimited number of times, and
---
--- 2. a new parallel thread of computation (using 'forkIO') that operates independently of the
---    'GUI', let's call this the "child" thread.
--- 
--- The "child thread" will evaluate a function of type 'IO' (which would typically be used to make
--- observations or stateful changes to the operating system environment), and the child can make
--- updates to the @model@ and @provider@ of the parent context by sending a 'GUI' function as a
--- signal via a 'SendGUISignal' function. Every time a 'GUI' function is sent, it is evaluated in
--- the parent 'GUI' function context, possibly causing an update in the @model@ and @provider@.
---
--- 'forkGUI' is a good way to create threads that block while waiting for some external event, for
--- example to receive some information on a socket, and then when the event occurs, it call the
+-- | 'forkGUI' is a good way to create threads that block while waiting for some external event, for
+-- example to receive some information on a socket, and then when the event occurs, it can call the
 -- given 'SendGUISignal' to send it's own event signal that performs some update on the 'GUI'.
 --
--- __Note for providers:__
+-- When the 'forkGUI' function is evaluated in a 'GUI' function context (let's call this the
+-- "parent" context) it will keep a reference to the @'Happlet' model@ and @ProviderStateLock
+-- provider@ of the parent 'GUI' context. Then, 'forkGUI' will do two things:
+--
+-- 1. create a 'SendGUISignal' function which can be evaluated an unlimited number of times, and
+--
+-- 2. calls 'forkIO' to create a new parallel thread of computation (let's call this the "child"
+--    thread) which evaluates independently or in parallel with the parent context thread.
 -- 
--- Some providers, notably providers with cooperative multi-tasking, rather than true
+-- The child thread will evaluate a continuation function of type @IO ()@ that you (the programmer)
+-- provide to it. This continuation could, for example, be used to make observations or stateful
+-- changes to the operating system environment. The child thread can make updates to the @model@ and
+-- @provider@ of the parent context by sending a 'GUI provider model' function as a signal via the
+-- 'SendGUISignal' function that is given to your continuation.
+--
+-- Every time a 'GUI' function is sent, it is evaluated in the parent 'GUI' function context,
+-- possibly causing an update in the @model@ and @provider@. The 'SendGUISignal' is __synchronous__
+-- so it will block until the signal is dispatched and a result is returned. The result of the
+-- 'SendGUISignal' function, when it returns, will be an 'EventHandlerControl' value indicating the
+-- success/failure status of the 'GUI' function that was sent as a signal.
+--
+-- __Note for providers:__
+--
+-- For providers that provide true multi-threading for event dispatch, the 'SendGUISignal' function
+-- actually evaluates the 'GUI' signal in the child thread, rather than actually sending the 'GUI'
+-- function off to a dispatcher to be evaluated in a different thread, and this will block when the
+-- lock on the 'GUI' state is obtained.
+-- 
+-- However some providers, notably providers with cooperative multi-tasking, rather than true
 -- multi-threading, will not actually allow you to make modifiations to the GUI's internal state in
 -- a separate thread. For these providers, what 'forkGUI' will actually do is create a new Haskell
 -- thread (using 'forkIO', which creates a ligthweight thread in Haskell's runtime system), and the
@@ -869,9 +880,10 @@ type SendGUISignal provider model = GUI provider model () -> IO ()
 -- for messags on a socket) even if there is no multi-threading in the GUI.
 forkGUI
   :: ProviderSyncCallback provider m
-  => (SendGUISignal provider model -> IO ()) -> GUI provider model ThreadId
+  => (SendGUISignal provider model a -> IO ())
+  -> GUI provider model ThreadId
 forkGUI child = do
   guist <- getGUIState
   liftIO $ forkIO $ child $
     providerRunSync (providerSharedState $ theGUIProvider guist) .
-    void . providerLiftGUI (theGUIHapplet guist)
+    providerLiftGUI (theGUIHapplet guist)
