@@ -6,7 +6,7 @@
 -- should be enough to construct minimalist user interfaces.
 module Happlets.View.Types2D
   ( -- * Typeclasses
-    WidgetType(..), Has2DOrigin(..), Is2DShape(..),
+    Has2DOrigin(..), Is2DShape(..),
     -- * Primitives
     Draw2DShape(..), Map2DShape(..),
     -- ** Points
@@ -15,6 +15,11 @@ module Happlets.View.Types2D
     -- ** Lines
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
     LineWidth,
+    -- *** Line Style
+    HasLineStyle(..), LineStyle(..), theLineColour,
+    makeLineStyle, lineColor, lineColour, lineWeight,
+    -- * Drawing Primitives
+    Draw2DPrimitive(..), prim2D, drawPrimShape, drawPrimFill, drawPrimStroke,
     -- ** Rectangles
     Rect2D(..), rect2D, rect2DSize, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
     rect2DCenter, rect2DCentre,
@@ -29,7 +34,15 @@ module Happlets.View.Types2D
     Cubic2D, Cubic2DSegment(..), cubic2D, cubic2DOrigin, cubic2DPoints,
     cubic2DCtrlPt1, cubic2DCtrlPt2, cubic2DEndPoint,
     -- ** Matrix Transformations
-    Transform2D,
+    Transform2D, idTrans2D, transform2D, trans2DDraw,
+    -- ** Fill Types
+    BlitOperator(..),
+    PaintSource(..), PaintSourceFunction(..),
+    paintColor, paintSourceBlit, paintSourceFunction,
+    PaintGradient(..),
+    paintGradType, paintGradStartColor, paintGradEndColor, paintGradStopList,
+    GradientType(..), GradientStopList, GradientStop(..),
+    gradStopsFromList, gradStopsToList, gradStopPoint, gradStopColor,
     -- * Re-exports
     module Happlets.View.SampCoord,
     module Linear.V2,
@@ -37,12 +50,14 @@ module Happlets.View.Types2D
   ) where
 
 import           Happlets.View.SampCoord
+import           Happlets.View.Color
 
 import           Control.Arrow
 import           Control.Lens
 import           Control.Monad
 
 import qualified Data.Vector.Unboxed as UVec
+import           Data.Word           (Word32)
 
 import           Linear.V2
 import           Linear.Matrix
@@ -67,7 +82,24 @@ type LineWidth n = n
 -- | A matrix of type 'M44' which is used to construct transformations. Although the name of this
 -- type implies a 2D transformation, it can actually transform along 4 dimensions, making it easier
 -- to setup transformation matrixies according to the 'mkTransformationMat' function.
-type Transform2D n = M44 n
+data Transform2D n drawing
+  = Transform2D
+    { theTransform2D :: !(M44 n)
+    , theDrawing2D :: drawing
+    }
+  deriving Functor
+
+-- | The identity transformation
+idTrans2D :: Num n => drawing -> Transform2D n drawing
+idTrans2D drawing = Transform2D{ theTransform2D = identity, theDrawing2D = drawing }
+
+transform2D :: Lens' (Transform2D n drawing) (M44 n)
+transform2D = lens theTransform2D $ \ a b -> a{ theTransform2D = b }
+
+trans2DDraw :: Lens' (Transform2D n drawing) drawing
+trans2DDraw = lens theDrawing2D $ \ a b -> a{ theDrawing2D = b }
+
+----------------------------------------------------------------------------------------------------
 
 -- | This type represents a line segment consisting of two points.
 data Line2D n = Line2D !(Point2D n) !(Point2D n)
@@ -374,16 +406,171 @@ instance HasBoundingBox Line2D where { theBoundingBox (Line2D a b) = Rect2D a b;
 
 ----------------------------------------------------------------------------------------------------
 
--- | A widget is a class of data types which models an object in 2D space. It can be drawn onto a
--- canvas using a specified @render@ monad, and needs to respond to a pointing device clicking or
--- dragging. 
-class WidgetType w where
-  -- | All widgets must have a visibility property that can be enabled and disabled.
-  widgetVisible :: Lens' w Bool
+-- | Provides a lens for changing the colour of various things.
+class HasLineStyle a where { lineStyle :: Lens' (a num) (LineStyle num); }
 
-  -- | All widgets must test whether a window (given as a rectangle) intersects with this visiblity
-  -- region of the widget.
-  widgetIntersects :: w -> Rect2D SampCoord -> Bool
+data LineStyle num
+  = LineStyle
+    { theLineColor  :: !Color
+    , theLineWeight :: !num
+      -- ^ The weight specified in pixels
+    }
+  deriving (Eq, Show, Read)
 
-  -- | All widgets must check whether a point lies within a clickable or draggable area
-  widgetContainsPoint :: w -> Point2D SampCoord -> Bool
+instance HasLineStyle LineStyle where { lineStyle = lens id $ flip const; }
+
+theLineColour :: LineStyle num -> Color
+theLineColour = theLineColor
+
+makeLineStyle :: Num num => LineStyle num
+makeLineStyle = LineStyle
+  { theLineColor  = packRGBA32 0xA0 0xA0 0xA0 0xA0
+  , theLineWeight = 2
+  }
+
+lineColor :: HasLineStyle line => Lens' (line num) Color
+lineColor = lineStyle . lens theLineColor (\ a b -> a{ theLineColor = b })
+
+lineColour :: HasLineStyle line => Lens' (line num) Color
+lineColour = lineColor
+
+lineWeight :: HasLineStyle line => Lens' (line num) num
+lineWeight = lineStyle . lens theLineWeight (\ a b -> a{ theLineWeight = b })
+
+----------------------------------------------------------------------------------------------------
+
+-- | This sets the blitting function, that is, when an object is blitted to the canvas, how are the
+-- pixels that are already on the canvas (the destination) combined with the new pixels (the
+-- source).
+--
+-- These operators are a subset of the Cairo Graphics operators:
+--
+-- <<https://www.cairographics.org/operators/>>
+data BlitOperator
+  = BlitSource
+    -- ^ Overwrite the canvas pixel with the blit pixel using the 'const' function, same as the
+    -- @source@ operator in Cairo Graphics.
+  | BlitOver
+    -- ^ Takes a weighted average, where the weight of the source pixel is it's alpha value @a@, the
+    -- weight of the destination pixel is @(1-a)@ (one minus the blit pixel weight). This is the
+    -- same as the @over@ operator in Cairo Graphics.
+  | BlitXOR
+  | BlitAdd
+  | BlitSaturate
+  deriving (Eq, Ord, Show, Read, Bounded, Enum)
+
+data PaintSource n
+  = PaintSource
+    { thePaintSourceBlit     :: !BlitOperator
+    , thePaintSourceFunction :: !(PaintSourceFunction n)
+    }
+
+paintColor :: Color -> PaintSource n
+paintColor c = PaintSource
+  { thePaintSourceBlit = BlitSource
+  , thePaintSourceFunction = SolidColorSource c
+  }
+
+paintSourceBlit :: Lens' (PaintSource n) BlitOperator
+paintSourceBlit = lens thePaintSourceBlit $ \ a b -> a{ thePaintSourceBlit = b }
+
+paintSourceFunction :: Lens' (PaintSource n) (PaintSourceFunction n)
+paintSourceFunction = lens thePaintSourceFunction $ \ a b -> a{ thePaintSourceFunction = b }
+
+data PaintSourceFunction n
+  = SolidColorSource  !Color
+  | GradientSource    !(Transform2D n PaintGradient)
+  | PixelBufferSource () -- TODO
+
+data PaintGradient
+  = PaintGradient
+    { thePaintGradType       :: !GradientType
+    , thePaintGradStartColor :: !Color
+    , thePaintGradEndColor   :: !Color
+    , thePaintGradStopList   :: !GradientStopList
+    }
+
+paintGradType :: Lens' PaintGradient GradientType
+paintGradType = lens thePaintGradType $ \ a b -> a{ thePaintGradType = b }
+
+paintGradStartColor :: Lens' PaintGradient Color
+paintGradStartColor = lens thePaintGradStartColor $ \ a b -> a{ thePaintGradStartColor = b }
+
+paintGradEndColor :: Lens' PaintGradient Color
+paintGradEndColor = lens thePaintGradEndColor $ \ a b -> a{ thePaintGradEndColor = b }
+
+paintGradStopList :: Lens' PaintGradient GradientStopList
+paintGradStopList = lens thePaintGradStopList $ \ a b -> a{ thePaintGradStopList = b }
+
+data GradientStop
+  = GradientStop
+    { theGradStopPoint :: !Double -- ^ A percentage value
+    , theGradStopColor :: !Color
+    }
+  deriving Eq
+
+gradStopPoint :: Lens' GradientStop Double
+gradStopPoint = lens theGradStopPoint $ \ a b -> a{ theGradStopPoint = b }
+
+gradStopColor :: Lens' GradientStop Color
+gradStopColor = lens theGradStopColor $ \ a b -> a{ theGradStopColor = b }
+
+data GradientType
+  = GradLinear !(Point2D Float) !(Point2D Float)
+  | GradRadial !(Point2D Float) !(Magnitude Float) !(Point2D Float) !(Magnitude Float)
+    -- ^ Specify two circles, the gradient will transition between these two circles.
+  deriving Eq
+
+newtype GradientStopList = GradientStopList (UVec.Vector Word32)
+
+-- | Gradient stop points must be a percentage value, so 'gradStopPoint' values not between 0.0 and
+-- 1.0 will be filtered from this list. The list of stops does not need to include the first and
+-- last stop, the 'PaintGradient' data structure has two color values for storing these first and
+-- last values.
+gradStopsFromList :: [GradientStop] -> GradientStopList
+gradStopsFromList lst = GradientStopList $ UVec.fromList words where
+  valid stop = let p = theGradStopPoint stop in 0.0 <= p && p <= 1.0
+  words = do
+    (GradientStop{theGradStopPoint=p, theGradStopColor=c}) <- filter valid lst
+    [floor $ p * realToFrac (maxBound :: Word32), get32BitsRGBA c]
+
+gradStopsToList :: GradientStopList -> [GradientStop]
+gradStopsToList (GradientStopList vec) = loop $ UVec.toList vec where
+  loop = \ case
+    p:c:more -> (: (loop more)) $ GradientStop
+      { theGradStopPoint = realToFrac p / realToFrac (maxBound :: Word32)
+      , theGradStopColor = set32BitsRGBA c
+      }
+    _ -> []
+
+----------------------------------------------------------------------------------------------------
+
+-- | Contains instructions on how to draw a shape to the canvas.
+data Draw2DPrimitive n
+  = Draw2DPrimitive
+    { theDrawPrimShape  :: !(Draw2DShape n)
+    , theDrawPrimFill   :: !(Maybe (PaintSource n))
+    , theDrawPrimStroke :: !(Maybe (PaintSource n))
+    }
+
+-- | The default 'Draw2DPrimitive', which should just clear the screen unless you add a shape with
+-- 'drawPrimShape'.
+prim2D :: Draw2DPrimitive n
+prim2D = Draw2DPrimitive
+  { theDrawPrimShape = Draw2DReset
+  , theDrawPrimFill  = Just $ PaintSource
+      { thePaintSourceBlit     = BlitSource
+      , thePaintSourceFunction = SolidColorSource white
+      }
+  , theDrawPrimStroke = Nothing
+  }
+
+drawPrimShape :: Lens' (Draw2DPrimitive n) (Draw2DShape n)
+drawPrimShape = lens theDrawPrimShape $ \ a b -> a{ theDrawPrimShape = b }
+
+drawPrimFill :: Lens' (Draw2DPrimitive n) (Maybe (PaintSource n))
+drawPrimFill = lens theDrawPrimFill $ \ a b -> a{ theDrawPrimFill = b }
+
+drawPrimStroke :: Lens' (Draw2DPrimitive n) (Maybe (PaintSource n))
+drawPrimStroke = lens theDrawPrimStroke $ \ a b -> a{ theDrawPrimStroke = b }
+
