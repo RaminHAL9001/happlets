@@ -29,6 +29,7 @@ import           Control.Concurrent
 import           Control.Exception
 import           Control.Lens
 import           Control.Monad.Reader
+import           Control.Monad.State
 
 import           Data.Time.Clock
 import           Data.List             (intercalate)
@@ -176,12 +177,12 @@ newtype Workspace work = Workspace{ unwrapWorkspace :: MVar work }
 --
 -- Notice the 'WorkerTask' type takes a @work@ type, this is the contents of a 'Workspace'.
 newtype WorkerTask work a
-  = WorkerTask { unwrapWorkerTask :: ReaderT Worker (StateT work IO) (EventHandlerControl a) }
+  = WorkerTask { unwrapWorkerTask :: ReaderT Worker (StateT work IO) (Consequence a) }
 
 -- | Evaluae a 'WorkerTask' using a given 'Worker' by locking an 'Control.Concurrent.MVar.MVar' and
 -- evaluating the 'WorkerTask' function to work on the content of this
 -- 'Control.Concurrent.MVar.MVar'.
-runWorkerTask :: Worker -> WorkerTask work a -> MVar work -> IO (EventHandlerControl a)
+runWorkerTask :: Worker -> WorkerTask work a -> MVar work -> IO (Consequence a)
 runWorkerTask worker (WorkerTask f) mvar = modifyMVar' mvar $ runStateT (runReaderT f worker)
 
 -- | A 'WorkPost' is an area where 'Worker's waits to recieve work. Send work to the post using the
@@ -235,21 +236,21 @@ instance Functor (WorkerTask work) where
 instance Applicative (WorkerTask work) where { pure = return; (<*>) = ap; }
 
 instance Monad (WorkerTask work) where
-  return = WorkerTask . return . EventHandlerContinue
+  return = WorkerTask . return . ActionOK
   (WorkerTask a) >>= f = WorkerTask $ a >>= \ case
-    EventHandlerContinue a -> unwrapWorkerTask $ f a
-    EventHandlerHalt       -> return EventHandlerHalt
-    EventHandlerCancel     -> return EventHandlerCancel
-    EventHandlerFail   msg -> return $ EventHandlerFail msg
+    ActionOK   a   -> unwrapWorkerTask $ f a
+    ActionHalt     -> return ActionHalt
+    ActionCancel   -> return ActionCancel
+    ActionFail msg -> return $ ActionFail msg
   fail   = taskFail . Strict.pack
 
 instance MonadState work (WorkerTask work) where
-  state = WorkerTask . fmap EventHandlerContinue . lift . state
+  state = WorkerTask . fmap ActionOK . lift . state
 
 -- | When a 'WorkerTask' is being evaluated, a 'Worker' may refer to one's self by obtaining a copy
 -- of it's identification (a union membership card).
 thisWorker :: WorkerTask work Worker
-thisWorker = WorkerTask $ EventHandlerContinue <$> ask
+thisWorker = WorkerTask $ ActionOK <$> ask
 
 -- | This function obtains status information from a given 'Worker'. The worker may update it's
 -- own status at any time, so the returned 'WorkerStatus' is only a snapshot of the status at a
@@ -259,18 +260,18 @@ getWorkerStatus = liftIO . readMVar . workerStatus
 
 -- | The task should stop looping and close-up shop.
 taskDone :: WorkerTask work void
-taskDone = WorkerTask $ return EventHandlerHalt
+taskDone = WorkerTask $ return ActionCancel
 
 -- | The task should skip this loop and wait for the next loop.
 taskSkip :: WorkerTask work void
-taskSkip = WorkerTask $ return EventHandlerCancel
+taskSkip = WorkerTask $ return ActionHalt
 
 -- | Signal a failure occured.
 taskFail :: Strict.Text -> WorkerTask work void
-taskFail = WorkerTask . return . EventHandlerFail
+taskFail = WorkerTask . return . ActionFail
 
 -- | Catch a 'taskSkip' or 'taskFail' signal, or really any signal at all.
-taskCatch :: WorkerTask work a -> (EventHandlerControl a -> WorkerTask work b) -> WorkerTask work b
+taskCatch :: WorkerTask work a -> (Consequence a -> WorkerTask work b) -> WorkerTask work b
 taskCatch (WorkerTask f) catch = WorkerTask $ f >>= unwrapWorkerTask . catch
 
 -- | This function is used by Happlet 'Happlets.Initialize.Provider's when creating 'Worker'
@@ -287,7 +288,7 @@ taskPause t = WorkerTask $ ReaderT $ \ self -> liftIO $ do
   oldStat <- setWorkerStatus self WorkerPaused
   if t <= 0 then blink else threadDelay $ round $ t * 1000 * 1000
   setWorkerStatus self oldStat
-  return $ EventHandlerContinue ()
+  return $ ActionOK ()
 
 -- | Create a new 'Workspace' for a worker to work on, containing a initial @work@ piece.
 newWorkspace :: MonadIO m => work -> m (Workspace work)
@@ -427,7 +428,7 @@ postal
   :: MonadIO m
   => ForkWorkerThread outWork
   -> [WorkerName]
-  -> (Worker -> inWork -> IO (EventHandlerControl outWork))
+  -> (Worker -> inWork -> IO (Consequence outWork))
   -> m (WorkPost inWork outWork)
 postal launch names f = liftIO $ do
   stats  <- newWorkPostStats >>= newMVar
@@ -458,7 +459,7 @@ postal launch names f = liftIO $ do
           . (_workPostRecentInput  %~ (+ 1))
         result <- f self work >>= evaluate
         case result of
-          EventHandlerContinue result -> seq result $! do
+          ActionOK result -> seq result $! do
             modifyMVar_ outbox $ pure . (Seq.|> result)
             postStats post
               $ (_workPostWaitingOutput %~ (+ 1))
@@ -475,7 +476,7 @@ type ForkWorkerThread a
       -- ^ use to call 'unionizeWorker' when thread begins and 'retireWorker' when thread ends.
   -> WorkCycleTime -- ^ requests the cycle time of the work thread that is forked here.
   -> IO Worker     -- ^ used to obtain a copy of the 'Worker' which represents thread forked here.
-  -> (Worker -> IO (EventHandlerControl a))
+  -> (Worker -> IO (Consequence a))
      -- ^ the task to be perofmred during each work cycle.
   -> IO (IO ())    -- ^ returns a function that can be used to halt the thread that is forked here.
 
@@ -484,7 +485,7 @@ newWorker
   :: MonadIO m
   => ForkWorkerThread void
   -> WorkerUnion -> WorkerName -> WorkCycleTime
-  -> (Worker -> IO (EventHandlerControl void))
+  -> (Worker -> IO (Consequence void))
   -> m Worker
 newWorker fork wu handl cycle f = liftIO $ do
   stat <- newMVar WorkerInit
@@ -508,7 +509,7 @@ defaultLaunchWorkerThread
   :: WorkerUnion
   -> WorkCycleTime
   -> IO Worker
-  -> (Worker -> IO (EventHandlerControl void))
+  -> (Worker -> IO (Consequence void))
   -> IO (IO ())
 defaultLaunchWorkerThread wu cycle getWorker f = do
   let delay t = threadDelay $ round $ t * 1000 * 1000
@@ -518,10 +519,10 @@ defaultLaunchWorkerThread wu cycle getWorker f = do
               workerLoop self
         result <- f self
         case result of
-          EventHandlerContinue{} -> loop
-          EventHandlerCancel     -> loop
-          EventHandlerHalt       -> void $ setWorkerStatus self WorkerHalted
-          EventHandlerFail   msg -> void $ setWorkerStatus self $ WorkerFailed msg
+          ActionOK{}     -> loop
+          ActionHalt     -> loop
+          ActionCancel   -> void $ setWorkerStatus self WorkerHalted
+          ActionFail msg -> void $ setWorkerStatus self $ WorkerFailed msg
   tid <- forkOS $ catches
     (do self <- getWorker
         bracket_ (unionizeWorker wu self) (retireWorker wu self) $ do

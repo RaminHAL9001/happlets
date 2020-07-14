@@ -24,9 +24,11 @@ library
     Happlets.Model
     Happlets.Model.Audio
     Happlets.Model.GUI
+    Happlets.Model.Registry
     Happlets.Model.Worker
     Happlets.Control
     Happlets.Control.Animate
+    Happlets.Control.Consequence
     Happlets.Control.InputDevice
     Happlets.Control.Keyboard
     Happlets.Control.Mouse
@@ -36,6 +38,7 @@ library
     Happlets.Initialize
     Happlets.Provider.React
     Happlets.Provider.ConfigState
+    Happlets.Scene
     Happlets.View
     Happlets.View.Audio
     Happlets.View.Canvas
@@ -60,6 +63,7 @@ library
     RankNTypes
     ScopedTypeVariables
     StandaloneDeriving
+    TypeFamilies
   ghc-options:
     -Wall -Werror -fno-warn-name-shadowing -fno-warn-unused-do-bind
   build-depends:

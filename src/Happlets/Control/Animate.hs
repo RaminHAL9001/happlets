@@ -1,8 +1,12 @@
-module Happlets.Control.Animate where
+module Happlets.Control.Animate
+  ( AnimationMoment, CanAnimate(..),
+    UTCTime, NominalDiffTime, diffUTCTime,
+  )
+  where
 
-import           Happlets.Model.GUI
+import           Happlets.Model.GUI (GUI)
 
-import           Data.Time.Clock
+import           Data.Time.Clock (UTCTime, NominalDiffTime, diffUTCTime)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -19,7 +23,9 @@ class CanAnimate provider where
   -- | This function will be called repeatedly with a time delta indicating how much time has passed
   -- since the animation handler was installed. The given 'GUI' function should update the
   -- 'Happlet.View.Readraw' state each time.
-  stepFrameEvents :: (AnimationMoment -> GUI provider model ()) -> GUI provider model ()
+  --
+  -- 
+  stepFrameEvents :: (UTCTime -> GUI provider model ()) -> GUI provider model ()
   -- | This function returns true of false if there is currently an animation event handler
   -- installed and running in the Happlet. To disable a running animation, evaluate
   -- @'stepFrameEvents' 'disable'@.

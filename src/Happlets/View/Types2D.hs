@@ -34,6 +34,7 @@ module Happlets.View.Types2D
     Cubic2D, Cubic2DSegment(..), cubic2D, cubic2DOrigin, cubic2DPoints,
     cubic2DCtrlPt1, cubic2DCtrlPt2, cubic2DEndPoint,
     -- ** Matrix Transformations
+    BoundingBox2D(..), boxBounds2D, boxTransform2D, boxModel2D,
     Transform2D, idTrans2D, transform2D, trans2DDraw,
     -- ** Fill Types
     BlitOperator(..),
@@ -98,6 +99,51 @@ transform2D = lens theTransform2D $ \ a b -> a{ theTransform2D = b }
 
 trans2DDraw :: Lens' (Transform2D n drawing) drawing
 trans2DDraw = lens theDrawing2D $ \ a b -> a{ theDrawing2D = b }
+
+----------------------------------------------------------------------------------------------------
+
+-- | A free-floating 'Widget' ("F.F. Widget") is a 'Widget' that is not constrained by tiling or
+-- grid rules, it may exist anywhere on the canvas.
+data BoundingBox2D trans n model
+  = BoundingBox2D
+    { theBoxBounds2D :: !(Transform2D trans (Rect2D n))
+    , theBoxModel2D  :: !model
+    }
+  deriving Functor
+
+boxBoundsTrans2D :: Lens' (BoundingBox2D trans n model) (Transform2D trans (Rect2D n))
+boxBoundsTrans2D = lens theBoxBounds2D $ \ a b -> a{ theBoxBounds2D = b }
+
+-- | Operate on the bounding box and transformation of the 'StagedWidget'.
+boxBounds2D :: Lens' (BoundingBox2D trans n model) (Rect2D n)
+boxBounds2D = boxBoundsTrans2D . trans2DDraw
+
+-- | Bounding boxes can also have a linear transformation applied, which can be apply to the @model@
+-- as when it is rendered to a canvas.
+boxTransform2D :: Lens' (BoundingBox2D trans n model) (M44 trans)
+boxTransform2D = boxBoundsTrans2D . transform2D
+
+-- | Operate on the 'Widget' of the 'StagedWidget'.
+boxModel2D :: Lens' (BoundingBox2D trans n model) model
+boxModel2D = lens theBoxModel2D $ \ a b -> a{ theBoxModel2D = b }
+
+----------------------------------------------------------------------------------------------------
+
+class HasBoundingBox a where
+  type Bounds2DMetric a
+  theBoundingBox :: a -> Rect2D (Bounds2DMetric a)
+
+instance HasBoundingBox (Rect2D n) where
+  type Bounds2DMetric (Rect2D n) = n
+  theBoundingBox = id; 
+
+instance HasBoundingBox (Line2D n) where
+  type Bounds2DMetric (Line2D n) = n
+  theBoundingBox (Line2D a b) = Rect2D a b; 
+
+instance HasBoundingBox (BoundingBox2D trans n model) where
+  type Bounds2DMetric (BoundingBox2D trans n model) = n
+  theBoundingBox = view boxBounds2D; 
 
 ----------------------------------------------------------------------------------------------------
 
@@ -395,14 +441,6 @@ instance MaybeSingleton2D Line2D where
 
 instance MaybeSingleton2D Rect2D where
   isSingleton2D (Rect2D a b) = if a == b then Just a else Nothing
-
-----------------------------------------------------------------------------------------------------
-
-class HasBoundingBox a where { theBoundingBox :: a n -> Rect2D n; }
-
-instance HasBoundingBox Rect2D where { theBoundingBox = id; }
-
-instance HasBoundingBox Line2D where { theBoundingBox (Line2D a b) = Rect2D a b; }
 
 ----------------------------------------------------------------------------------------------------
 

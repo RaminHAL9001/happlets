@@ -38,18 +38,15 @@ module Happlets.Model.GUI
     sameHapplet, getWaitingThreads,
 
     -- * The GUI Function Type
-    GUI, onSubModel, getModel, getSubModel, putModel, modifyModel,
-    changeRootHapplet, cancelNow, cancelIfBusy, howBusy, deleteEventHandler,
+    GUI, onSubModel, getModel, getSubModel, putModel, modifyModel, askHapplet,
+    consequenceGUI, changeRootHapplet, mzeroIfBusy, howBusy,
 
     -- ** GUI Threads
     SendGUISignal, forkGUI, bracketGUI, guiCatch,
 
-    -- ** The Display Typeclass
-    Display(..), DrawableRef(..), drawableEmptyRef,
-
     -- * Functions for Providers
     liftGUIProvider, providerLiftGUI,
-    EventHandlerControl(..), MonadProvider(..),
+    MonadProvider(..),
     EventSetup(..), simpleSetup, installEventHandler,
 
     -- ** Multi-Threading
@@ -57,32 +54,39 @@ module Happlets.Model.GUI
 
     --ProviderStateLock, runProviderOnLock, checkGUIContinue,
     --GUIState(..), guiModel, guiProvider, guiIsLive, execGUI, runGUI,
-    --getGUIState, putGUIState, modifyGUIState, askHapplet, govWorkerUnion,
 
     -- * Re-exports
+    module Happlets.Control.Consequence,
     module Control.Monad.State,
     module Control.Monad.Except,
   ) where
 
-import           Prelude hiding ((.), id)
+import           Prelude                 hiding ((.), id)
 
+import           Happlets.Control.Consequence
 import           Happlets.Provider.React
 import           Happlets.View.SampCoord
 
-import           Control.Arrow
-import           Control.Category
+import           Control.Arrow           ((&&&))
+import           Control.Applicative     (Applicative(..), Alternative(..), (<*))
+import           Control.Category        (id, (.))
 import           Control.Concurrent
-import           Control.Exception
-import           Control.Lens
-import           Control.Monad.Except
-import qualified Control.Monad.Fail    as Monad
-import           Control.Monad.Reader
-import           Control.Monad.State
+                 ( ThreadId, myThreadId, forkIO,
+                   MVar, newMVar, newEmptyMVar,
+                   takeMVar, putMVar, readMVar, modifyMVar, modifyMVar_,
+                 )
+import           Control.Exception       (bracket, bracket_)
+import           Control.Lens            (Lens', lens, (&), (^.), (.~), (.=))
+import           Control.Monad           (MonadPlus(..), ap, when, (>=>))
+import           Control.Monad.IO.Class  (MonadIO(..))
+import           Control.Monad.Except    (MonadError(..), ExceptT(..))
+import qualified Control.Monad.Fail      as Monad
+import           Control.Monad.Reader    (MonadReader(..), ask)
+import           Control.Monad.State     (MonadState(..), StateT(..), gets, modify)
 
-import qualified Data.Text             as Strict
-import           Data.Typeable
+import qualified Data.Text               as Strict
 
-import           System.IO.Unsafe (unsafePerformIO) -- used for generating unique Happlet IDs.
+import           System.IO.Unsafe        (unsafePerformIO) -- for generating unique Happlet IDs.
 
 ----------------------------------------------------------------------------------------------------
 
@@ -102,7 +106,7 @@ data Happlet model
     , happletLock :: MVar ThreadTracker
     , happletMVar :: MVar model
     }
-  deriving (Eq, Typeable)
+  deriving Eq
 
 data ThreadTracker = ThreadTracker{ threadCount :: !Int, threadList :: ![ThreadId] }
 
@@ -158,7 +162,7 @@ onHapplet hap f = do
   let lock = happletLock hap
   this <- myThreadId
   bracket_ (addThread lock this) (removeThread lock this) $ do
-    modifyMVar mvar $ liftM (\ (a, model) -> (model, (a, model))) . f
+    modifyMVar mvar $ fmap (\ (a, model) -> (model, (a, model))) . f
 
 -- | Create a copy of the @model@ contained within the 'Happlet' from the current thread. Since this
 -- @model@ is always being updated by various other threads, the value returned will only be a
@@ -186,26 +190,8 @@ modifyMVar' mvar f = modifyMVar mvar $ fmap (\ (a, st) -> (st, a)) . f
 
 ----------------------------------------------------------------------------------------------------
 
--- | This is a type class similar to the 'Prelude.Show' class, except it displays to the 'GUI'.
-class Display drawable where
-  -- | When something is displayed to the GUI, an object should be inserted into the @model@ of the
-  -- GUI, and then the canvas should be redrawn using the functions in
-  -- 'Happlet.Control.Window.HappletWindow'. This function should return a reference to the drawable
-  -- so that it can be updated and/or deleted.
-  display :: drawable -> GUI provider model (DrawableRef provider model)
-
-data DrawableRef provider model
-  = DeleteDrawable
-    { deleteDrawable :: GUI provider model ()
-    , updateDrawable :: GUI provider model ()
-    }
-
--- | A 'DrawableRef' that does nothing, use Haskell record syntax to provide the necessary functions.
-drawableEmptyRef :: DrawableRef provider model
-drawableEmptyRef = DeleteDrawable
-  { deleteDrawable = return ()
-  , updateDrawable = return ()
-  }
+instance Consequential (GUI provider model) where
+  cancel = GUI $ return ActionCancel
 
 ----------------------------------------------------------------------------------------------------
 
@@ -224,10 +210,10 @@ drawableEmptyRef = DeleteDrawable
 -- 'Control.Monad.State.Class.get' and 'Control.Monad.State.Class.put' to update your program, and
 -- then call functions like 'onCanvas' to re-draw relavent parts of the @provider@.
 --
--- The function 'deleteEventHandler' can be used to immediately halt evaluation of a 'GUI' function,
--- and delete the current event handler, which can be useful when you write your event
--- handlers. There is also the similar 'cancelNow' function which immediately halts evaluation but
--- does not delete the event handler.
+-- The function 'cancel' can be used to immediately halt evaluation of a 'GUI' function, and delete
+-- the current event handler, which can be useful when you write your event handlers. There is also
+-- the similar 'empty' function which immediately halts evaluation but does not delete the event
+-- handler.
 --
 -- 'GUI' instantiates 'Control.Monad.Except.MonadExcept' so you can throw and catch error strings
 -- (of type 'Strict.Text'). You will notice that 'GUI' does not instantiate
@@ -237,14 +223,14 @@ drawableEmptyRef = DeleteDrawable
 --
 -- @
 -- -- WARNING: this code will fail to compile.
--- ('onCanvas' drawRedCircle >> cancelNow) 'Control.Applicative.<|>'
+-- ('onCanvas' drawRedCircle >> empty) 'Control.Applicative.<|>'
 --   ('onCanvas' drawBlueCircle >> return ())
 -- @
 --
 -- The above code is not allowed because once the @drawRedCircle@ is evaluated it cannot be undone
--- even though 'cancelNow' was called. Evaluation then proceeds to @drawBlueCircle@, and the result
--- is bothe the red and blue circles are visible on screen, even through the red circle evaluation
--- was canceled.
+-- even though 'empty' was called. Evaluation then proceeds to @drawBlueCircle@, and the result is
+-- bothe the red and blue circles are visible on screen, even through the red circle evaluation was
+-- halted.
 --
 -- Usually you will use a type synonym specific to the Happlets provider that you are using. For
 -- example, the Gtk+ provider for Happlets (not included in this package, must be downloaded and
@@ -262,21 +248,8 @@ drawableEmptyRef = DeleteDrawable
 -- sparse for this to be practical, for the time being, your program may need to rely on
 -- functionality specific to a Provider like Gtk+.
 newtype GUI provider model a
-  = GUI{ unwrapGUI :: StateT (GUIState provider model) IO (EventHandlerControl a)}
+  = GUI{ unwrapGUI :: StateT (GUIState provider model) IO (Consequence a)}
   deriving (Functor)
-
--- | A data type indicating the condition of GUI evaluation. This value is part of the 'GUIState'
--- and is usually set when calling 'breakGUI'.
-data EventHandlerControl a
-  = EventHandlerContinue a
-    -- ^ Allow the event handler to remain enabled for the next incoming event.
-  | EventHandlerHalt
-    -- ^ Disable the event handler
-  | EventHandlerCancel
-    -- ^ Like 'EventHandlerHalt' but does not disable the event handlers.
-  | EventHandlerFail !Strict.Text
-    -- ^ report a failure
-  deriving (Eq, Show, Functor)
 
 -- | The 'GUIState' is the state that is constructed during the evaluation of a GUI function.
 data GUIState provider model
@@ -289,35 +262,47 @@ data GUIState provider model
 instance Applicative (GUI provider model) where { pure = return; (<*>) = ap; }
 
 instance Monad (GUI provider model) where
-  return = GUI . return . EventHandlerContinue
+  return = consequenceGUI . ActionOK
   (GUI f) >>= next = GUI $ StateT $ \ st -> runStateT f st >>= \ (a, st) -> case a of
-    EventHandlerContinue a -> runStateT (unwrapGUI $ next a) st
-    EventHandlerHalt       -> return (EventHandlerHalt    , st)
-    EventHandlerCancel     -> return (EventHandlerCancel  , st)
-    EventHandlerFail   err -> return (EventHandlerFail err, st)
+    ActionOK   a   -> runStateT (unwrapGUI $ next a) st
+    ActionHalt     -> return (ActionHalt    , st)
+    ActionCancel   -> return (ActionCancel  , st)
+    ActionFail err -> return (ActionFail err, st)
 
 instance MonadIO (GUI provider model) where
-  liftIO f = GUI $ liftIO $ EventHandlerContinue <$> f
+  liftIO f = GUI $ liftIO $ ActionOK <$> f
 
 instance MonadState model (GUI provider model) where
   state f = GUI $ state $ \ st ->
-    let (a, model) = f (theGUIModel st) in (EventHandlerContinue a, st{ theGUIModel = model })
+    let (a, model) = f (theGUIModel st) in (ActionOK a, st{ theGUIModel = model })
 
 instance MonadReader (Happlet model) (GUI provider model) where
-  ask = GUI $ EventHandlerContinue <$> gets theGUIHapplet
+  ask = GUI $ ActionOK <$> gets theGUIHapplet
   local loc (GUI f) = GUI $ do
     oldst <- get
     put $ oldst{ theGUIHapplet = loc $ theGUIHapplet oldst }
     f <* modify (\ newst -> newst{ theGUIHapplet = theGUIHapplet oldst })
   
 instance Monad.MonadFail (GUI provider model) where
-  fail = GUI . return . EventHandlerFail . Strict.pack
+  fail = consequenceGUI . ActionFail . Strict.pack
 
 instance MonadError Strict.Text (GUI provider model) where
-  throwError = GUI . return . EventHandlerFail
+  throwError = consequenceGUI . ActionFail
   catchError (GUI try) catch = GUI $ try >>= \ case
-    EventHandlerFail msg -> unwrapGUI $ catch msg
-    result               -> return result
+    ActionFail msg -> unwrapGUI $ catch msg
+    result         -> return result
+
+instance Alternative (GUI provider model) where
+  empty = GUI $ return ActionHalt
+  (GUI a) <|> (GUI b) = GUI $ a >>= \ case
+    ActionCancel -> b
+    ActionHalt   -> b
+    otherwise    -> pure otherwise
+
+
+instance MonadPlus (GUI provider model) where
+  mzero = empty
+  mplus = (<|>)
 
 instance Semigroup a => Semigroup (GUI provider model a) where
   a <> b = (<>) <$> a <*> b
@@ -325,6 +310,12 @@ instance Semigroup a => Semigroup (GUI provider model a) where
 instance Monoid a => Monoid (GUI provider model a) where
   mempty = return mempty
   mappend a b = mappend <$> a <*> b
+
+-- | Force a 'GUI' computation's result to assume the value of the given 'Consequence', i.e. when
+-- given 'ActionOK', evaluate to 'return', when given 'ActionHalt' evaluate to 'mzero', when given
+-- 'ActionCancel' evaluate to 'cancel', when given 'ActionFail', evaluate to 'fail'.
+consequenceGUI :: Consequence a -> GUI provider model a
+consequenceGUI = GUI . return
 
 ---- | 'Control.Lens.Lens' for manipulating the 'GUIState'. It is better to use 'getModel',
 ---- 'updateModel', 'putModel', 'subModel', or 'liftGUI' instead of manipulating a 'GUIState'
@@ -345,7 +336,7 @@ guiProvider = lens theGUIProvider $ \ a b -> a{ theGUIProvider = b }
 runGUI
   :: GUI provider model a -- ^ the 'GUI' function to evaluate
   -> GUIState provider model
-  -> IO (EventHandlerControl a, GUIState provider model)
+  -> IO (Consequence a, GUIState provider model)
 runGUI (GUI f) st = runStateT f st
 
 ---- | Like 'runGUI' but discards the @a@ typed return value. This is analogous to
@@ -356,13 +347,12 @@ runGUI (GUI f) st = runStateT f st
 --  -> IO (GUIState provider model)
 --execGUI f = fmap snd . runGUI f
 
--- | Evaluate a 'GUI' function but catch calls to 'cancelNow', 'deleteEventHandler', and
--- 'Control.Monad.Fail.fail'.
+-- | Evaluate a 'GUI' function but catch calls to 'cancel', 'empty', and 'fail'.
 guiCatch
   :: GUI provider model a
-  -> (EventHandlerControl a -> GUI provider model b)
+  -> (Consequence a -> GUI provider model b)
   -> GUI provider model b
-guiCatch (GUI f) = ((GUI $ f >>= \ result -> return (EventHandlerContinue result)) >>=)
+guiCatch (GUI f) = ((GUI $ f >>= \ result -> return (ActionOK result)) >>=)
 
 -- | Like the 'Control.Exception.bracket' function, but works in the 'GUI' monad.
 bracketGUI
@@ -376,10 +366,10 @@ bracketGUI lock unlock f = GUI $ StateT $ \ st -> do
     (runGUI lock st >>= \ (rsrc, st) -> putMVar mvar st >> return rsrc)
     (const $ modifyMVar' mvar $ runGUI unlock)
     (\ case
-      EventHandlerContinue{} -> modifyMVar' mvar $ runGUI f
-      EventHandlerHalt       -> return EventHandlerHalt
-      EventHandlerCancel     -> return EventHandlerCancel
-      EventHandlerFail err   -> return $ EventHandlerFail err
+      ActionOK{}     -> modifyMVar' mvar $ runGUI f
+      ActionHalt     -> return ActionHalt
+      ActionCancel   -> return ActionCancel
+      ActionFail err -> return $ ActionFail err
     )
   st <- takeMVar mvar
   return (a, st)
@@ -407,37 +397,19 @@ onSubModel submodel subgui = do
     }
   GUI $ return a
 
--- | Once you install an event handler, the default behavior is to leave the event handler installed
--- after it has evaluated so that it can continue reacting to events without you needing to
--- re-install the event handler after each reaction.
---
--- However if you wish for an event handler to remove itself, evaluate this function as the final
--- function call in your 'GUI' procedure. Calling this function tells your 'GUI' function to
--- immediately halt and remove itself from the event handling loop.
---
--- Under the hood, this function will evaluate 'breakGUI' with a 'EventHandlerHalt' condition set in the
--- 'guiContinue' field.
-deleteEventHandler :: GUI provider model void
-deleteEventHandler = GUI $ return EventHandlerHalt
-
--- | Cancel the current event handler execution. This function is like 'disable' but does not
--- instruct the event handler to remove itself.
-cancelNow :: GUI provider model void
-cancelNow = GUI $ return EventHandlerCancel
-
 -- | When an event handler evaluates this function, it is voluntarily canceling the current event
 -- handler execution if there are one or more other threads waiting for access to the 'Happlet'
 -- @model@. This function should be evaluated after making important updates to the @model@
 -- (especially ones that indicate which events have been handled), but before time-consuming drawing
 -- updates have begun. This allows other threads to have access to the model and perform their own
 -- drawing.
-cancelIfBusy :: GUI provider model ()
-cancelIfBusy = howBusy >>= flip when cancelNow . (> 0)
+mzeroIfBusy :: GUI provider model ()
+mzeroIfBusy = howBusy >>= flip when mzero . (> 0)
 
 -- | Return a value indicating how many pending threads there are waiting for their turn to access
 -- the 'Happlet' @model@.
 howBusy :: GUI provider model Int
-howBusy = GUI $ fmap EventHandlerContinue $
+howBusy = GUI $ fmap ActionOK $
   gets theGUIHapplet >>= liftIO . fmap fst . getWaitingThreads
 
 -- | The 'GUI' function type instantiates the 'Control.Monad.State.Class.MonadState' monad
@@ -485,13 +457,13 @@ changeRootHapplet newHapp init = do
   modifyGUIState $ \ guist -> guist &
     guiProvider . contextSwitcher .~
     switchContext (theGUIProvider guist ^. detatchHandler) newHapp init
-  cancelNow
-  -- Here ^ we use 'cancelNow' instead of 'deleteEventHandler' because 'disconnectAll' was already
-  -- called so we do not want any disconnect function to be evaluated again (which shouldn't cause
-  -- any harm, but doing so is an unnnecessary step). It is also for this reason that the
-  -- 'providerLiftGUI' function only bothers to evaluate the context switcher when the return
-  -- signal is 'HappletEventCancel'. Please refer to the 'liftGUIintoGtkState' function to see
-  -- exactly what happens next, after the above 'cancelNow' is evaluated.
+  empty
+  -- Here ^ we use 'empty' instead of 'cancel' because 'disconnectAll' was already called so we do
+  -- not want any disconnect function to be evaluated again (which shouldn't cause any harm, but
+  -- doing so is an unnnecessary step). It is also for this reason that the 'providerLiftGUI'
+  -- function only bothers to evaluate the context switcher when the return signal is
+  -- 'HappletEventCancel'. Please refer to the 'liftGUIintoGtkState' function to see exactly what
+  -- happens next, after the above 'cancel' is evaluated.
 
 ----------------------------------------------------------------------------------------------------
 
@@ -503,24 +475,24 @@ changeRootHapplet newHapp init = do
 --
 ---- | Tests if a the 'GUIState' produced after evaluating 'GUI' function with 'evalGUI' is still
 ---- ready to receive further input signals.
---guiIsLive :: EventHandlerControl a -> Bool
---guiIsLive = \ case { EventHandlerContinue{} -> True; _ -> False; }
+--guiIsLive :: Consequence a -> Bool
+--guiIsLive = \ case { ActionOK{} -> True; _ -> False; }
 
 -- | Obtain a copy of the entire 'GUIState' data structure set for the current 'GUI' evaluation
 -- context. This function should never be used unless you are programming a Happlet
 -- 'Happlets.Provider.Provider'.
 getGUIState :: GUI provider model (GUIState provider model)
-getGUIState = GUI $ EventHandlerContinue <$> get
+getGUIState = GUI $ ActionOK <$> get
 
 -- | Update the entire copy of the 'GUIState' data structure for the current context. This
 -- function should never be used unless you are programming a Happlet 'Happlets.Provider.Provider'.
 putGUIState :: GUIState provider model -> GUI provider model ()
-putGUIState = GUI . fmap EventHandlerContinue . put
+putGUIState = GUI . fmap ActionOK . put
 
 -- | Modify the 'GUIState' data structure for the current context. This function should never be
 -- used unless you are programming a Happlet 'Happlets.Provider.Provider'.
 modifyGUIState :: (GUIState provider model -> GUIState provider model) -> GUI provider model ()
-modifyGUIState = GUI . fmap EventHandlerContinue . modify
+modifyGUIState = GUI . fmap ActionOK . modify
 
 -- | Obtain a reference to the 'Happlet' in which this 'GUI' function is being evaluated.
 askHapplet :: GUI provider model (Happlet model)
@@ -528,7 +500,7 @@ askHapplet = ask
 
 ---- | Obtain a reference to the "government" 'WorkerUnion' for this GUI.
 --govWorkerUnion :: GUI provider model WorkerUnion
---govWorkerUnion = GUI $ EventHandlerContinue <$> gets theGUIWorkers
+--govWorkerUnion = GUI $ ActionOK <$> gets theGUIWorkers
 
 ----------------------------------------------------------------------------------------------------
 
@@ -570,7 +542,7 @@ class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider 
   -- the state is evaluated -- every single event handler will evaluate this function. To ensure
   -- that nothing happens unless it is set, this lens is used to set the callback to @return ()@ (a
   -- no-op) prior to evaluation of the 'GUI' procedure in the 'providerLiftGUI' function.
-  contextSwitcher :: Lens' provider (m (EventHandlerControl ()))
+  contextSwitcher :: Lens' provider (m (Consequence ()))
 
   -- | When initializing a new 'provider' data structure, it must be initailized within a
   -- continuation function "initializer" that is evaluated by the 'initProviderState'. The
@@ -643,14 +615,14 @@ liftGUIProvider f = do
   return a
 
 -- | This function evaluates 'GUI' functions within event handlers. This function will then lock the
--- 'Happlet' and then evaluate the 'GUI' function. The 'EventHandlerControl' returned indicates how
+-- 'Happlet' and then evaluate the 'GUI' function. The 'Consequence' returned indicates how
 -- the evaluation of the 'GUI' function was terminated.
 providerLiftGUI
   :: (MonadIO m, MonadState provider m, MonadProvider provider m, ProviderSyncCallback provider m)
-  => Happlet model -> GUI provider model a -> m (EventHandlerControl a)
+  => Happlet model -> GUI provider model a -> m (Consequence a)
 providerLiftGUI happlet f = do
   -- (1) Always set 'contextSwitcher' to a no-op, it may be set to something else by @f@.
-  contextSwitcher .= return (EventHandlerContinue ())
+  contextSwitcher .= return (ActionOK ())
   -- (2) Get the provider after having set it's 'contextSwitcher' to a no-op.
   provider <- get
   -- (3) Evaluate the continuation, which will update both the provider state and the Happlet state.
@@ -663,16 +635,16 @@ providerLiftGUI happlet f = do
     return ((guiContin, theGUIProvider guiState), theGUIModel guiState)
   -- (4) Put the newly updated provider state back into the monad state
   put provider
-  -- (5) Check if the result is 'HappletEventCancel', if it is, there is a chance that a context
+  -- (5) Check if the result is 'HappletEventHalt', if it is, there is a chance that a context
   -- switch occurred. The context switcher is always evaluated on a cancel signal. If the context
   -- switcher was not changed by @f@ between (1) and (2), the 'contextSwitcher' field has therefore
   -- not been changed from the no-op value set at (1), then no context switch occurs. (See the
   -- 'changeRootHapplet' function for the mechanism we are actuating here).
   case result of
-    EventHandlerCancel -> (provider ^. contextSwitcher) >>= \ case
-      EventHandlerFail msg -> signalFatalError msg
+    ActionHalt -> (provider ^. contextSwitcher) >>= \ case
+      ActionFail msg -> signalFatalError msg
       _                    -> return ()
-    _                  -> return ()
+    _                -> return ()
   return result
 
 -- | This function is intended to be used within the 'reactTo' action of a 'ConnectReact' function.
@@ -685,16 +657,16 @@ providerLiftGUI happlet f = do
 -- executed by the low-level system executive when an event is received, it will call
 -- 'providerLiftGUI' to begin evaluating the 'GUI' reaction function for that event type. The result
 -- of 'providerLiftGUI' function should be passed to this 'checkGUIContinue' function, if it is
--- 'EventHandlerHalt' or 'EventHandlerFail', then 'forceDisconnect' is called on the 'ConnectReact'
--- function for this lens.
+-- 'ActionCancel' or 'ActionFail', then 'forceDisconnect' is called on the
+-- 'ConnectReact' function for this lens.
 checkGUIContinue
   :: (MonadIO m, MonadProvider provider m)
-  => Lens' provider (ConnectReact m event) -> EventHandlerControl a -> m ()
+  => Lens' provider (ConnectReact m event) -> Consequence a -> m ()
 checkGUIContinue connectReact = \ case
-  EventHandlerHalt       -> forceDisconnect connectReact
-  EventHandlerFail   msg -> forceDisconnect connectReact >> signalFatalError msg
-  EventHandlerCancel     -> return ()
-  EventHandlerContinue{} -> return ()
+  ActionHalt     -> return ()
+  ActionFail msg -> forceDisconnect connectReact >> signalFatalError msg
+  ActionCancel   -> forceDisconnect connectReact
+  ActionOK{}     -> return ()
 
 -- | This function constructs a stateful @provider@ function of type @m@ which performs a context
 -- switch. The constructed function @m@ function is stored in the 'contextSwitcher' field of the
@@ -709,7 +681,7 @@ switchContext
     -- ^ The next 'Happlet' to take control over the GUI.
   -> (PixSize -> GUI provider newmodel ())
     -- ^ Initailizer that sets up event handlers for the next 'Happlet'
-  -> m (EventHandlerControl ())
+  -> m (Consequence ())
 switchContext detatch newHapp init = do
   case detatch of
     ConnectReact{reactTo=detatch} -> detatch ()
@@ -829,7 +801,7 @@ class (MonadIO m, MonadProvider provider m) =>
 -- function that will be evaluated in a separate parallel thread. Functions of this type take a
 -- signal function of type 'GUI'. The 'SendGUISignal' function sends the 'GUI' function as a signql
 -- to be evaluated in the 'GUI' @provider@ and @model@ context that created this function.
-type SendGUISignal provider model a = GUI provider model a -> IO (EventHandlerControl a)
+type SendGUISignal provider model a = GUI provider model a -> IO (Consequence a)
 
 -- | 'forkGUI' is a good way to create threads that block while waiting for some external event, for
 -- example to receive some information on a socket, and then when the event occurs, it can call the
@@ -853,7 +825,7 @@ type SendGUISignal provider model a = GUI provider model a -> IO (EventHandlerCo
 -- Every time a 'GUI' function is sent, it is evaluated in the parent 'GUI' function context,
 -- possibly causing an update in the @model@ and @provider@. The 'SendGUISignal' is __synchronous__
 -- so it will block until the signal is dispatched and a result is returned. The result of the
--- 'SendGUISignal' function, when it returns, will be an 'EventHandlerControl' value indicating the
+-- 'SendGUISignal' function, when it returns, will be an 'Consequence' value indicating the
 -- success/failure status of the 'GUI' function that was sent as a signal.
 --
 -- __Note for providers:__

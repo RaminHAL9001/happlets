@@ -25,6 +25,26 @@ data MouseButton
   | HWheelClick -- ^ the horizontal scroller wheel was clicked
   deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
+-- | To help with de-bouncing (on platforms where it is necessary) you can compare if two mouse
+-- events are similar and possibly caused by an input device registering an event twice. A mouse
+-- event is "similar" if it has the same pixel coordinate location, the same mouse button, and the
+-- same modifier bits set. Only the "pressed" status is not considered when computing similarity, as
+-- it is the pressed status that changes rapidly when a bounce occurs.
+similarMouseEvents :: Mouse -> Mouse -> Bool
+similarMouseEvents (Mouse _ _ modA butnA ptA) (Mouse _ _ modB butnB ptB) =
+  modA == modB &&
+  butnA == butnB &&
+  ptA == ptB
+
+-- | Compute the square of the distance (in pixels) between two 'Mouse' event data structures. This
+-- allows you to decide whether two mouse events occurred close-enough together for the events to
+-- have occurred at the same place.
+mouseEventDistance :: Mouse -> Mouse -> SampCoord
+mouseEventDistance (Mouse _ _ _ _ (V2 xA yA)) (Mouse _ _ _ _ (V2 xB yB)) =
+  let dx = xA - xB in
+  let dy = yA - yB in
+  dx * dx + dy * dy
+
 ----------------------------------------------------------------------------------------------------
 
 -- | Mouse events can cause a lot of event throughput. To reduce this throughput and improve

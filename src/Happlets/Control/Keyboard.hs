@@ -3,9 +3,11 @@ module Happlets.Control.Keyboard where
 import           Happlets.Model.GUI
 import           Happlets.Control.InputDevice
 
-import           Data.Bits
-import qualified Data.Text as Strict
-import           Data.Word
+import           Control.Monad                 (guard)
+
+import           Data.Bits                     (Bits(..), (.|.))
+import qualified Data.Text                     as Strict
+import           Data.Word                     (Word8, Word32)
 
 ----------------------------------------------------------------------------------------------------
 

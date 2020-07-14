@@ -8,7 +8,8 @@ import           Happlets.View.Types2D
 import           Happlets.Control.Resize
 import           Happlets.Provider.ConfigState
 
-import           Control.Exception
+import           Control.Exception        (IOException)
+import           Control.Monad.IO.Class   (MonadIO(..))
 
 import qualified Data.Text                as Strict
 
