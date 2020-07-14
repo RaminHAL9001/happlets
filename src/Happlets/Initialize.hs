@@ -28,7 +28,7 @@
 --
 -- 1. call 'newProvider' to create a new provider,
 --
--- 2. call 'newHapplet' to create a new 'Happlets.Model.GUI.Happlet' container which contains your
+-- 2. call 'newModel' to create a new 'Happlets.Model.GUI.Happlet' container which contains your
 --    document object model.
 --
 -- 3. call 'attachWindow' to attach the 'Happlets.Model.GUI.Happlet' to the provider, passing an
@@ -38,28 +38,24 @@
 --
 -- @
 -- main :: IO ()
--- main = 'happlet' gtkHapplet $ do
+-- main = 'happlet' gtk2Provider $ do
 --     ---
 --     --- setting the 'Happlets.Initialize.InitHappletConfig' paramters ---
 --     ---
---     'Happlets.Initialize.HappletInitConfig.registeredAppName' 'Control.Lens..=' "My First Happlet!"
---     'Happlets.Initialize.HappletInitConfig.initWindowTitleBar' .= "Hello World Happlet"
---     'Happlets.Initialize.HappletInitConfig.recommendWindowSize' 'Control.Lens..=' (640, 480)
---     ---
---     --- creating the new window ---
---     ---
---     pro <- newProvider
+--     'Happlets.Initialize.registeredAppName' 'Control.Lens..=' "My First Happlet!"
+--     'Happlets.Initialize.initWindowTitleBar' .= "Hello World Happlet"
+--     'Happlets.Initialize.recommendWindowSize' 'Control.Lens..=' (640, 480)
 --     ---
 --     --- create a new 'Happlets.Model.GUI.Happlet' to contain the document object model ---
 --     ---
---     happ <- 'newHapplet' MyDocumentModel
+--     happ <- 'newModel' MyDocumentModel
 --         { myFoo = emptyFoo
 --         , myBar = emptyBar
 --         }
 --     ---
 --     --- attaching the happlet container to the window and initializing the event handlers ---
 --     ---
---     'attachWindow' pro happ initMyHapplet
+--     'attachWindow' happ initMyHapplet
 -- @
 --
 -- The initializing function passed to 'attachWindow' takes a 'Happlets.Draw.SampCoord.PixSize',
@@ -80,9 +76,8 @@
 -- function type which is the Happlets equivalent of the @IO@ function type. There you will find
 -- instructions on how to install event handlers.
 module Happlets.Initialize
-  ( simpleHapplet,
-    -- ** Initializing
-    Initialize(..), happlet, newProvider, newHapplet, attachWindow,
+  ( -- ** Initializing
+    Initialize, happlet, newHapplet, newHappletIO, attachWindow,
     -- ** Configurable Parameters
     --
     -- Methods and data types for working with the initial Happlet configuration. Be careful not to
@@ -92,7 +87,7 @@ module Happlets.Initialize
     -- 'Happlets.Provider.ConfigState.ConfigState' settings can be changed while the Happlet program
     -- is running.
 
-    HappletInitConfig, happletInitConfig,
+    HappletInitConfig(..), happletInitConfig,
     InitConfigException(..), StrictFilePath,
     sanitizeName, initConfigErrorsOnLoad, clearInitConfigErrors, initConfigFilePath,
     registeredAppName, initWindowTitleBar, initBackgroundTransparency, initBackgroundGreyValue,
@@ -129,90 +124,15 @@ import qualified Data.Text as Strict
 -- The real use of this function type is provided by the various classes that can be instantiated by
 -- the back-end provider.
 newtype Initialize provider a
-  = Initialize { unwrapInitialize :: ReaderT (Provider provider) (StateT HappletInitConfig IO) a }
+  = Initialize (ReaderT (Provider provider) (StateT HappletInitConfig IO) a)
   deriving (Functor, Applicative, Monad, MonadIO)
-
-instance MonadReader (Provider provider) (Initialize provider) where
-  ask = Initialize ask
-  local f = Initialize . local f . unwrapInitialize
 
 instance MonadState HappletInitConfig (Initialize provider) where
   state = Initialize . state
 
--- | This function is an all-in-one setup function that lets you create a
--- 'Happlets.Model.GUI.Happlet' with a single function call. Pass the back-end
--- 'Happlets.Provider.Provider', a stateful function for updating the default
--- 'Happlets.Initialize.InitHappletConfig', an initial @model@, and an initial 'Happlets.Model.GUI.GUI' function
--- for installing the 'Happlets.Model.GUI.Happlet' event handlers. This function will automatically
--- call 'newHapplet', 'newProvider', 'attachWindow', 'happlet', and then
--- return when the GUI event loop halts. Here is an example of how you might use it:
---
--- @
--- import Happlets
---
--- -- Here you define your document model data type, which will be updated by the 'Happlets.Model.GUI.GUI'
--- -- function whenever an event occurs.
--- data MyDocModel = MyDocModel
---      { someFoo      :: FooType
---        someBar      :: BarType
---        myDocWinSize :: 'Happlets.Draw.SampCoord.PixSize'
---      }
--- 
--- -- Here you define your Haskell "main" function.
--- main :: IO ()
--- main = 'simpleHapplet' gtkHapplet <-- let's say we are using the Gtk+ 'Happlets.Provider.Provider'
---     (do registeredAppName   'Control.Lens..=' "My Happlet"
---         windowTitleBar      'Control.Lens..=' "New Document"
---         recommendWindowSize 'Control.Lens..=' (640, 480)
---         -- The type of this "do" block is ('Control.Monad.State.StateT' 'Happlets.Initialize.InitHappletConfig' IO ()).
---         -- You use the ('Control.Lens..=') function to set the various "Happlets.Initialize.HappletInitConfig" parameters.
---         -- The configurable parameters are of type ('Control.Lens.Lens' 'Happlets.Initialize.InitHappletConfig').
---     )
---     MyDocModel
---       { someFoo = initNewFoo
---       , someBar = emptyBar
---       , winSize = 'Linear.V2.V2' (-1) (-1)
---         -- Initialize your document model. Notice that your data type can contain a field
---         -- storing the size of the window. This is helpful for rendering graphics where the
---         -- geometry depends on the size of the window, for example, for graphics that you
---         -- like to center in the window.
---       }
---     (\\ winSiz -> do
---         -- This is the first function that runs before any event handlers are called.
---         -- Use this function to update your document model with the window size (if necessary),
---         -- and install the event handler functions.
---
---         'Happlets.Model.GUI.modifyModel' $ \ mydoc ->
---             mydoc{ myDocWinSize = winSiz } --  <-- here you set the window size
---
---         'Happlets.Model.GUI.mouseEvents' 'Happlets.Model.GUI.MouseButton' $ \ mousEvt -> do
---             ---
---             --- some code for handling mouse events ...
---             ---
---
---         'Happlets.Model.GUI.keyboardEvents' $ \ keyEvt -> do
---             ---
---             --- some code for handling key events ...
---             ---
---     )
--- @
-simpleHapplet
-  :: Provider provider -- ^ pass the Happlets back-end provider
-  -> StateT HappletInitConfig IO ()
-      -- ^ Use lens functions like @('Control.Lens..=')@ and @('Control.Lens.%=')@ to define this
-      -- function.
-  -> model -- ^ pass the initial model
-  -> (PixSize -> GUI provider model ())
-      -- ^ Pass the function which installs the event handlers.
-  -> IO ()
-simpleHapplet provider updcfg model init = do
-  doInitializeGUI provider
-  hap <- makeHapplet model
-  config <- execStateT updcfg (defaultConfig provider)
-  win <- doProviderNew provider config
-  doProviderAttach provider True win hap init
-  doGUIEventLoopLaunch provider config
-  doProviderDelete provider win
+-- not for export
+asksInit :: (Provider provider -> a) -> Initialize provider a
+asksInit = Initialize . asks
 
 -- | Run the 'Initialize' function with the given back-end 'Happlets.Happlet.Provider'.
 happlet :: Provider provider -> Initialize provider a -> IO a
@@ -221,16 +141,6 @@ happlet provider (Initialize f) = do
   (a, config) <- runStateT (runReaderT f provider) (defaultConfig provider)
   liftIO $ doGUIEventLoopLaunch provider config
   return a
-
--- | The @provider@ is the abstraction for the operating system and desktop environment that hosts
--- the Happlet API, before you begin creating Happlets you must have had a provider libary
--- installed.
---
--- This function creates a new @provider@ state data structure and keep it in a thread-safe lock of
--- type 'ProviderStateLock', but it does not place a window on the screen. Only the 'attachWindow'
--- function can place a window on the screen.
-newProvider :: Initialize provider (ProviderStateLock provider)
-newProvider = liftIO =<< asks doProviderNew <*> get
 
 -- | Create a new 'Happlets.Model.GUI.Happlet', which contains a document object model of any
 -- type. When you call 'attachWindow' you must supply this 'Happlets.Model.GUI.Happlet' container
@@ -245,8 +155,12 @@ newProvider = liftIO =<< asks doProviderNew <*> get
 newHapplet :: model -> Initialize provider (Happlet model)
 newHapplet = liftIO . makeHapplet
 
+-- | Same as 'newHapplet', but initializes the @model@ by evaluating an @IO@ function.
+newHappletIO :: IO model -> Initialize provider (Happlet model)
+newHappletIO = liftIO . (>>= makeHapplet)
+
 -- | This function evaluates the "main" 'Happlets.Model.GUI.GUI' function with a Happlet system
--- provider created by 'newProvider'. The 'ProviderStateLock' creates
+-- provider.
 --
 -- Note that it is possible to detach a 'Happlets.Model.GUI.Happlet' container from a @provider@ and
 -- re-attach the @provider@ to an entirely different type of 'Happlets.Model.GUI.Happlet' container
@@ -255,16 +169,16 @@ newHapplet = liftIO . makeHapplet
 -- during program execution. Please refer to the 'Happlets.Model.GUI.changeRootHapplet' function
 -- documentation for information about how to do this.
 attachWindow
-  :: ProviderStateLock provider
-      -- ^ the provider function that will actually realize the window
-  -> Bool -- ^ make visible immediately?
+  :: Bool -- ^ make visible immediately?
   -> Happlet model
       -- ^ the happlet to attach
   -> (PixSize -> GUI provider model ())
       -- ^ the GUI initializer that will install event handlers
   -> Initialize provider ()
-attachWindow win vis happ init = liftIO =<<
-  asks doProviderAttach <*> pure vis <*> pure win <*> pure happ <*> pure init
+attachWindow vis happ init = do
+  window <- asksInit doProviderNew <*> get >>= liftIO
+  attach <- asksInit doProviderAttach
+  liftIO $ attach vis window happ init
 
 ---- | This function launches the GUI event loop. This function is called automatically by the
 ---- functions 'happlet' and 'simpleHapplet', so it should generally not be called. This function is
