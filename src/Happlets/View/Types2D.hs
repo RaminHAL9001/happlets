@@ -8,7 +8,7 @@ module Happlets.View.Types2D
   ( -- * Typeclasses
     Has2DOrigin(..), Is2DShape(..),
     -- * Primitives
-    Draw2DShape(..), Map2DShape(..),
+    Draw2DPrimitive(..), Map2DShape(..),
     -- ** Points
     Point2D, Size2D,
     point2D, size2D, pointX, pointY, pointXY,
@@ -18,8 +18,6 @@ module Happlets.View.Types2D
     -- *** Line Style
     HasLineStyle(..), LineStyle(..), theLineColour,
     makeLineStyle, lineColor, lineColour, lineWeight,
-    -- * Drawing Primitives
-    Draw2DPrimitive(..), prim2D, drawPrimShape, drawPrimFill, drawPrimStroke,
     -- ** Rectangles
     Rect2D(..), rect2D, rect2DSize, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
     rect2DCenter, rect2DCentre,
@@ -402,6 +400,15 @@ rect2DMinBoundOf (Rect2D(V2 xa ya)(V2 xb yb)) (Rect2D(V2 xc yc)(V2 xd yd)) =
   let f4 comp a b c d = comp a $ comp b $ comp c d in Rect2D
     (V2 (f4 min xa xb xc xd) (f4 min ya yb yc yd))
     (V2 (f4 max xa xb xc xd) (f4 max ya yb yc yd))
+data Draw2DPrimitive n
+  = Draw2DReset
+    -- ^ If 'fill' is called, this function sets all pixels in the buffer to the 'fillColor' value.
+  | Draw2DLine  !(PaintSource n)      !(Line2D n)
+  | Draw2DRect  !(Draw2DFillStroke n) !(Rect2D n)
+  | Draw2DArc   !(Draw2DFillStroke n) !(Arc2D  n)
+  | Draw2DPath  !(Draw2DFillStroke n) !(Path2D n)
+  | Draw2DCubic !(Draw2DFillStroke n) !(Cubic2D n) -- ^ A cubic Bezier spline
+  deriving Eq
 
 -- | Returns an intersection of two 'Rect2D's if the two 'Rect2D's overlap.
 rect2DIntersect :: Ord n => Rect2D n -> Rect2D n -> Maybe (Rect2D n)
@@ -417,6 +424,29 @@ rect2DIntersect
     (xlo, xhi) <- isect xa xb xc xd
     (ylo, yhi) <- isect ya yb yc yd
     return $ Rect2D (V2 xlo ylo) (V2 xhi yhi)
+instance Map2DShape Draw2DPrimitive where
+  map2DShape f = \ case
+    Draw2DReset             -> Draw2DReset
+    Draw2DLine  paint shape -> Draw2DLine  (map2DShape f paint) (map2DShape f shape)
+    Draw2DRect  paint shape -> Draw2DRect  (map2DShape f paint) (map2DShape f shape)
+    Draw2DArc   paint shape -> Draw2DArc   (map2DShape f paint) (map2DShape f shape)
+    Draw2DPath  paint shape -> Draw2DPath  (map2DShape f paint) (map2DShape f shape)
+    Draw2DCubic paint shape -> Draw2DCubic (map2DShape f paint) (map2DShape f shape)
+
+class Is2DPrimitive shape where
+  to2DShape :: Draw2DFillStroke n -> shape n -> Draw2DPrimitive n
+
+instance Is2DPrimitive Line2D  where
+  to2DShape = Draw2DLine . \ case
+    FillOnly   paint   -> paint
+    StrokeOnly paint   -> paint
+    FillStroke _ paint -> paint
+    StrokeFill paint _ -> paint
+
+instance Is2DPrimitive Arc2D   where { to2DShape = Draw2DArc; }
+instance Is2DPrimitive Rect2D  where { to2DShape = Draw2DRect; }
+instance Is2DPrimitive Path2D  where { to2DShape = Draw2DPath; }
+instance Is2DPrimitive Cubic2D where { to2DShape = Draw2DCubic; }
 
 -- | Convert a 'Rect2D' to a 'Line2D'
 rect2DDiagonal :: Rect2D n -> Line2D n
@@ -583,32 +613,18 @@ gradStopsToList (GradientStopList vec) = loop $ UVec.toList vec where
 
 ----------------------------------------------------------------------------------------------------
 
--- | Contains instructions on how to draw a shape to the canvas.
-data Draw2DPrimitive n
-  = Draw2DPrimitive
-    { theDrawPrimShape  :: !(Draw2DShape n)
-    , theDrawPrimFill   :: !(Maybe (PaintSource n))
-    , theDrawPrimStroke :: !(Maybe (PaintSource n))
-    }
+-- | Most 'Draw2DPrimitive's enclose an 2D region within a path that can be filled, as well as
+-- having a border line drawn along the enclosing path, as though a brush were stroking some paint
+-- along the path. This function specifies the order of fill and stroke operations to perform.
+data Draw2DFillStroke n
+  = FillOnly (PaintSource n)
+  | StrokeOnly (PaintSource n)
+  | FillStroke (PaintSource n) (PaintSource n)
+  | StrokeFill (PaintSource n) (PaintSource n)
 
--- | The default 'Draw2DPrimitive', which should just clear the screen unless you add a shape with
--- 'drawPrimShape'.
-prim2D :: Draw2DPrimitive n
-prim2D = Draw2DPrimitive
-  { theDrawPrimShape = Draw2DReset
-  , theDrawPrimFill  = Just $ PaintSource
-      { thePaintSourceBlit     = BlitSource
-      , thePaintSourceFunction = SolidColorSource white
-      }
-  , theDrawPrimStroke = Nothing
-  }
-
-drawPrimShape :: Lens' (Draw2DPrimitive n) (Draw2DShape n)
-drawPrimShape = lens theDrawPrimShape $ \ a b -> a{ theDrawPrimShape = b }
-
-drawPrimFill :: Lens' (Draw2DPrimitive n) (Maybe (PaintSource n))
-drawPrimFill = lens theDrawPrimFill $ \ a b -> a{ theDrawPrimFill = b }
-
-drawPrimStroke :: Lens' (Draw2DPrimitive n) (Maybe (PaintSource n))
-drawPrimStroke = lens theDrawPrimStroke $ \ a b -> a{ theDrawPrimStroke = b }
-
+instance Map2DShape Draw2DFillStroke where
+  map2DShape f = \ case
+    FillOnly   a   -> FillOnly   (map2DShape f a)
+    StrokeOnly b   -> StrokeOnly (map2DShape f b)
+    FillStroke a b -> FillStroke (map2DShape f a) (map2DShape f b)
+    StrokeFill b a -> StrokeFill (map2DShape f b) (map2DShape f a)
