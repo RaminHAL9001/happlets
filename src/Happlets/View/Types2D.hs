@@ -6,7 +6,7 @@
 -- should be enough to construct minimalist user interfaces.
 module Happlets.View.Types2D
   ( -- * Typeclasses
-    Has2DOrigin(..), Is2DShape(..),
+    Has2DOrigin(..), Is2DPrimitive(..),
     -- * Primitives
     Draw2DPrimitive(..), Map2DShape(..),
     -- ** Points
@@ -35,6 +35,7 @@ module Happlets.View.Types2D
     BoundingBox2D(..), boxBounds2D, boxTransform2D, boxModel2D,
     Transform2D, idTrans2D, transform2D, trans2DDraw,
     -- ** Fill Types
+    Draw2DFillStroke(..),
     BlitOperator(..),
     PaintSource(..), PaintSourceFunction(..),
     paintColor, paintSourceBlit, paintSourceFunction,
@@ -75,6 +76,28 @@ type Point2D n = V2 n
 
 type Size2D n = V2 n
 
+-- | An initializing 'Point2D' where 'pointX' and 'pointY' are both zero.
+point2D :: Num n => Point2D n
+point2D = V2 0 0
+
+-- | A synonym for 'point2D'.
+size2D :: Num n => Size2D n
+size2D = point2D
+
+-- | The X coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
+pointX :: Lens' (Point2D n) n
+pointX = lens (\ (V2 x _) -> x) $ \ (V2 _ y) x -> (V2 x y)
+
+-- | The Y coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
+pointY :: Lens' (Point2D n) n
+pointY = lens (\ (V2 _ y) -> y) $ \ (V2 x _) y -> (V2 x y)
+
+-- | Expresses the point as a tuple of @(x, y)@ coordinates
+pointXY :: Iso' (Point2D n) (n, n)
+pointXY = iso (\ (V2 x y) -> (x, y)) (\ (x,y) -> V2 x y)
+
+----------------------------------------------------------------------------------------------------
+
 -- | Values of this type are used when drawing lines or borders around rectangls.
 type LineWidth n = n
 
@@ -86,7 +109,14 @@ data Transform2D n drawing
     { theTransform2D :: !(M44 n)
     , theDrawing2D :: drawing
     }
-  deriving Functor
+  deriving (Eq, Functor)
+
+map2DTransform :: (n -> m) -> Transform2D n drawing -> Transform2D m drawing
+map2DTransform f (Transform2D{theTransform2D=m44,theDrawing2D=draw}) =
+  Transform2D
+  { theTransform2D = fmap f <$> m44
+  , theDrawing2D   = draw
+  }
 
 -- | The identity transformation
 idTrans2D :: Num n => drawing -> Transform2D n drawing
@@ -151,186 +181,6 @@ data Line2D n = Line2D !(Point2D n) !(Point2D n)
 
 instance Map2DShape Line2D where { map2DShape = fmap; }
 
--- | This type represents a rectangle bounded by two where all sides of the rectangle points are
--- parallel to the orthogonal basis vectors of the drawing plane. This data type instantiates
--- 'Data.Semigroup.Semigroup' such that the smallest possible rectangle that can contain both
--- rectangles, no matter how far apart they are, is returned.
-data Rect2D n = Rect2D !(Point2D n) !(Point2D n)
-  deriving (Eq, Functor)
-
-instance Ord n => Semigroup (Rect2D n) where { (<>) = rect2DMinBoundOf; }
-instance Map2DShape Rect2D where { map2DShape = fmap; }
-
-newtype Magnitude n = Magnitude n
-  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating, Functor)
-
-type ArcRadius n = Magnitude n
-
-newtype Angle n = Angle n
-  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating, Functor)
-
-type StartAngle n = Angle n
-type EndAngle n   = Angle n
-
-data Arc2D n
-  = Arc2D
-    { theArc2DOrigin :: !(Point2D n)
-    , theArc2DRadius :: !(Magnitude n)
-    , theArc2DStart  :: !(StartAngle Double)
-    , theArc2DEnd    :: !(EndAngle Double)
-    }
-  deriving (Eq, Functor)
-
-instance Map2DShape Arc2D where { map2DShape = fmap; }
-
-data Path2D n = Path2D !(Point2D n) !(UVec.Vector n)
-  deriving Eq
-
-instance Map2DShape Path2D where
-  map2DShape f (Path2D p vec) = Path2D (f <$> p) (UVec.map f vec)
-
-data Cubic2D n = Cubic2D !(Point2D n) !(UVec.Vector n)
-  deriving Eq
-
-instance Map2DShape Cubic2D where
-  map2DShape f (Cubic2D p vec) = Cubic2D (f <$> p) (UVec.map f vec)
-
-data Cubic2DSegment n
-  = Cubic2DSegment
-    { theCubic2DCtrlPt1 :: !(Point2D n)
-    , theCubic2DCtrlPt2 :: !(Point2D n)
-    , theCubic2DEndPoint :: !(Point2D n)
-    }
-  deriving (Eq, Functor)
-
-instance Map2DShape Cubic2DSegment where { map2DShape = fmap; }
-
-data Draw2DShape n
-  = Draw2DReset
-    -- ^ If 'fill' is called, this function sets all pixels in the buffer to the 'fillColor' value.
-  | Draw2DLine   !(Line2D n)
-  | Draw2DRect   !(Rect2D n)
-  | Draw2DArc    !(Arc2D  n)
-  | Draw2DPath   !(Path2D n)
-  | Draw2DCubic  !(Cubic2D n) -- ^ A cubic Bezier spline
-  deriving Eq
-
-instance Map2DShape Draw2DShape where
-  map2DShape f = \ case
-    Draw2DReset   -> Draw2DReset
-    Draw2DLine  o -> Draw2DLine  $ map2DShape f o
-    Draw2DRect  o -> Draw2DRect  $ map2DShape f o
-    Draw2DArc   o -> Draw2DArc   $ map2DShape f o
-    Draw2DPath  o -> Draw2DPath  $ map2DShape f o
-    Draw2DCubic o -> Draw2DCubic $ map2DShape f o
-
-class Is2DShape shape where
-  to2DShape :: shape n -> Draw2DShape n
-
-instance Is2DShape Arc2D   where { to2DShape = Draw2DArc; }
-instance Is2DShape Line2D  where { to2DShape = Draw2DLine; }
-instance Is2DShape Rect2D  where { to2DShape = Draw2DRect; }
-instance Is2DShape Path2D  where { to2DShape = Draw2DPath; }
-instance Is2DShape Cubic2D where { to2DShape = Draw2DCubic; }
-
-class Has2DOrigin shape where
-  origin2D :: Lens' (shape n) (Point2D n)
-
-instance Has2DOrigin Arc2D   where { origin2D = arc2DOrigin; }
-instance Has2DOrigin Line2D  where { origin2D = line2DHead; }
-instance Has2DOrigin Rect2D  where { origin2D = rect2DHead; }
-instance Has2DOrigin Path2D  where { origin2D = path2DOrigin; }
-instance Has2DOrigin Cubic2D where { origin2D = cubic2DOrigin; }
-
-----------------------------------------------------------------------------------------------------
-
-arc2D :: Num n => Arc2D n
-arc2D = Arc2D
-  { theArc2DOrigin = V2 0 0
-  , theArc2DRadius = 1
-  , theArc2DStart  = 0.0
-  , theArc2DEnd    = 2.0 * pi
-  }
-
-arc2DOrigin :: Lens' (Arc2D n) (Point2D n)
-arc2DOrigin = lens theArc2DOrigin $ \ a b -> a{ theArc2DOrigin = b }
-
-arc2DRadius :: Lens' (Arc2D n) (Magnitude n)
-arc2DRadius = lens theArc2DRadius $ \ a b -> a{ theArc2DRadius = b }
-
-arc2DStart :: Lens' (Arc2D n) (StartAngle Double)
-arc2DStart = lens theArc2DStart $ \ a b -> a{ theArc2DStart = b }
-
-arc2DEnd :: Lens' (Arc2D n) (EndAngle Double)
-arc2DEnd = lens theArc2DEnd $ \ a b -> a{ theArc2DEnd = b }
-
-----------------------------------------------------------------------------------------------------
-
-path2DOrigin :: Lens' (Path2D n) (Point2D n)
-path2DOrigin = lens (\ (Path2D p _) -> p) (\ (Path2D _ v) p -> Path2D p v)
-
--- | Construct a new 'Path2D'
-path2D :: UVec.Unbox n => Point2D n -> [Point2D n] -> Path2D n
-path2D p = Path2D p . UVec.fromList . (>>= (\ (V2 x y) -> [x, y]))
-
--- | Deconstruct a 'Path2D' into it's component points
-path2DPoints :: UVec.Unbox n => Path2D n -> (Point2D n, [Point2D n])
-path2DPoints (Path2D p v) = (p, points id (UVec.toList v)) where
-  points stack = \ case
-    x:y:more -> points (stack . ((V2 x y) :)) more
-    _        -> stack []
-
-----------------------------------------------------------------------------------------------------
-
-cubic2DOrigin :: Lens' (Cubic2D n) (Point2D n)
-cubic2DOrigin = lens (\ (Cubic2D p _) -> p) (\ (Cubic2D _ v) p -> Cubic2D p v)
-
--- | Construct a new 'Cubic2D'
-cubic2D :: UVec.Unbox n => Point2D n -> [Cubic2DSegment n] -> Cubic2D n
-cubic2D p = Cubic2D p . UVec.fromList .
-  (>>= (\ (Cubic2DSegment (V2 x1 y1) (V2 x2 y2) (V2 x3 y3)) -> [x1, y1, x2, y2, x3, y3]))
-
--- | Deconstruct a 'Cubic2D' into it's component points
-cubic2DPoints :: UVec.Unbox n => Cubic2D n -> (Point2D n, [Cubic2DSegment n])
-cubic2DPoints (Cubic2D p v) = (p, points id (UVec.toList v)) where
-  points stack = \ case
-    x1:y1:x2:y2:x3:y3:more ->
-      points (stack . ((Cubic2DSegment (V2 x1 y1) (V2 x2 y2) (V2 x3 y3)) :)) more
-    _                      -> stack []
-
-cubic2DCtrlPt1 :: Lens' (Cubic2DSegment n) (Point2D n)
-cubic2DCtrlPt1 = lens theCubic2DCtrlPt1 $ \ a b -> a{ theCubic2DCtrlPt1 = b }
-
-cubic2DCtrlPt2 :: Lens' (Cubic2DSegment n) (Point2D n)
-cubic2DCtrlPt2 = lens theCubic2DCtrlPt1 $ \ a b -> a{ theCubic2DCtrlPt2 = b }
-
-cubic2DEndPoint :: Lens' (Cubic2DSegment n) (Point2D n)
-cubic2DEndPoint = lens theCubic2DEndPoint $ \ a b -> a{ theCubic2DEndPoint = b }
-
-----------------------------------------------------------------------------------------------------
-
--- | An initializing 'Point2D' where 'pointX' and 'pointY' are both zero.
-point2D :: Num n => Point2D n
-point2D = V2 0 0
-
--- | A synonym for 'point2D'.
-size2D :: Num n => Size2D n
-size2D = point2D
-
--- | The X coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
-pointX :: Lens' (Point2D n) n
-pointX = lens (\ (V2 x _) -> x) $ \ (V2 _ y) x -> (V2 x y)
-
--- | The Y coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
-pointY :: Lens' (Point2D n) n
-pointY = lens (\ (V2 _ y) -> y) $ \ (V2 x _) y -> (V2 x y)
-
--- | Expresses the point as a tuple of @(x, y)@ coordinates
-pointXY :: Iso' (Point2D n) (n, n)
-pointXY = iso (\ (V2 x y) -> (x, y)) (\ (x,y) -> V2 x y)
-
-----------------------------------------------------------------------------------------------------
-
 -- | An initializing 'Line2D' where 'lineHead' and 'lineTail' are both the zero 'point2D'.
 line2D :: Num n => Line2D n
 line2D = Line2D point2D point2D
@@ -348,6 +198,16 @@ line2DPoints :: Iso' (Line2D n) (Point2D n, Point2D n)
 line2DPoints = iso (\ (Line2D a b) -> (a, b)) (\ (a,b) -> Line2D a b)
 
 ----------------------------------------------------------------------------------------------------
+
+-- | This type represents a rectangle bounded by two where all sides of the rectangle points are
+-- parallel to the orthogonal basis vectors of the drawing plane. This data type instantiates
+-- 'Data.Semigroup.Semigroup' such that the smallest possible rectangle that can contain both
+-- rectangles, no matter how far apart they are, is returned.
+data Rect2D n = Rect2D !(Point2D n) !(Point2D n)
+  deriving (Eq, Functor)
+
+instance Ord n => Semigroup (Rect2D n) where { (<>) = rect2DMinBoundOf; }
+instance Map2DShape Rect2D where { map2DShape = fmap; }
 
 -- | An initializing 'Line2D' where the 'rectLower' and 'rectUpper' values are the zero 'point2D'.
 rect2D :: Num n => Rect2D n
@@ -400,15 +260,6 @@ rect2DMinBoundOf (Rect2D(V2 xa ya)(V2 xb yb)) (Rect2D(V2 xc yc)(V2 xd yd)) =
   let f4 comp a b c d = comp a $ comp b $ comp c d in Rect2D
     (V2 (f4 min xa xb xc xd) (f4 min ya yb yc yd))
     (V2 (f4 max xa xb xc xd) (f4 max ya yb yc yd))
-data Draw2DPrimitive n
-  = Draw2DReset
-    -- ^ If 'fill' is called, this function sets all pixels in the buffer to the 'fillColor' value.
-  | Draw2DLine  !(PaintSource n)      !(Line2D n)
-  | Draw2DRect  !(Draw2DFillStroke n) !(Rect2D n)
-  | Draw2DArc   !(Draw2DFillStroke n) !(Arc2D  n)
-  | Draw2DPath  !(Draw2DFillStroke n) !(Path2D n)
-  | Draw2DCubic !(Draw2DFillStroke n) !(Cubic2D n) -- ^ A cubic Bezier spline
-  deriving Eq
 
 -- | Returns an intersection of two 'Rect2D's if the two 'Rect2D's overlap.
 rect2DIntersect :: Ord n => Rect2D n -> Rect2D n -> Maybe (Rect2D n)
@@ -424,6 +275,139 @@ rect2DIntersect
     (xlo, xhi) <- isect xa xb xc xd
     (ylo, yhi) <- isect ya yb yc yd
     return $ Rect2D (V2 xlo ylo) (V2 xhi yhi)
+
+-- | Convert a 'Rect2D' to a 'Line2D'
+rect2DDiagonal :: Rect2D n -> Line2D n
+rect2DDiagonal (Rect2D a b) = Line2D a b
+
+-- | Evaluate 'floor' on the 'rect2DHead and 'ceiling' on the 'rect2DTail'.
+rect2DtoInt :: (RealFrac n, Integral i) => Rect2D n -> Rect2D i
+rect2DtoInt r = rect2D
+  & rect2DTail .~ (floor <$> (r ^. rect2DTail))
+  & rect2DHead .~ (ceiling <$> (r ^. rect2DHead))
+
+----------------------------------------------------------------------------------------------------
+
+newtype Magnitude n = Magnitude n
+  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating, Functor)
+
+type ArcRadius n = Magnitude n
+
+newtype Angle n = Angle n
+  deriving (Eq, Ord, Show, Read, Num, Real, Fractional, RealFrac, Floating, Functor)
+
+type StartAngle n = Angle n
+type EndAngle n   = Angle n
+
+data Arc2D n
+  = Arc2D
+    { theArc2DOrigin :: !(Point2D n)
+    , theArc2DRadius :: !(Magnitude n)
+    , theArc2DStart  :: !(StartAngle Double)
+    , theArc2DEnd    :: !(EndAngle Double)
+    }
+  deriving (Eq, Functor)
+
+instance Map2DShape Arc2D where { map2DShape = fmap; }
+
+arc2D :: Num n => Arc2D n
+arc2D = Arc2D
+  { theArc2DOrigin = V2 0 0
+  , theArc2DRadius = 1
+  , theArc2DStart  = 0.0
+  , theArc2DEnd    = 2.0 * pi
+  }
+
+arc2DOrigin :: Lens' (Arc2D n) (Point2D n)
+arc2DOrigin = lens theArc2DOrigin $ \ a b -> a{ theArc2DOrigin = b }
+
+arc2DRadius :: Lens' (Arc2D n) (Magnitude n)
+arc2DRadius = lens theArc2DRadius $ \ a b -> a{ theArc2DRadius = b }
+
+arc2DStart :: Lens' (Arc2D n) (StartAngle Double)
+arc2DStart = lens theArc2DStart $ \ a b -> a{ theArc2DStart = b }
+
+arc2DEnd :: Lens' (Arc2D n) (EndAngle Double)
+arc2DEnd = lens theArc2DEnd $ \ a b -> a{ theArc2DEnd = b }
+
+----------------------------------------------------------------------------------------------------
+
+data Path2D n = Path2D !(Point2D n) !(UVec.Vector n)
+  deriving Eq
+
+instance Map2DShape Path2D where
+  map2DShape f (Path2D p vec) = Path2D (f <$> p) (UVec.map f vec)
+
+path2DOrigin :: Lens' (Path2D n) (Point2D n)
+path2DOrigin = lens (\ (Path2D p _) -> p) (\ (Path2D _ v) p -> Path2D p v)
+
+-- | Construct a new 'Path2D'
+path2D :: UVec.Unbox n => Point2D n -> [Point2D n] -> Path2D n
+path2D p = Path2D p . UVec.fromList . (>>= (\ (V2 x y) -> [x, y]))
+
+-- | Deconstruct a 'Path2D' into it's component points
+path2DPoints :: UVec.Unbox n => Path2D n -> (Point2D n, [Point2D n])
+path2DPoints (Path2D p v) = (p, points id (UVec.toList v)) where
+  points stack = \ case
+    x:y:more -> points (stack . ((V2 x y) :)) more
+    _        -> stack []
+
+----------------------------------------------------------------------------------------------------
+
+data Cubic2D n = Cubic2D !(Point2D n) !(UVec.Vector n)
+  deriving Eq
+
+instance Map2DShape Cubic2D where
+  map2DShape f (Cubic2D p vec) = Cubic2D (f <$> p) (UVec.map f vec)
+
+data Cubic2DSegment n
+  = Cubic2DSegment
+    { theCubic2DCtrlPt1 :: !(Point2D n)
+    , theCubic2DCtrlPt2 :: !(Point2D n)
+    , theCubic2DEndPoint :: !(Point2D n)
+    }
+  deriving (Eq, Functor)
+
+instance Map2DShape Cubic2DSegment where { map2DShape = fmap; }
+
+
+cubic2DOrigin :: Lens' (Cubic2D n) (Point2D n)
+cubic2DOrigin = lens (\ (Cubic2D p _) -> p) (\ (Cubic2D _ v) p -> Cubic2D p v)
+
+-- | Construct a new 'Cubic2D'
+cubic2D :: UVec.Unbox n => Point2D n -> [Cubic2DSegment n] -> Cubic2D n
+cubic2D p = Cubic2D p . UVec.fromList .
+  (>>= (\ (Cubic2DSegment (V2 x1 y1) (V2 x2 y2) (V2 x3 y3)) -> [x1, y1, x2, y2, x3, y3]))
+
+-- | Deconstruct a 'Cubic2D' into it's component points
+cubic2DPoints :: UVec.Unbox n => Cubic2D n -> (Point2D n, [Cubic2DSegment n])
+cubic2DPoints (Cubic2D p v) = (p, points id (UVec.toList v)) where
+  points stack = \ case
+    x1:y1:x2:y2:x3:y3:more ->
+      points (stack . ((Cubic2DSegment (V2 x1 y1) (V2 x2 y2) (V2 x3 y3)) :)) more
+    _                      -> stack []
+
+cubic2DCtrlPt1 :: Lens' (Cubic2DSegment n) (Point2D n)
+cubic2DCtrlPt1 = lens theCubic2DCtrlPt1 $ \ a b -> a{ theCubic2DCtrlPt1 = b }
+
+cubic2DCtrlPt2 :: Lens' (Cubic2DSegment n) (Point2D n)
+cubic2DCtrlPt2 = lens theCubic2DCtrlPt1 $ \ a b -> a{ theCubic2DCtrlPt2 = b }
+
+cubic2DEndPoint :: Lens' (Cubic2DSegment n) (Point2D n)
+cubic2DEndPoint = lens theCubic2DEndPoint $ \ a b -> a{ theCubic2DEndPoint = b }
+
+----------------------------------------------------------------------------------------------------
+
+data Draw2DPrimitive n
+  = Draw2DReset
+    -- ^ If 'fill' is called, this function sets all pixels in the buffer to the 'fillColor' value.
+  | Draw2DLine  !(PaintSource n)      !(Line2D n)
+  | Draw2DRect  !(Draw2DFillStroke n) !(Rect2D n)
+  | Draw2DArc   !(Draw2DFillStroke n) !(Arc2D  n)
+  | Draw2DPath  !(Draw2DFillStroke n) !(Path2D n)
+  | Draw2DCubic !(Draw2DFillStroke n) !(Cubic2D n) -- ^ A cubic Bezier spline
+  deriving Eq
+
 instance Map2DShape Draw2DPrimitive where
   map2DShape f = \ case
     Draw2DReset             -> Draw2DReset
@@ -448,15 +432,14 @@ instance Is2DPrimitive Rect2D  where { to2DShape = Draw2DRect; }
 instance Is2DPrimitive Path2D  where { to2DShape = Draw2DPath; }
 instance Is2DPrimitive Cubic2D where { to2DShape = Draw2DCubic; }
 
--- | Convert a 'Rect2D' to a 'Line2D'
-rect2DDiagonal :: Rect2D n -> Line2D n
-rect2DDiagonal (Rect2D a b) = Line2D a b
+class Has2DOrigin shape where
+  origin2D :: Lens' (shape n) (Point2D n)
 
--- | Evaluate 'floor' on the 'rect2DHead and 'ceiling' on the 'rect2DTail'.
-rect2DtoInt :: (RealFrac n, Integral i) => Rect2D n -> Rect2D i
-rect2DtoInt r = rect2D
-  & rect2DTail .~ (floor <$> (r ^. rect2DTail))
-  & rect2DHead .~ (ceiling <$> (r ^. rect2DHead))
+instance Has2DOrigin Arc2D   where { origin2D = arc2DOrigin; }
+instance Has2DOrigin Line2D  where { origin2D = line2DHead; }
+instance Has2DOrigin Rect2D  where { origin2D = rect2DHead; }
+instance Has2DOrigin Path2D  where { origin2D = path2DOrigin; }
+instance Has2DOrigin Cubic2D where { origin2D = cubic2DOrigin; }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -532,6 +515,14 @@ data PaintSource n
     { thePaintSourceBlit     :: !BlitOperator
     , thePaintSourceFunction :: !(PaintSourceFunction n)
     }
+  deriving Eq
+
+instance Map2DShape PaintSource where
+  map2DShape f (PaintSource{thePaintSourceBlit=blit,thePaintSourceFunction=src}) =
+    PaintSource
+    { thePaintSourceBlit     = blit
+    , thePaintSourceFunction = map2DShape f src
+    }
 
 paintColor :: Color -> PaintSource n
 paintColor c = PaintSource
@@ -545,10 +536,19 @@ paintSourceBlit = lens thePaintSourceBlit $ \ a b -> a{ thePaintSourceBlit = b }
 paintSourceFunction :: Lens' (PaintSource n) (PaintSourceFunction n)
 paintSourceFunction = lens thePaintSourceFunction $ \ a b -> a{ thePaintSourceFunction = b }
 
+----------------------------------------------------------------------------------------------------
+
 data PaintSourceFunction n
   = SolidColorSource  !Color
   | GradientSource    !(Transform2D n PaintGradient)
   | PixelBufferSource () -- TODO
+  deriving Eq
+
+instance Map2DShape PaintSourceFunction where
+  map2DShape f = \ case
+    SolidColorSource   o -> SolidColorSource o
+    GradientSource     o -> GradientSource $ map2DTransform f o
+    PixelBufferSource () -> PixelBufferSource ()
 
 data PaintGradient
   = PaintGradient
@@ -557,6 +557,7 @@ data PaintGradient
     , thePaintGradEndColor   :: !Color
     , thePaintGradStopList   :: !GradientStopList
     }
+  deriving Eq
 
 paintGradType :: Lens' PaintGradient GradientType
 paintGradType = lens thePaintGradType $ \ a b -> a{ thePaintGradType = b }
@@ -590,6 +591,7 @@ data GradientType
   deriving Eq
 
 newtype GradientStopList = GradientStopList (UVec.Vector Word32)
+  deriving Eq
 
 -- | Gradient stop points must be a percentage value, so 'gradStopPoint' values not between 0.0 and
 -- 1.0 will be filtered from this list. The list of stops does not need to include the first and
@@ -621,6 +623,7 @@ data Draw2DFillStroke n
   | StrokeOnly (PaintSource n)
   | FillStroke (PaintSource n) (PaintSource n)
   | StrokeFill (PaintSource n) (PaintSource n)
+  deriving Eq
 
 instance Map2DShape Draw2DFillStroke where
   map2DShape f = \ case

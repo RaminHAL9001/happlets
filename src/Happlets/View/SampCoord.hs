@@ -17,7 +17,7 @@ import           Linear.V2
 -- samples) of an audio signal. A 'Linear.V2.V2' pair's of 'PixCoords' can specify a 2D point on a
 -- screen or canvas, 'Linear.V3.V3' triples of 'PixCoords' can specify a 3D point in a voxel space.
 newtype SampCoord = SampCoord Int32
-  deriving (Eq, Ord, Show, Read, Enum, Num, Integral, Real)
+  deriving (Eq, Ord, Show, Read, Enum, Bounded, Num, Integral, Real)
 
 -- | A pair of 'SampCoord' indicating the location of a pixel in a raster image.
 type PixCoord = V2 SampCoord

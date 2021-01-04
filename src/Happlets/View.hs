@@ -86,7 +86,11 @@ class (Functor render, Applicative render, Monad render, MonadIO render)
 defaultClearScreen :: Happlet2DGraphics render => Color -> render ()
 defaultClearScreen c = tempContext $ do
   resetGraphicsContext
-  draw2D Nothing [prim2D & drawPrimFill .~ Just (paintColor c)]
+  draw2D Nothing
+    [ Draw2DRect
+      (FillOnly $ paintColor c)
+      (rect2D & rect2DHead .~ V2 maxBound maxBound)
+    ]
 
 -- | This class extends the 'Happlet2DGraphics' class with operators for copying sections of the
 -- operand canvas into a pixel buffer.
