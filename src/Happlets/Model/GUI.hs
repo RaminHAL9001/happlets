@@ -65,7 +65,7 @@ import           Prelude                 hiding ((.), id)
 
 import           Happlets.Control.Consequence
 import           Happlets.Provider.React
-import           Happlets.View.SampCoord
+import           Happlets.View.Types2D   (PixSize)
 
 import           Control.Arrow           ((&&&))
 import           Control.Applicative     (Applicative(..), Alternative(..), (<*))

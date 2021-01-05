@@ -13,7 +13,6 @@ module Happlets.View
     Happlet2DBuffersPixels(..), Source, Target,
     -- * Re-Exports
     module Happlets.View.Color,
-    module Happlets.View.SampCoord,
     module Happlets.View.Text,
     module Happlets.View.Types2D,
     module Happlets.View.Canvas,
@@ -21,7 +20,6 @@ module Happlets.View
 
 import           Happlets.View.Canvas
 import           Happlets.View.Color
-import           Happlets.View.SampCoord
 import           Happlets.View.Text
 import           Happlets.View.Types2D
 import           Happlets.Provider.ConfigState

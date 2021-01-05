@@ -43,7 +43,6 @@ library
     Happlets.View.Audio
     Happlets.View.Canvas
     Happlets.View.Color
-    Happlets.View.SampCoord
     Happlets.View.Text
     Happlets.View.Types2D
   other-modules:

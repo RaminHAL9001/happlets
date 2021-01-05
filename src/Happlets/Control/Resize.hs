@@ -1,7 +1,7 @@
 module Happlets.Control.Resize where
 
+import           Happlets.View.Types2D (PixSize)
 import           Happlets.Model.GUI
-import           Happlets.View.SampCoord
 import           Happlets.Provider.ConfigState
 
 ----------------------------------------------------------------------------------------------------

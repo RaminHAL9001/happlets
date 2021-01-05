@@ -1,9 +1,9 @@
 module Happlets.Control.Mouse where
 
+import           Happlets.View.Types2D (SampCoord, PixCoord, V2(..))
 import           Happlets.Control.InputDevice
 import           Happlets.Control.Keyboard
 import           Happlets.Model.GUI
-import           Happlets.View.SampCoord
 
 ----------------------------------------------------------------------------------------------------
 

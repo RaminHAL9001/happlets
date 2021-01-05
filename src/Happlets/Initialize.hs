@@ -104,8 +104,8 @@ module Happlets.Initialize
     Provider(..),
   ) where
 
-import           Happlets.View.SampCoord
 import           Happlets.Model.GUI
+import           Happlets.View.Types2D (PixSize)
 
 import           Control.Arrow
 import           Control.Exception

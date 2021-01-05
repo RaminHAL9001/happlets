@@ -5,7 +5,13 @@
 -- 'Happlets.GUI.CanBufferImages' type class to load from disk and blit to screen bitmap images,
 -- should be enough to construct minimalist user interfaces.
 module Happlets.View.Types2D
-  ( -- * Typeclasses
+  ( -- * Sample Coordinate
+    -- 
+    -- The "samples" are the integer valued locations of pixels on a display, and are used wherever
+    -- a dimensions of a graphical primitive is specified as an integer multiple of the width of a
+    -- display pixel.
+    SampCoord, PixCoord, PixSize, sampCoord,
+    -- * Typeclasses
     Has2DOrigin(..), Is2DPrimitive(..),
     -- * Primitives
     Draw2DPrimitive(..), Map2DShape(..),
@@ -33,7 +39,7 @@ module Happlets.View.Types2D
     cubic2DCtrlPt1, cubic2DCtrlPt2, cubic2DEndPoint,
     -- ** Matrix Transformations
     BoundingBox2D(..), boxBounds2D, boxTransform2D, boxModel2D,
-    Transform2D, idTrans2D, transform2D, trans2DDraw,
+    Transform2D(..), idTrans2D, transform2D, trans2DDraw,
     -- ** Fill Types
     Draw2DFillStroke(..),
     BlitOperator(..),
@@ -44,23 +50,40 @@ module Happlets.View.Types2D
     GradientType(..), GradientStopList, GradientStop(..),
     gradStopsFromList, gradStopsToList, gradStopPoint, gradStopColor,
     -- * Re-exports
-    module Happlets.View.SampCoord,
     module Linear.V2,
     module Linear.Matrix,
   ) where
 
-import           Happlets.View.SampCoord
 import           Happlets.View.Color
 
 import           Control.Arrow
 import           Control.Lens
 import           Control.Monad
 
+import           Data.Int            (Int32)
 import qualified Data.Vector.Unboxed as UVec
 import           Data.Word           (Word32)
 
 import           Linear.V2
 import           Linear.Matrix
+
+----------------------------------------------------------------------------------------------------
+
+-- | A sample coordinate: this is a value that is used to count some integral number of units along
+-- a 1-dimensional axis of some scan line, for example pixels along the edge of a view screen or
+-- canvas. Alone, these elements can represent the amount of time (measured in the units of time
+-- samples) of an audio signal. A 'Linear.V2.V2' pair's of 'PixCoords' can specify a 2D point on a
+-- screen or canvas, 'Linear.V3.V3' triples of 'PixCoords' can specify a 3D point in a voxel space.
+type SampCoord = Int32
+
+-- | A pair of 'SampCoord' indicating the location of a pixel in a raster image.
+type PixCoord = V2 SampCoord
+
+-- | A pair of 'SampCoord' values indicating the size of a rectangle of pixels.
+type PixSize = V2 SampCoord
+
+sampCoord :: Integral i => i -> SampCoord
+sampCoord = fromIntegral
 
 ----------------------------------------------------------------------------------------------------
 
