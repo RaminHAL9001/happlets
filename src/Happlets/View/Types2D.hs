@@ -14,7 +14,7 @@ module Happlets.View.Types2D
     -- * Typeclasses
     Has2DOrigin(..), Is2DPrimitive(..),
     -- * Primitives
-    Draw2DPrimitive(..), Map2DShape(..),
+    Draw2DPrimitive(..), Draw2DShape(..), Map2DShape(..),
     -- ** Points
     Point2D, Size2D,
     point2D, size2D, pointX, pointY, pointXY,
@@ -421,39 +421,56 @@ cubic2DEndPoint = lens theCubic2DEndPoint $ \ a b -> a{ theCubic2DEndPoint = b }
 
 ----------------------------------------------------------------------------------------------------
 
+data Draw2DShape n
+  = Draw2DRect  !(Rect2D n)
+  | Draw2DArc   !(Arc2D  n)
+  | Draw2DPath  !(Path2D n)
+  | Draw2DCubic !(Cubic2D n)
+  deriving Eq
+
+instance Map2DShape Draw2DShape where
+  map2DShape f = \ case
+    Draw2DRect  shape -> Draw2DRect  $ map2DShape f shape
+    Draw2DArc   shape -> Draw2DArc   $ map2DShape f shape
+    Draw2DPath  shape -> Draw2DPath  $ map2DShape f shape
+    Draw2DCubic shape -> Draw2DCubic $ map2DShape f shape
+
+----------------------------------------------------------------------------------------------------
+
 data Draw2DPrimitive n
   = Draw2DReset
-    -- ^ If 'fill' is called, this function sets all pixels in the buffer to the 'fillColor' value.
-  | Draw2DLine  !(PaintSource n)      !(Line2D n)
-  | Draw2DRect  !(Draw2DFillStroke n) !(Rect2D n)
-  | Draw2DArc   !(Draw2DFillStroke n) !(Arc2D  n)
-  | Draw2DPath  !(Draw2DFillStroke n) !(Path2D n)
-  | Draw2DCubic !(Draw2DFillStroke n) !(Cubic2D n) -- ^ A cubic Bezier spline
+    -- ^ Clears all pixels in the buffer to the 'fillColor' value.
+  | Draw2DLines  !(PaintSource n)      [Line2D n]
+    -- ^ Draws several distinct line segments, different from 'Draw2DPath' which draws several
+    -- connected line segments.
+  | Draw2DShapes !(Draw2DFillStroke n) [Draw2DShape n]
+    -- ^ Draws several primitive 'Draw2DShape's.
   deriving Eq
 
 instance Map2DShape Draw2DPrimitive where
   map2DShape f = \ case
-    Draw2DReset             -> Draw2DReset
-    Draw2DLine  paint shape -> Draw2DLine  (map2DShape f paint) (map2DShape f shape)
-    Draw2DRect  paint shape -> Draw2DRect  (map2DShape f paint) (map2DShape f shape)
-    Draw2DArc   paint shape -> Draw2DArc   (map2DShape f paint) (map2DShape f shape)
-    Draw2DPath  paint shape -> Draw2DPath  (map2DShape f paint) (map2DShape f shape)
-    Draw2DCubic paint shape -> Draw2DCubic (map2DShape f paint) (map2DShape f shape)
+    Draw2DReset               -> Draw2DReset
+    Draw2DLines  paint shapes -> Draw2DLines  (map2DShape f paint) (map2DShape f <$> shapes)
+    Draw2DShapes paint shapes -> Draw2DShapes (map2DShape f paint) (map2DShape f <$> shapes)
+
+----------------------------------------------------------------------------------------------------
 
 class Is2DPrimitive shape where
-  to2DShape :: Draw2DFillStroke n -> shape n -> Draw2DPrimitive n
+  to2DShape :: Draw2DFillStroke n -> [shape n] -> Draw2DPrimitive n
 
 instance Is2DPrimitive Line2D  where
-  to2DShape = Draw2DLine . \ case
+  to2DShape = Draw2DLines . \ case
     FillOnly   paint   -> paint
     StrokeOnly paint   -> paint
     FillStroke _ paint -> paint
     StrokeFill paint _ -> paint
 
-instance Is2DPrimitive Arc2D   where { to2DShape = Draw2DArc; }
-instance Is2DPrimitive Rect2D  where { to2DShape = Draw2DRect; }
-instance Is2DPrimitive Path2D  where { to2DShape = Draw2DPath; }
-instance Is2DPrimitive Cubic2D where { to2DShape = Draw2DCubic; }
+instance Is2DPrimitive Arc2D   where { to2DShape paint = Draw2DShapes paint . fmap Draw2DArc; }
+instance Is2DPrimitive Rect2D  where { to2DShape paint = Draw2DShapes paint . fmap Draw2DRect; }
+instance Is2DPrimitive Path2D  where { to2DShape paint = Draw2DShapes paint . fmap Draw2DPath; }
+instance Is2DPrimitive Cubic2D where { to2DShape paint = Draw2DShapes paint . fmap Draw2DCubic; }
+
+----------------------------------------------------------------------------------------------------
 
 class Has2DOrigin shape where
   origin2D :: Lens' (shape n) (Point2D n)
@@ -642,7 +659,7 @@ gradStopsToList (GradientStopList vec) = loop $ UVec.toList vec where
 -- having a border line drawn along the enclosing path, as though a brush were stroking some paint
 -- along the path. This function specifies the order of fill and stroke operations to perform.
 data Draw2DFillStroke n
-  = FillOnly (PaintSource n)
+  = FillOnly   (PaintSource n)
   | StrokeOnly (PaintSource n)
   | FillStroke (PaintSource n) (PaintSource n)
   | StrokeFill (PaintSource n) (PaintSource n)

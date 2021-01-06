@@ -85,9 +85,9 @@ defaultClearScreen :: Happlet2DGraphics render => Color -> render ()
 defaultClearScreen c = tempContext $ do
   resetGraphicsContext
   draw2D Nothing
-    [ Draw2DRect
+    [ Draw2DShapes
       (FillOnly $ paintColor c)
-      (rect2D & rect2DHead .~ V2 maxBound maxBound)
+      [Draw2DRect (rect2D & rect2DHead .~ V2 maxBound maxBound)]
     ]
 
 -- | This class extends the 'Happlet2DGraphics' class with operators for copying sections of the
