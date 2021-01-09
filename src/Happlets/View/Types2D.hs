@@ -6,10 +6,6 @@
 -- should be enough to construct minimalist user interfaces.
 module Happlets.View.Types2D
   ( -- * Sample Coordinate
-    -- 
-    -- The "samples" are the integer valued locations of pixels on a display, and are used wherever
-    -- a dimensions of a graphical primitive is specified as an integer multiple of the width of a
-    -- display pixel.
     SampCoord, PixCoord, PixSize, sampCoord,
     -- * Typeclasses
     Has2DOrigin(..), Is2DPrimitive(..),
@@ -20,10 +16,6 @@ module Happlets.View.Types2D
     point2D, size2D, pointX, pointY, pointXY,
     -- ** Lines
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
-    LineWidth,
-    -- *** Line Style
-    HasLineStyle(..), LineStyle(..), theLineColour,
-    makeLineStyle, lineColor, lineColour, lineWeight,
     -- ** Rectangles
     Rect2D(..), rect2D, rect2DSize, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
     rect2DCenter, rect2DCentre,
@@ -42,6 +34,7 @@ module Happlets.View.Types2D
     Transform2D(..), idTrans2D, transform2D, trans2DDraw,
     -- ** Fill Types
     Draw2DFillStroke(..),
+    LineWidth,
     BlitOperator(..),
     PaintSource(..), PaintSourceFunction(..),
     paintColor, paintSourceBlit, paintSourceFunction,
@@ -110,7 +103,7 @@ size2D = point2D
 -- | The X coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
 pointX :: Lens' (Point2D n) n
 pointX = lens (\ (V2 x _) -> x) $ \ (V2 _ y) x -> (V2 x y)
-
+ 
 -- | The Y coordinate of a 'Point2D', a value expressing some distance along the horizontal axis.
 pointY :: Lens' (Point2D n) n
 pointY = lens (\ (V2 _ y) -> y) $ \ (V2 x _) y -> (V2 x y)
@@ -437,7 +430,7 @@ instance Map2DShape Draw2DShape where
 data Draw2DPrimitive n
   = Draw2DReset
     -- ^ Clears all pixels in the buffer to the 'fillColor' value.
-  | Draw2DLines  !(PaintSource n)      [Line2D n]
+  | Draw2DLines !(LineWidth n) !(PaintSource n) [Line2D n]
     -- ^ Draws several distinct line segments, different from 'Draw2DPath' which draws several
     -- connected line segments.
   | Draw2DShapes !(Draw2DFillStroke n) [Draw2DShape n]
@@ -446,17 +439,17 @@ data Draw2DPrimitive n
 
 instance Map2DShape Draw2DPrimitive where
   map2DShape f = \ case
-    Draw2DReset               -> Draw2DReset
-    Draw2DLines  paint shapes -> Draw2DLines  (map2DShape f paint) (map2DShape f <$> shapes)
-    Draw2DShapes paint shapes -> Draw2DShapes (map2DShape f paint) (map2DShape f <$> shapes)
+    Draw2DReset                -> Draw2DReset
+    Draw2DLines w paint shapes -> Draw2DLines (f w) (map2DShape f paint) (map2DShape f <$> shapes)
+    Draw2DShapes  paint shapes -> Draw2DShapes      (map2DShape f paint) (map2DShape f <$> shapes)
 
 ----------------------------------------------------------------------------------------------------
 
 class Is2DPrimitive shape where
-  to2DShape :: Draw2DFillStroke n -> [shape n] -> Draw2DPrimitive n
+  to2DShape :: Num n => Draw2DFillStroke n -> [shape n] -> Draw2DPrimitive n
 
 instance Is2DPrimitive Line2D  where
-  to2DShape = Draw2DLines . \ case
+  to2DShape = Draw2DLines 1 . \ case
     FillOnly     paint   -> paint
     StrokeOnly _ paint   -> paint
     FillStroke _ _ paint -> paint
@@ -494,39 +487,6 @@ instance MaybeSingleton2D Rect2D where
 
 ----------------------------------------------------------------------------------------------------
 
--- | Provides a lens for changing the colour of various things.
-class HasLineStyle a where { lineStyle :: Lens' (a num) (LineStyle num); }
-
-data LineStyle num
-  = LineStyle
-    { theLineColor  :: !Color
-    , theLineWeight :: !num
-      -- ^ The weight specified in pixels
-    }
-  deriving (Eq, Show, Read)
-
-instance HasLineStyle LineStyle where { lineStyle = lens id $ flip const; }
-
-theLineColour :: LineStyle num -> Color
-theLineColour = theLineColor
-
-makeLineStyle :: Num num => LineStyle num
-makeLineStyle = LineStyle
-  { theLineColor  = packRGBA32 0xA0 0xA0 0xA0 0xA0
-  , theLineWeight = 2
-  }
-
-lineColor :: HasLineStyle line => Lens' (line num) Color
-lineColor = lineStyle . lens theLineColor (\ a b -> a{ theLineColor = b })
-
-lineColour :: HasLineStyle line => Lens' (line num) Color
-lineColour = lineColor
-
-lineWeight :: HasLineStyle line => Lens' (line num) num
-lineWeight = lineStyle . lens theLineWeight (\ a b -> a{ theLineWeight = b })
-
-----------------------------------------------------------------------------------------------------
-
 -- | This sets the blitting function, that is, when an object is blitted to the canvas, how are the
 -- pixels that are already on the canvas (the destination) combined with the new pixels (the
 -- source).
@@ -550,7 +510,7 @@ data BlitOperator
 data PaintSource n
   = PaintSource
     { thePaintSourceBlit     :: !BlitOperator
-    , thePaintSourceFunction :: !(PaintSourceFunction n)
+    , thePaintSourceFunction :: (PaintSourceFunction n)
     }
   deriving Eq
 
@@ -577,7 +537,7 @@ paintSourceFunction = lens thePaintSourceFunction $ \ a b -> a{ thePaintSourceFu
 
 data PaintSourceFunction n
   = SolidColorSource  !Color
-  | GradientSource    !(Transform2D n PaintGradient)
+  | GradientSource    (Transform2D n PaintGradient)
   | PixelBufferSource () -- TODO
   deriving Eq
 
@@ -608,6 +568,8 @@ paintGradEndColor = lens thePaintGradEndColor $ \ a b -> a{ thePaintGradEndColor
 paintGradStopList :: Lens' PaintGradient GradientStopList
 paintGradStopList = lens thePaintGradStopList $ \ a b -> a{ thePaintGradStopList = b }
 
+----------------------------------------------------------------------------------------------------
+
 data GradientStop
   = GradientStop
     { theGradStopPoint :: !Double -- ^ A percentage value
@@ -620,6 +582,8 @@ gradStopPoint = lens theGradStopPoint $ \ a b -> a{ theGradStopPoint = b }
 
 gradStopColor :: Lens' GradientStop Color
 gradStopColor = lens theGradStopColor $ \ a b -> a{ theGradStopColor = b }
+
+----------------------------------------------------------------------------------------------------
 
 data GradientType
   = GradLinear !(Point2D Float) !(Point2D Float)
@@ -661,13 +625,13 @@ type LineWidth n = n
 data Draw2DFillStroke n
   = FillOnly   (PaintSource n)
     -- ^ Only draw the area of the shape, not the outline.
-  | StrokeOnly (LineWidth   n) (PaintSource n)
+  | StrokeOnly !(LineWidth   n) (PaintSource n)
     -- ^ Only draw the outline of the shape, not the area.
-  | FillStroke (LineWidth   n) (PaintSource n) (PaintSource n)
+  | FillStroke !(LineWidth   n) (PaintSource n) (PaintSource n)
     -- ^ Draw first the area of the shape, and then on top of that, draw the outline of the
     -- shape. The first 'PaintSource' is used for the fill (area), the second 'PaintSource' is used
     -- for the stroke (outline). The 'LineWidth' defines the thickness of the stroke.
-  | StrokeFill (LineWidth   n) (PaintSource n) (PaintSource n)
+  | StrokeFill !(LineWidth   n) (PaintSource n) (PaintSource n)
     -- ^ Draw first the outline of the shape, and then on top of that, draw the area of the
     -- shape. The first 'PaintSource' is used for the stroke (outline), the second 'PaintSource' is
     -- used for the fill (area). The 'LineWidth' defines the thickness of the stroke.
