@@ -121,9 +121,6 @@ pointXY = iso (\ (V2 x y) -> (x, y)) (\ (x,y) -> V2 x y)
 
 ----------------------------------------------------------------------------------------------------
 
--- | Values of this type are used when drawing lines or borders around rectangls.
-type LineWidth n = n
-
 -- | A matrix of type 'M44' which is used to construct transformations. Although the name of this
 -- type implies a 2D transformation, it can actually transform along 4 dimensions, making it easier
 -- to setup transformation matrixies according to the 'mkTransformationMat' function.
@@ -460,10 +457,10 @@ class Is2DPrimitive shape where
 
 instance Is2DPrimitive Line2D  where
   to2DShape = Draw2DLines . \ case
-    FillOnly   paint   -> paint
-    StrokeOnly paint   -> paint
-    FillStroke _ paint -> paint
-    StrokeFill paint _ -> paint
+    FillOnly     paint   -> paint
+    StrokeOnly _ paint   -> paint
+    FillStroke _ _ paint -> paint
+    StrokeFill _ paint _ -> paint
 
 instance Is2DPrimitive Arc2D   where { to2DShape paint = Draw2DShapes paint . fmap Draw2DArc; }
 instance Is2DPrimitive Rect2D  where { to2DShape paint = Draw2DShapes paint . fmap Draw2DRect; }
@@ -655,19 +652,30 @@ gradStopsToList (GradientStopList vec) = loop $ UVec.toList vec where
 
 ----------------------------------------------------------------------------------------------------
 
+-- | Values of this type are used when drawing lines or borders around rectangls.
+type LineWidth n = n
+
 -- | Most 'Draw2DPrimitive's enclose an 2D region within a path that can be filled, as well as
 -- having a border line drawn along the enclosing path, as though a brush were stroking some paint
 -- along the path. This function specifies the order of fill and stroke operations to perform.
 data Draw2DFillStroke n
   = FillOnly   (PaintSource n)
-  | StrokeOnly (PaintSource n)
-  | FillStroke (PaintSource n) (PaintSource n)
-  | StrokeFill (PaintSource n) (PaintSource n)
+    -- ^ Only draw the area of the shape, not the outline.
+  | StrokeOnly (LineWidth   n) (PaintSource n)
+    -- ^ Only draw the outline of the shape, not the area.
+  | FillStroke (LineWidth   n) (PaintSource n) (PaintSource n)
+    -- ^ Draw first the area of the shape, and then on top of that, draw the outline of the
+    -- shape. The first 'PaintSource' is used for the fill (area), the second 'PaintSource' is used
+    -- for the stroke (outline). The 'LineWidth' defines the thickness of the stroke.
+  | StrokeFill (LineWidth   n) (PaintSource n) (PaintSource n)
+    -- ^ Draw first the outline of the shape, and then on top of that, draw the area of the
+    -- shape. The first 'PaintSource' is used for the stroke (outline), the second 'PaintSource' is
+    -- used for the fill (area). The 'LineWidth' defines the thickness of the stroke.
   deriving Eq
 
 instance Map2DShape Draw2DFillStroke where
   map2DShape f = \ case
-    FillOnly   a   -> FillOnly   (map2DShape f a)
-    StrokeOnly b   -> StrokeOnly (map2DShape f b)
-    FillStroke a b -> FillStroke (map2DShape f a) (map2DShape f b)
-    StrokeFill b a -> StrokeFill (map2DShape f b) (map2DShape f a)
+    FillOnly   a     -> FillOnly         (map2DShape f a)
+    StrokeOnly w b   -> StrokeOnly (f w) (map2DShape f b)
+    FillStroke w a b -> FillStroke (f w) (map2DShape f a) (map2DShape f b)
+    StrokeFill w b a -> StrokeFill (f w) (map2DShape f b) (map2DShape f a)
