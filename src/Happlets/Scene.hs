@@ -32,7 +32,7 @@ module Happlets.Scene
     countActionKeyboard, countActionClick, countActionDoubleClick, countActionRightClick,
     countActionMouseOver, countActionMouseDrag, countActionAnimation,
     -- ** The Script function type
-    Script, Projector, runScript,
+    Script, Projector, runScript, getViewBounds,
     -- *** Sending and Delegating Events
     actorRedraw, actorAnimate, actorKeyboard, actorClick,
     actorDoubleClick, actorRightClick, actorMouseOver, actorMouseDrag,
@@ -66,6 +66,7 @@ import           Happlets.Control.Keyboard
                  ( CanKeyboard(keyboardEvents),
                    Keyboard(Keyboard, RawKey),
                  )
+import           Happlets.Control.WindowManager
 
 import           Control.Applicative        (Applicative(..), Alternative(..))
 import           Control.Concurrent.MVar    (newMVar, withMVar)
@@ -286,6 +287,12 @@ onAnimate = onQueue actionAnimation
 
 ----------------------------------------------------------------------------------------------------
 
+data ProjectorEnv model
+  = ProjectorEnv
+    { theProjectorRole :: Role model
+    , theProjectorViewBounds :: Rect2D SampCoord
+    }
+
 -- | 'Projector' is a type for drawing and animation functions, so called in keeping with the
 -- thematic metaphor of theater. An 'Actor' has it's image projected onto the canvas by a
 -- 'Projector' function.
@@ -298,7 +305,7 @@ onAnimate = onQueue actionAnimation
 -- somwhere in the 'Projector' to indicate that this particular event should no longer be reacted to
 -- by an 'Actor'.
 newtype Projector model a
-  = Projector{ unwrapProjector :: ConsequenceT (ReaderT (Role model) IO) a }
+  = Projector{ unwrapProjector :: ConsequenceT (ReaderT (ProjectorEnv model) IO) a }
   deriving Functor -- NOT deriving MonadIO
 
 instance Applicative (Projector model) where
@@ -310,8 +317,10 @@ instance Monad (Projector model) where
   (Projector a) >>= f = Projector $ a >>= unwrapProjector . f
 
 instance MonadReader model (Projector model) where
-  ask = Projector $ theRoleModel <$> lift ask
-  local f (Projector (ConsequenceT a)) = Projector $ ConsequenceT $ local (roleModel %~ f) a
+  ask = Projector $ theRoleModel . theProjectorRole <$> lift ask
+  local f (Projector (ConsequenceT a)) =
+    Projector $ ConsequenceT $
+    local (projectorRole . roleModel %~ f) a
 
 instance MonadError Strict.Text (Projector model) where
   throwError = Projector . throwError
@@ -332,18 +341,45 @@ instance Monoid a => Semigroup (Projector model a) where
 
 instance Monoid a => Monoid (Projector model a) where { mempty = pure mempty; mappend = (<>); }
 
-runProjector :: Projector model a -> Role model -> IO (Consequence a)
-runProjector = runReaderT . runConsequenceT . unwrapProjector
+runProjector :: Projector model a -> Rect2D SampCoord -> Role model -> IO (Consequence a)
+runProjector (Projector project) bounds role =
+  runReaderT (runConsequenceT project) $
+  ProjectorEnv
+  { theProjectorRole = role
+  , theProjectorViewBounds = bounds
+  }
 
 -- | not for export
 projectorIO :: IO a -> Projector any a
 projectorIO = Projector . liftIO
 
-subProjector :: Projector sub a -> Role sub -> Projector model a
-subProjector f = projectorIO . runProjector f >=> Projector . consequence
+-- | Runs a 'Projector' within the current 'Projector' context using a new 'Role'. A new PixSize
+-- must be provided, and must intersect with the current 'PixSize' (as is returned by
+-- 'getViewSize'). If the two rectangles do not intersect, this function evaluates to 'empty'.
+subProjector :: Projector sub a -> Rect2D SampCoord -> Role sub -> Projector model a
+subProjector f bounds role =
+  getViewBounds >>=
+  maybe empty
+  ( projectorIO . flip (runProjector f) role >=>
+    Projector . consequence
+  ) . rect2DIntersect bounds
 
-projectorAsks :: (Role model -> a) -> Projector model a
+projectorAsks :: (ProjectorEnv model -> a) -> Projector model a
 projectorAsks = Projector . lift . asks
+
+instance Sized2DRaster (Projector model) where
+  getViewSize = rect2DSize <$> getViewBounds
+
+-- | The task of a 'Projector' is to draw into a 2D raster image. The size of the raster image in
+-- pixels can be retrieved by this function.
+getViewBounds :: Projector model (Rect2D SampCoord)
+getViewBounds = projectorAsks theProjectorViewBounds
+
+projectorAsksRole :: (Role model -> a) -> Projector model a
+projectorAsksRole = projectorAsks . (. theProjectorRole)
+
+projectorRole :: Lens' (ProjectorEnv model) (Role model)
+projectorRole = lens theProjectorRole $ \ a b -> a{ theProjectorRole = b }
 
 -- | Create a closure for a 'Script' function that updates a value of type @private@ in reaction to
 -- some @event@. This function implements the actual logic for how a closure updates it's private
@@ -355,8 +391,8 @@ encloseEventProjector
   :: IORef (Role private)
   -> (event -> Projector private a)
   -> (event -> Projector public a)
-encloseEventProjector ref act event = Projector $ ConsequenceT $ ReaderT $ const $
-  readIORef ref >>= runProjector (act event)
+encloseEventProjector ref act event = Projector $ ConsequenceT $ ReaderT $ \ env ->
+  readIORef ref >>= runProjector (act event) (theProjectorViewBounds env)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -647,11 +683,13 @@ data DrawAction model
     }
 
 runDrawActionGUI
-  :: (Happlet2DGraphics render, MonadIO render)
+  :: (Happlet2DGraphics render, Sized2DRaster render, MonadIO render)
   => Role model -> Maybe (Rect2D SampCoord) -> DrawAction model -> render (Consequence ())
-runDrawActionGUI role clipbox = liftIO . flip runProjector role . runDrawAction clipbox >=> \ case
-  ActionOK drawing -> ActionOK <$> draw2D clipbox drawing
-  otherwise        -> return $ const (error "internal: runDrawActionGUI") <$> otherwise
+runDrawActionGUI role clipbox draw = do
+  bounds <- ($ rect2D) . (rect2DHead .~) <$> getViewSize
+  liftIO (runProjector (runDrawAction clipbox draw) bounds role) >>= \ case
+    ActionOK drawing -> ActionOK <$> draw2D clipbox drawing
+    otherwise        -> return $ const (error "internal: runDrawActionGUI") <$> otherwise
 
 runDrawAction
   :: Maybe (Rect2D SampCoord)
@@ -671,8 +709,8 @@ encloseDrawAction ref = \ case
   DrawConst draw -> DrawConst draw
   DrawAction{drawActionText=txt,drawAction=draw} -> DrawAction
     { drawActionText = txt
-    , drawAction = Projector $ ConsequenceT $ ReaderT $ const $
-        readIORef ref >>= runProjector draw
+    , drawAction = Projector $ ConsequenceT $ ReaderT $ \ env ->
+        readIORef ref >>= runProjector draw (theProjectorViewBounds env)
     }
 
 ----------------------------------------------------------------------------------------------------
@@ -711,7 +749,7 @@ data TypedActor model
 -- context.
 actorRedraw :: Maybe (Rect2D SampCoord) -> Projector model [Draw2DPrimitive SampCoord]
 actorRedraw clipbox =
-  projectorAsks theActionDraw >>= maybe (pure []) (runDrawAction clipbox)
+  projectorAsksRole theActionDraw >>= maybe (pure []) (runDrawAction clipbox)
 
 -- | Delegate or send a new 'Keyboard' event to the current 'TypedActor' of the 'Script' function
 -- context.
@@ -741,19 +779,19 @@ actorRightClick mouse =
 -- function context.
 actorMouseOver :: Mouse -> Projector model [Draw2DPrimitive SampCoord]
 actorMouseOver mouse =
-  projectorAsks theActionMouseOver >>= maybe (pure []) (flip runAnimateAction mouse)
+  projectorAsksRole theActionMouseOver >>= maybe (pure []) (flip runAnimateAction mouse)
 
 -- | Delegate or send a new 'Mouse' mouse-drag event to the current 'TypedActor' of the 'Projector'
 -- function context.
 actorMouseDrag :: Mouse -> Projector model [Draw2DPrimitive SampCoord]
 actorMouseDrag drag =
-  projectorAsks theActionMouseDrag >>= maybe (pure []) (flip runAnimateAction drag)
+  projectorAsksRole theActionMouseDrag >>= maybe (pure []) (flip runAnimateAction drag)
 
 -- | Delegate or send a new animation event to the current 'TypedActor' of the 'Projector' function
 -- context.
 actorAnimate :: UTCTime -> Projector model [Draw2DPrimitive SampCoord]
 actorAnimate t =
-  projectorAsks theActionAnimation >>= maybe (pure []) (flip runTimeAnimateAction t)
+  projectorAsksRole theActionAnimation >>= maybe (pure []) (flip runTimeAnimateAction t)
 
 -- | Calls all relevant "enclose" functions to create a closure around an entire 'Role' by creating
 -- a closure around an every 'EventAction' or 'DrawAction' function stored within the 'Role'.
@@ -972,13 +1010,17 @@ sceneUpdateAllHandlers = do
   upd countActionDraw actionDraw $ DrawAction
     { drawActionText = ""
     , drawAction =
-        projectorAsks (theSceneRegistry . theRoleModel) >>=
+        getViewBounds >>= \ bounds ->
+        projectorAsksRole (theSceneRegistry . theRoleModel) >>=
         Projector .
         reactEventRegistry True []
         (\ _halt role ->
            join $ maybe
            (pure $ pure ActionHalt)
-           ( lift . unwrapProjector . flip subProjector role . runDrawAction Nothing >=> \ draw ->
+           ( lift .
+             unwrapProjector .
+             (\ f -> subProjector f bounds role) .
+             runDrawAction Nothing >=> \ draw ->
              pure (modify (<> draw) >> pure ActionHalt)
            )
            (theActionDraw role)
@@ -1123,11 +1165,13 @@ guiInterpretScriptRole script role =
 
 -- | Execute a 'Projector' function within the context of the current 'Act'.
 guiInterpretProjector
-  :: Projector model a
+  :: Managed provider
+  => Projector model a
   -> TypedActor model
   -> GUI provider Act (Consequence a)
 guiInterpretProjector direct (TypedActor{theTypedActorRole=ioRef}) =
-  liftIO $ readIORef ioRef >>= runProjector direct
+  rect2DSize <$> getConfig windowSize >>= \ size ->
+  liftIO (readIORef ioRef >>= runProjector direct (rect2DHead .~ size $ rect2D))
 
 -- | Iterate through all 'Actor's in a 'Scene's 'Registry' using the 'reactEventRegistry'
 -- function. The arguments to this function are mostly the same as 'reactEventRegistry': the first
@@ -1182,7 +1226,7 @@ newActHapplet init f = newHappletIO $ do
 -- | Use this function with the 'attachWindow' function and the result of 'newActHapplet' to create
 -- the OS window.
 actWindow
-  :: ( CanMouse provider, CanKeyboard provider, CanAnimate provider
+  :: ( CanMouse provider, CanKeyboard provider, CanAnimate provider, Managed provider
      , HappletWindow provider render, Happlet2DGraphics render
      )
   => PixSize -> GUI provider Act ()
@@ -1193,8 +1237,9 @@ actWindow _initSize = resetEventHandlers
 -- Event handler resets
 
 actResetMouseEvents
-  :: (CanAnimate provider, CanMouse provider,
-      HappletWindow provider render, Happlet2DGraphics render)
+  :: ( CanAnimate provider, CanMouse provider, Managed provider
+     , HappletWindow provider render, Happlet2DGraphics render
+     )
   => GUI provider Act ()
 actResetMouseEvents =
   theSceneStats <$> use actCurrentScene >>= \ stats ->
@@ -1211,7 +1256,9 @@ actResetKeyboardEvents = do
   keyboardEvents $ if keyboard then actKeyboardHandler else const cancel
 
 actResetAnimationEvents
-  :: (CanAnimate provider, HappletWindow provider render, Happlet2DGraphics render)
+  :: ( CanAnimate provider, HappletWindow provider render
+     , Managed provider, Happlet2DGraphics render
+     )
   => GUI provider Act ()
 actResetAnimationEvents =
   theSceneStats <$> use actCurrentScene >>= \ stats ->
@@ -1219,7 +1266,7 @@ actResetAnimationEvents =
   if countActionAnimation stats > 0 then actAnimationHandler else const cancel
 
 resetEventHandlers
-  :: ( CanMouse provider, CanKeyboard provider, CanAnimate provider
+  :: ( CanMouse provider, CanKeyboard provider, CanAnimate provider, Managed provider
      , HappletWindow provider render, Happlet2DGraphics render
      )
   => GUI provider Act ()
@@ -1261,19 +1308,21 @@ actKeyboardHandler evt = case evt of
 
 -- | Force an animation step event to occur in the current 'Act'.
 actAnimationHandler
-  :: (HappletWindow provider render, Happlet2DGraphics render)
+  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
   => UTCTime -> GUI provider Act ()
 actAnimationHandler t0 =
   -- If there is an animation handler in effect, mouse actions are stored in 'actNextMouseAction' so
   -- that they may be delayed until the next animation frame event, to ensure mouse events are
   -- synchronized with animation frame events.
   actActualMouseHandler >>
+  rect2DSize <$> getConfig windowSize >>= \ size ->
   sceneAction True mempty
   ( \ _halt role ->
     case theActionAnimation role of
       Nothing     -> return empty
       Just action -> do
-        result <- liftIO $ runProjector (runTimeAnimateAction action t0) role
+        result <- liftIO $
+          runProjector (runTimeAnimateAction action t0) (rect2DHead .~ size $ rect2D) role
         let update role r = (modify $! mappend $ roleEventStats role) >> return r
         case result of
           ActionOK draw  -> lift (onCanvas $ draw2D Nothing draw) >> update role ActionHalt
@@ -1313,7 +1362,9 @@ data MouseStatus
 -- are "button-down" (leading edge triggered), the mouse event is sent as it is to the 'actClick'
 -- function for all 'Actor's in the 'Scene'.
 actMouseHandler
-  :: (CanAnimate provider, HappletWindow provider render, Happlet2DGraphics render)
+  :: ( CanAnimate provider, Managed provider
+     , HappletWindow provider render, Happlet2DGraphics render
+     )
   => Mouse -> GUI provider Act ()
 actMouseHandler new =
   -- TODO: certain constant values have been hard-coded into this function, like the double-click
@@ -1344,7 +1395,7 @@ actMouseHandler new =
 -- | This is the function that actually executes the mouse action. The mouse action is taken from
 -- the 'Act' state field 'theNextMouseAction'.
 actActualMouseHandler
-  :: (HappletWindow provider render, Happlet2DGraphics render)
+  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
   => GUI provider Act ()
 actActualMouseHandler =
   liftIO getCurrentTime >>= \ t ->
@@ -1415,18 +1466,21 @@ sceneReactMouse getHandler event =
   )
 
 sceneMouseMotionAction
-  :: (HappletWindow provider render, Monad render, Happlet2DGraphics render)
+  :: (HappletWindow provider render, Managed provider, Monad render, Happlet2DGraphics render)
   => AnimateAction PixCoord Mouse Actor
   -> Role Actor
   -> Mouse
   -> GUI provider Act (Consequence ())
 sceneMouseMotionAction action role event =
-  liftIO (runProjector (runAnimateAction action event) role) >>= \ case
+  rect2DSize <$> getConfig windowSize >>= \ size ->
+  liftIO
+  ( runProjector (runAnimateAction action event) (rect2DHead .~ size $ rect2D) role
+  ) >>= \ case
     ActionOK drawing -> onOSBuffer $ ActionOK <$> draw2D Nothing drawing
     otherwise        -> return $ const (error "internal: sceneDragAnimate") <$> otherwise
 
 sceneDragAnimate
-  :: (HappletWindow provider render, Happlet2DGraphics render)
+  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
   => (Role Actor -> Maybe (AnimateAction PixCoord Mouse Actor))
   -> Mouse
   -> GUI provider Act ()
@@ -1465,12 +1519,12 @@ actDoubleClick = sceneReactMouse theActionDoubleClick
 
 -- | Force a 'Mouse'-over event to occur in the current 'Act'.
 actMouseOver
-  :: (HappletWindow provider render, Happlet2DGraphics render)
+  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
   => Mouse -> GUI provider Act ()
 actMouseOver = sceneDragAnimate theActionMouseOver
 
 -- | Force a 'Mouse' drav event to occur in the current 'Act'.
 actMouseDrag
-  :: (HappletWindow provider render, Happlet2DGraphics render)
+  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
   => Mouse -> GUI provider Act ()
 actMouseDrag = sceneDragAnimate theActionMouseDrag

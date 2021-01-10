@@ -8,7 +8,7 @@
 -- been made at the time of this writing.
 module Happlets.View
   ( -- * 2D Graphics Typeclass
-    Happlet2DGraphics(..), BlitOperator(..), modifyPixel, defaultClearScreen,
+    Happlet2DGraphics(..), Sized2DRaster(..), BlitOperator(..), modifyPixel, defaultClearScreen,
     -- * Image Buffers
     Happlet2DBuffersPixels(..), Source, Target,
     -- * Re-Exports
@@ -37,6 +37,11 @@ type Source image = image
 -- for operations like blitting.
 type Target image = image
 
+-- | Any rendering context that renders an image into a raster of pixels should be able to return
+-- the size of the pixel raster as a 'PixSize' value.
+class Sized2DRaster render where
+  getViewSize :: render PixSize
+
 -- | This is a set of of drawing primitives functions for updating the graphics in a Happlet window,
 -- which is essentially a subset of Cairo Graphics or Rasterific. This class must instantiate
 -- 'Control.Monad.Monad' and 'Control.Monad.IO.Class.MonadIO' because it is expected to perform
@@ -46,7 +51,7 @@ type Target image = image
 -- function type into this class will also need to instantiate 'Happlet2DGeometry',
 -- 'Happlet2DBuffersPixels', or both. Otherwise, the 'fill' and 'stroke' functions provided in this
 -- typeclas here have little meaning.
-class (Functor render, Applicative render, Monad render, MonadIO render)
+class (Functor render, Applicative render, Monad render, MonadIO render, Sized2DRaster render)
   => Happlet2DGraphics render where
   -- | Lookup or update a pixel value at the given 'Point2D' position on the canvas immediately,
   -- without otherwise changing anything in the graphics context of the @render@ function. This

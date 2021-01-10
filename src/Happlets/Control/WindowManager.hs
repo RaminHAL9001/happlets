@@ -2,7 +2,10 @@
 -- the back-end 'Happlets.Provider.Provider' may provide. Not all back-end
 -- 'Happlets.Provider.Provider's provide all types of events. If the @provider@ type you are using
 -- does instantiate the below classes, you may program your 'Happlet' to receive that type of event.
-module Happlets.Control.WindowManager where
+module Happlets.Control.WindowManager
+  ( Managed(..)
+  , module Happlets.Provider.ConfigState
+  ) where
 
 import           Happlets.Model.GUI
 import           Happlets.Provider.ConfigState
