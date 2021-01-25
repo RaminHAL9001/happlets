@@ -42,7 +42,6 @@ module Happlets.Scene
     -- *** Event Handler Types
     EventAction(..), runEventAction,
     DrawAction(..), runDrawAction, runDrawActionGUI,
-    AnimateAction(..), ElapsedTime, runAnimateAction, runTimeAnimateAction,
     -- ** Low-Level Happlets APIs
     guiInterpretScript, guiInterpretProjector,
     actKeyboardHandler,
@@ -56,7 +55,6 @@ import           Happlets.Model
 import           Happlets.Model.Registry
 import           Happlets.View
 import           Happlets.Control.Animate     (CanAnimate(stepFrameEvents))
-import           Happlets.Control.Consequence (Consequence(..), Consequential(..))
 import           Happlets.Control.Mouse
                  ( CanMouse(mouseEvents), Mouse(..),
                    MouseEventPattern(MouseButton, MouseDrag, MouseAll),
@@ -68,23 +66,21 @@ import           Happlets.Control.Keyboard
                  )
 import           Happlets.Control.WindowManager
 
-import           Control.Applicative        (Applicative(..), Alternative(..))
+import           Control.Applicative        (Alternative(..))
 import           Control.Concurrent.MVar    (newMVar, withMVar)
 import           Control.Lens
-                 ( Lens', lens, cloneLens, view, use, assign, (%~), (.~), (.=),
+                 ( Lens', lens, cloneLens, view, use, assign, modifying, (^.), (%~), (.~), (.=),
                  )
 import           Control.Monad              (MonadPlus(..), join, (>=>), guard)
-import           Control.Monad.Except       (MonadError(..))
-import           Control.Monad.Fail         (MonadFail(..))
+import           Control.Monad.Fail
 import           Control.Monad.IO.Class     (MonadIO(..))
 import           Control.Monad.Reader       (MonadReader(..), ReaderT(..), asks)
-import           Control.Monad.State        (MonadState(..), StateT(..), state, runStateT)
 import           Control.Monad.Trans        (MonadTrans(..))
 
 --import           Data.Functor.Const         (Const(..))
 import           Data.IORef                 (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Text                  as Strict
-import           Data.Time.Clock            (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
+import           Data.Time.Clock            (UTCTime, getCurrentTime, diffUTCTime)
 
 import           System.IO                  (hPutStrLn, stderr)
 
@@ -259,19 +255,19 @@ onRightClick = onQueue actionRightClick
 -- | Alter the mouse-over event handler function, which is an event that occurs if the mouse is
 -- moving over the drawn graphical representation of the 'TypedActor', but none of the mouse buttons
 -- are depressed.
-onMouseOver :: OnQueue (AnimateAction PixCoord Mouse) model
+onMouseOver :: OnQueue (EventAction Mouse) model
 onMouseOver = onQueue actionMouseOver
 
 -- | Alter the mouse-drag event handler function, which is an event that occurs when a mouse drag
 -- action begins while the mouse action button (usually the left mouse button) is depressed and
 -- begins moving while cursor is over the 'TypedActor's drawn graphical representation in the scene.
-onMouseDrag :: OnQueue (AnimateAction PixCoord Mouse) model
+onMouseDrag :: OnQueue (EventAction Mouse) model
 onMouseDrag = onQueue actionMouseDrag
 
 -- | If any 'TypedActor' in a 'Scene' has an animation type event handler set, an animation event
 -- loop is enabled, and animation frame step events are broadcast to all 'TypedActor's who have set
 -- this event handler, repeatedly and at very fast regular intervals.
-onAnimate :: OnQueue (AnimateAction UTCTime ElapsedTime) model
+onAnimate :: OnQueue (EventAction UTCTime) model
 onAnimate = onQueue actionAnimation
 
 ---- | Set to 'True' if any part of the 'scriptRole' is changed.
@@ -381,18 +377,18 @@ projectorAsksRole = projectorAsks . (. theProjectorRole)
 projectorRole :: Lens' (ProjectorEnv model) (Role model)
 projectorRole = lens theProjectorRole $ \ a b -> a{ theProjectorRole = b }
 
--- | Create a closure for a 'Script' function that updates a value of type @private@ in reaction to
--- some @event@. This function implements the actual logic for how a closure updates it's private
--- data of type @private@ using the public data of type @public@. Except for 'encloseDrawAction',
--- all other "staging" functions call into this function. Although 'encloseDrawAction' has nearly
--- identical logic to 'encloseEventScript' it is a reader monad rather than a state monad, so must
--- be treated slightly differently.
-encloseEventProjector
-  :: IORef (Role private)
-  -> (event -> Projector private a)
-  -> (event -> Projector public a)
-encloseEventProjector ref act event = Projector $ ConsequenceT $ ReaderT $ \ env ->
-  readIORef ref >>= runProjector (act event) (theProjectorViewBounds env)
+---- | Create a closure for a 'Script' function that updates a value of type @private@ in reaction to
+---- some @event@. This function implements the actual logic for how a closure updates it's private
+---- data of type @private@ using the public data of type @public@. Except for 'encloseDrawAction',
+---- all other "staging" functions call into this function. Although 'encloseDrawAction' has nearly
+---- identical logic to 'encloseEventScript' it is a reader monad rather than a state monad, so must
+---- be treated slightly differently.
+--encloseEventProjector
+--  :: IORef (Role private)
+--  -> (event -> Projector private a)
+--  -> (event -> Projector public a)
+--encloseEventProjector ref act event = Projector $ ConsequenceT $ ReaderT $ \ env ->
+--  readIORef ref >>= runProjector (act event) (theProjectorViewBounds env)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -412,9 +408,9 @@ data Role model
     , theActionClick       :: !(Maybe (EventAction Mouse model))
     , theActionDoubleClick :: !(Maybe (EventAction Mouse model))
     , theActionRightClick  :: !(Maybe (EventAction Mouse model))
-    , theActionMouseOver   :: !(Maybe (AnimateAction PixCoord Mouse model))
-    , theActionMouseDrag   :: !(Maybe (AnimateAction PixCoord Mouse model))
-    , theActionAnimation   :: !(Maybe (AnimateAction UTCTime ElapsedTime model))
+    , theActionMouseOver   :: !(Maybe (EventAction Mouse model))
+    , theActionMouseDrag   :: !(Maybe (EventAction Mouse model))
+    , theActionAnimation   :: !(Maybe (EventAction UTCTime model))
     }
 
 -- | Expresses information about which event handlers in a 'TypedActor' are set as an integer so
@@ -480,20 +476,24 @@ instance Semigroup ActorEventHandlerStats where
     , countActionAnimation   = add countActionAnimation
     }
 
---diffActorEventHandlerStats :: ActorEventHandlerStats -> ActorEventHandlerStats -> ActorEventHandlerStats
---diffActorEventHandlerStats a b =
---  let diff f a b = if f a < f b then 1 else if f a > f b then -1 else 0 in
---  ActorEventHandlerStats
---  { countActionDraw        = diff countActionDraw a b
---  , countActionSelect      = diff countActionSelect a b
---  , countActionKeyboard    = diff countActionKeyboard a b
---  , countActionClick       = diff countActionClick a b
---  , countActionDoubleClick = diff countActionDoubleClick a b
---  , countActionRightClick  = diff countActionRightClick a b
---  , countActionMouseOver   = diff countActionMouseOver a b
---  , countActionMouseDrag   = diff countActionMouseDrag a b
---  , countActionAnimation   = diff countActionAnimation a b
---  }
+diffActorEventHandlerStats
+  :: ActorEventHandlerStats
+  -> ActorEventHandlerStats
+  -> ActorEventHandlerStats
+diffActorEventHandlerStats a b =
+  let diff f a b = if f a < f b then 1 else if f a > f b then -1 else 0 in
+  ActorEventHandlerStats
+  { countActors            = diff countActors a b
+  , countActionDraw        = diff countActionDraw a b
+  , countActionSelect      = diff countActionSelect a b
+  , countActionKeyboard    = diff countActionKeyboard a b
+  , countActionClick       = diff countActionClick a b
+  , countActionDoubleClick = diff countActionDoubleClick a b
+  , countActionRightClick  = diff countActionRightClick a b
+  , countActionMouseOver   = diff countActionMouseOver a b
+  , countActionMouseDrag   = diff countActionMouseDrag a b
+  , countActionAnimation   = diff countActionAnimation a b
+  }
 
 roleEventStats :: forall any . Role any -> ActorEventHandlerStats
 roleEventStats r = ActorEventHandlerStats
@@ -569,14 +569,14 @@ actionDoubleClick = lens theActionDoubleClick $ \ a b -> a{ theActionDoubleClick
 actionRightClick :: Lens' (Role model) (Maybe (EventAction Mouse model))
 actionRightClick = lens theActionRightClick $ \ a b -> a{ theActionRightClick = b }
 
-actionMouseOver :: Lens' (Role model) (Maybe (AnimateAction PixCoord Mouse model))
+actionMouseOver :: Lens' (Role model) (Maybe (EventAction Mouse model))
 actionMouseOver = lens theActionMouseOver $ \ a b -> a{ theActionMouseOver = b }
 
-actionMouseDrag :: Lens' (Role model) (Maybe (AnimateAction PixCoord Mouse model))
+actionMouseDrag :: Lens' (Role model) (Maybe (EventAction Mouse model))
 actionMouseDrag = lens theActionMouseDrag $ \ a b -> a{ theActionMouseDrag = b }
 
 -- | Set the action to perform when an animation step occurs.
-actionAnimation :: Lens' (Role model) (Maybe (AnimateAction UTCTime ElapsedTime model))
+actionAnimation :: Lens' (Role model) (Maybe (EventAction UTCTime model))
 actionAnimation = lens theActionAnimation $ \ a b -> a{ theActionAnimation = b }
 
 ----------------------------------------------------------------------------------------------------
@@ -627,49 +627,6 @@ encloseEventAction
 encloseEventAction ref (EventAction{theActionText=txt,theAction=act}) = EventAction
   { theActionText = txt
   , theAction     = encloseEventScript ref act
-  }
-
-----------------------------------------------------------------------------------------------------
-
-type ElapsedTime = Double
-
-data AnimateAction init time model
-  = AnimateAction
-    { theAnimationLength    :: !(Maybe NominalDiffTime)
-      -- ^ Length of the animation, in seconds.
-    , theAnimationStartTime :: !init
-      -- ^ The time this animation started, or the point at which the drag started.
-    , theAnimateAction      :: !(init -> time -> Projector model [Draw2DPrimitive SampCoord])
-      -- ^ This function takes a @time@ value, which could be units of seconds, or it could be a
-      -- mouse position in the case of 'whenMouseDrag' or 'whenMouseOver', and updates the
-      -- @model@. Typically @time@ is computed relative to the @init@ value. The 'actionDraw'
-      -- function is evaluated only if this function returns 'True'.
-    }
-
--- | Execute an 'AnimateAction' step for the current time.
-runTimeAnimateAction
-  :: AnimateAction UTCTime Double model
-  -> UTCTime -> Projector model [Draw2DPrimitive SampCoord]
-runTimeAnimateAction action@(AnimateAction{theAnimationStartTime=start}) now =
-  let t = diffUTCTime now start in
-  if maybe True (t <=) (theAnimationLength action)
-  then theAnimateAction action start $ realToFrac t
-  else cancel
-
-runAnimateAction
-  :: AnimateAction PixCoord event model
-  -> event -> Projector model [Draw2DPrimitive SampCoord]
-runAnimateAction (AnimateAction{theAnimationStartTime=start,theAnimateAction=act}) = act start
-
--- | Create a closure around an 'AnimateAction' function hiding the data of type @private@.
-encloseAnimateAction
-  :: IORef (Role private)
-  -> AnimateAction init time private
-  -> AnimateAction init time public
-encloseAnimateAction ref action = AnimateAction
-  { theAnimationLength    = theAnimationLength action
-  , theAnimationStartTime = theAnimationStartTime action
-  , theAnimateAction      = encloseEventProjector ref . theAnimateAction action
   }
 
 ----------------------------------------------------------------------------------------------------
@@ -777,21 +734,21 @@ actorRightClick mouse =
 
 -- | Delegate or send a new 'Mouse' mouse-over event to the current 'TypedActor' of the 'Projector'
 -- function context.
-actorMouseOver :: Mouse -> Projector model [Draw2DPrimitive SampCoord]
+actorMouseOver :: Mouse -> Script model ()
 actorMouseOver mouse =
-  projectorAsksRole theActionMouseOver >>= maybe (pure []) (flip runAnimateAction mouse)
+  scriptGetsRole theActionMouseOver >>= maybe (pure ()) (flip runEventAction mouse)
 
 -- | Delegate or send a new 'Mouse' mouse-drag event to the current 'TypedActor' of the 'Projector'
 -- function context.
-actorMouseDrag :: Mouse -> Projector model [Draw2DPrimitive SampCoord]
+actorMouseDrag :: Mouse -> Script model ()
 actorMouseDrag drag =
-  projectorAsksRole theActionMouseDrag >>= maybe (pure []) (flip runAnimateAction drag)
+  scriptGetsRole theActionMouseDrag >>= maybe (pure ()) (flip runEventAction drag)
 
 -- | Delegate or send a new animation event to the current 'TypedActor' of the 'Projector' function
 -- context.
-actorAnimate :: UTCTime -> Projector model [Draw2DPrimitive SampCoord]
+actorAnimate :: UTCTime -> Script model ()
 actorAnimate t =
-  projectorAsksRole theActionAnimation >>= maybe (pure []) (flip runTimeAnimateAction t)
+  scriptGetsRole theActionAnimation >>= maybe (pure ()) (flip runEventAction t)
 
 -- | Calls all relevant "enclose" functions to create a closure around an entire 'Role' by creating
 -- a closure around an every 'EventAction' or 'DrawAction' function stored within the 'Role'.
@@ -806,15 +763,15 @@ encloseRole
 encloseRole ref pack initPublic = Role
   { theRoleModel         = initPublic
   , theRoleLabel         = ""
-  , theActionDraw        = encloseDrawAction    ref <$> theActionDraw        pack
-  , theActionSelect      = encloseEventAction   ref <$> theActionSelect      pack
-  , theActionKeyboard    = encloseEventAction   ref <$> theActionKeyboard    pack
-  , theActionClick       = encloseEventAction   ref <$> theActionClick       pack
-  , theActionDoubleClick = encloseEventAction   ref <$> theActionDoubleClick pack
-  , theActionRightClick  = encloseEventAction   ref <$> theActionRightClick  pack
-  , theActionMouseOver   = encloseAnimateAction ref <$> theActionMouseOver   pack
-  , theActionMouseDrag   = encloseAnimateAction ref <$> theActionMouseDrag   pack
-  , theActionAnimation   = encloseAnimateAction ref <$> theActionAnimation   pack
+  , theActionDraw        = encloseDrawAction  ref <$> theActionDraw        pack
+  , theActionSelect      = encloseEventAction ref <$> theActionSelect      pack
+  , theActionKeyboard    = encloseEventAction ref <$> theActionKeyboard    pack
+  , theActionClick       = encloseEventAction ref <$> theActionClick       pack
+  , theActionDoubleClick = encloseEventAction ref <$> theActionDoubleClick pack
+  , theActionRightClick  = encloseEventAction ref <$> theActionRightClick  pack
+  , theActionMouseOver   = encloseEventAction ref <$> theActionMouseOver   pack
+  , theActionMouseDrag   = encloseEventAction ref <$> theActionMouseDrag   pack
+  , theActionAnimation   = encloseEventAction ref <$> theActionAnimation   pack
   }
 
 -- | not for export
@@ -1153,14 +1110,15 @@ guiInterpretScriptRole
   :: Script model a
   -> Role model
   -> GUI provider Act (Consequence a, Maybe (Role model))
-guiInterpretScriptRole script role =
-  get >>= \ act ->
-  liftIO $
-  runScript script ScriptState
-  { theScriptRole = role
-  , theScriptAct  = act
-  , theScriptRoleUpdated = False
-  } >>= \ (result, state) ->
+guiInterpretScriptRole script role = do
+  act <- get
+  (result, state) <- liftIO $
+    runScript script ScriptState
+    { theScriptRole = role
+    , theScriptAct  = act
+    , theScriptRoleUpdated = False
+    }
+  put $ theScriptAct state
   return (result, guard (theScriptRoleUpdated state) >> Just (theScriptRole state))
 
 -- | Execute a 'Projector' function within the context of the current 'Act'.
@@ -1187,6 +1145,44 @@ sceneAction
 sceneAction upwards fold act =
   onScene (use sceneRegistry) >>=
   reactEventRegistry upwards fold act
+
+-- | Not for export
+--
+-- With the given @event@, call the 'EventAction' taken by the given 'Lens', in order of most
+-- recently added to least recently added, for each 'Actor's in the current 'Act'. Stop calling
+-- 'EventActions' after the first 'EventAction' to return a 'pure' or 'empty' consequence. 
+triggerEventHandlers
+  :: Lens' (Role Actor) (Maybe (EventAction event Actor))
+  -> event
+  -> GUI provider Act ()
+triggerEventHandlers handler event =
+  sceneAction False (mempty :: ActorEventHandlerStats)
+  ( \ halt role0 ->
+    case role0 ^. handler of
+      Nothing     -> return empty
+      Just action -> do
+        (result, maybeNewRole) <- lift $
+          guiInterpretScriptRole (runEventAction action event) role0
+        let role = maybe role0 id maybeNewRole
+        let updateRole = maybe ActionHalt ActionOK maybeNewRole
+        let update roleStats r =
+              ( modify $ mappend $!
+                diffActorEventHandlerStats (roleEventStats role0) roleStats
+              ) >> r
+        case result of
+          ActionOK   ()  -> update (roleEventStats role) $ halt updateRole
+          ActionHalt     -> update (roleEventStats role) $ return updateRole
+          ActionCancel   -> do
+            let updatedRole = (handler .~ Nothing) role
+            update (roleEventStats updatedRole) $ halt $ ActionOK updatedRole
+          ActionFail msg -> update mempty $ return $ ActionFail msg
+  ) >>=
+  onScene . modifying sceneStats . mappend
+
+--triggerRedrawHandlers :: GUI provider Act ()
+--triggerRedrawHandlers = do
+--  -- TODO
+--  return ()
 
 -- | Like 'liftIO' but only works in a the 'GUI' monad for an 'Act' data structure.
 actLiftIO :: (Act -> IO a) -> GUI provider Act a
@@ -1315,24 +1311,7 @@ actAnimationHandler t0 =
   -- that they may be delayed until the next animation frame event, to ensure mouse events are
   -- synchronized with animation frame events.
   actActualMouseHandler >>
-  rect2DSize <$> getConfig windowSize >>= \ size ->
-  sceneAction True mempty
-  ( \ _halt role ->
-    case theActionAnimation role of
-      Nothing     -> return empty
-      Just action -> do
-        result <- liftIO $
-          runProjector (runTimeAnimateAction action t0) (rect2DHead .~ size $ rect2D) role
-        let update role r = (modify $! mappend $ roleEventStats role) >> return r
-        case result of
-          ActionOK draw  -> lift (onCanvas $ draw2D Nothing draw) >> update role ActionHalt
-          ActionHalt     -> update role ActionHalt
-          ActionCancel   -> do
-            role <- pure $ (actionAnimation .~ Nothing) role
-            update role $ ActionOK role
-          ActionFail msg -> return $ ActionFail msg
-  ) >>=
-  onScene . assign sceneStats
+  triggerEventHandlers actionAnimation t0
 
 ----------------------------------------------------------------------------------------------------
 
@@ -1431,100 +1410,42 @@ actActualMouseHandler =
             MouseMoved   ->
               if newPressed
               then step Mouse1stDown
-              else step MouseMoved >> sceneDragAnimate theActionMouseOver new
+              else step MouseMoved >> actMouseDrag new
             Mouse1stDown ->
               if newPressed then
                 if dist > thresh
-                then drag >> sceneDragAnimate theActionMouseDrag new
+                then drag >> actMouseDrag new
                 else step Mouse1stDown
-              else step Mouse1stUp >> sceneReactMouse theActionClick new
+              else step Mouse1stUp >> actClick new
             Mouse1stUp   ->
               if newPressed
-              then step MouseReady >> sceneReactMouse theActionDoubleClick new
-              else step MouseMoved >> sceneDragAnimate theActionMouseOver new
+              then step MouseReady >> actDoubleClick new
+              else step MouseMoved >> actMouseOver new
             MouseDragged ->
               if newPressed
-              then sceneDragAnimate theActionMouseDrag new
-              else step MouseMoved >> sceneDragAnimate theActionMouseOver new
-
-sceneReactMouse
-  :: (Role Actor -> Maybe (EventAction Mouse Actor))
-  -> Mouse
-  -> GUI provider Act ()
-sceneReactMouse getHandler event =
-  sceneAction False mempty
-  ( \ halt role ->
-    case getHandler role of
-      Nothing     -> return empty
-      Just action ->
-        lift
-        ( guiInterpretScriptRole
-          (runEventAction action event)
-          role
-        ) >>= \ (consqnc, newRole) ->
-        halt (consqnc >>= \ () -> maybe empty pure newRole)
-  )
-
-sceneMouseMotionAction
-  :: (HappletWindow provider render, Managed provider, Monad render, Happlet2DGraphics render)
-  => AnimateAction PixCoord Mouse Actor
-  -> Role Actor
-  -> Mouse
-  -> GUI provider Act (Consequence ())
-sceneMouseMotionAction action role event =
-  rect2DSize <$> getConfig windowSize >>= \ size ->
-  liftIO
-  ( runProjector (runAnimateAction action event) (rect2DHead .~ size $ rect2D) role
-  ) >>= \ case
-    ActionOK drawing -> onOSBuffer $ ActionOK <$> draw2D Nothing drawing
-    otherwise        -> return $ const (error "internal: sceneDragAnimate") <$> otherwise
-
-sceneDragAnimate
-  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
-  => (Role Actor -> Maybe (AnimateAction PixCoord Mouse Actor))
-  -> Mouse
-  -> GUI provider Act ()
-sceneDragAnimate getHandler event =
-  use actCurrentDragItem >>= \ case
-    Just item -> case theActionMouseDrag item of
-      Just action -> sceneMouseMotionAction action item event >>= \ case
-        ActionOK{}     -> return ()
-        ActionHalt     -> return ()
-        ActionCancel   -> actCurrentDragItem .= Nothing
-        ActionFail err -> actCurrentDragItem .= Nothing >> throwError err
-      Nothing     -> actCurrentDragItem .= Nothing
-    Nothing   ->
-      sceneAction True mempty
-      ( \ halt role ->
-        case getHandler role of
-          Nothing     -> return empty
-          Just action ->
-            lift
-            ( actCurrentDragItem .= Just role >>
-              sceneMouseMotionAction action role event
-            ) >>= halt . fmap (const role)
-      )
+              then actMouseDrag new
+              else step MouseMoved >> actMouseOver new
 
 -- | Force a 'Mouse' action button click event to occur in the current 'Act'.
 actClick :: Mouse -> GUI provider Act ()
-actClick = sceneReactMouse theActionClick
+actClick = triggerEventHandlers actionClick
 
 -- | Force a 'Mouse' context menu button click event to occur in the current 'Act'.
 actRightClick :: Mouse -> GUI provider Act ()
-actRightClick = sceneReactMouse theActionRightClick
+actRightClick = triggerEventHandlers actionRightClick
 
 -- | Force a 'Mouse' action button double click event to occur in the current 'Act'.
 actDoubleClick :: Mouse -> GUI provider Act ()
-actDoubleClick = sceneReactMouse theActionDoubleClick
+actDoubleClick = triggerEventHandlers actionDoubleClick
 
 -- | Force a 'Mouse'-over event to occur in the current 'Act'.
 actMouseOver
   :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
   => Mouse -> GUI provider Act ()
-actMouseOver = sceneDragAnimate theActionMouseOver
+actMouseOver = triggerEventHandlers actionMouseOver
 
 -- | Force a 'Mouse' drav event to occur in the current 'Act'.
 actMouseDrag
   :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
   => Mouse -> GUI provider Act ()
-actMouseDrag = sceneDragAnimate theActionMouseDrag
+actMouseDrag = triggerEventHandlers actionMouseDrag
