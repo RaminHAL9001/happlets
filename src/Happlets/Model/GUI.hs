@@ -68,7 +68,7 @@ import           Happlets.Provider.React
 import           Happlets.View.Types2D   (PixSize)
 
 import           Control.Arrow           ((&&&))
-import           Control.Applicative     (Applicative(..), Alternative(..), (<*))
+import           Control.Applicative     (Alternative(..))
 import           Control.Category        (id, (.))
 import           Control.Concurrent
                  ( ThreadId, myThreadId, forkIO,

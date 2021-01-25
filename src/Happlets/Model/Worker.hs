@@ -28,6 +28,7 @@ import           Happlets.Model.GUI
 import           Control.Concurrent
 import           Control.Exception
 import           Control.Lens
+import           Control.Monad.Fail
 import           Control.Monad.Reader
 import           Control.Monad.State
 
@@ -242,6 +243,8 @@ instance Monad (WorkerTask work) where
     ActionHalt     -> return ActionHalt
     ActionCancel   -> return ActionCancel
     ActionFail msg -> return $ ActionFail msg
+
+instance MonadFail (WorkerTask work) where
   fail   = taskFail . Strict.pack
 
 instance MonadState work (WorkerTask work) where

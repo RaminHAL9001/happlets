@@ -88,10 +88,10 @@ registryMoveElem from to (Registry{theRegistryStore=storeref}) =
 -- | This function will trigger a 'registryForceClean' operation but only when a certain number of
 -- elements have been marked as deleted.
 --
--- It is a good idea to call this function after completing the calls to all of the 'reactAllToEvent'
--- functions associatd with the 'Registry', because it does not force a cleaning on every single
--- call and so, on average, will not slow the event reaction time down for registries with lots and
--- lots of objects.
+-- It is a good idea to call this function after completing the calls to all of the
+-- 'triggerEventHandlers' functions associatd with the 'Registry', because it does not force a
+-- cleaning on every single call and so, on average, will not slow the event reaction time down for
+-- registries with lots and lots of objects.
 registryClean :: MonadIO m => Registry obj -> m Int
 registryClean (Registry{theRegistryStore=storeref}) =
   withStore storeref $
@@ -152,9 +152,19 @@ foldMapReactorCountDeleted inc =
 --
 -- It is a good idea to evaluate 'reactorClean' after evaluating this function.
 --
--- The semantics of the 'Consequence' returned by this function are defined by the
--- 'evalObjectNode' function, refer the the documentation of 'evalObjectNode' for information on
--- how @obj@ values should be returned.
+-- The semantics of the 'Consequence' returned by this function control whether the @obj@ value is
+-- updated in the registry's storage vector:
+--
+--   - Return 'pure' or 'return' (e.g. @return (pure obj)@) with an updated @obj@ value to write a
+--     new value to the vector.
+--
+--   - Return to 'empty' or 'mzero' (e.g. @return empty@) to indicate success but no update to the
+--   - vector.
+--
+--   - Return 'cancel' or 'fail' (e.g. @return (fail "event handler failed")@) "to indicate that the
+--     @obj@ should be deleted from the registry. Evaluating 'cancel' indicates that the @obj@
+--     exited normally, 'fail' indicates it exited with an error.
+--
 reactEventRegistry
   :: MonadIO m
   => Bool -> fold
@@ -184,6 +194,9 @@ reactEventRegistry upward fold action (Registry{theRegistryStore=storeref}) =
         in
         liftIO (readIORef objref) >>=
         action (evalConsequence >=> halt) >>=
+        -- Note that ^ here evalConsequence is evaluated just before halt. This closure is is passed
+        -- to the callback as the halting function. So if the callback evaluates the halting
+        -- closure, it is actually evaluating 'evalConsequences' one final time and then halting.
         evalConsequence
   )
   (if upward then [0 .. top] else takeWhile (>= 0) $ iterate (subtract 1) top)
@@ -230,6 +243,8 @@ storeDeleted = lens theStoreDeleted $ \ a b -> a{ theStoreDeleted = b }
 --
 -- This default function will trigger a 'storeClean' when the number of deletions equals or exceeds
 -- a quarter of the store allocation size.
+--
+-- Of course, a store can be forcibly cleaned at any time by simply calling 'storeForceClean'.
 storeCleanTrigger :: Lens' (Store obj) (Int -> Int -> Bool)
 storeCleanTrigger = lens theStoreCleanTrigger $ \ a b -> a{ theStoreCleanTrigger = b }
 

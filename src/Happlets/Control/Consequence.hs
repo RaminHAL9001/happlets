@@ -4,7 +4,7 @@ module Happlets.Control.Consequence where
 
 import           Prelude                 hiding (fail)
 
-import           Control.Applicative     (Applicative(..), Alternative(..))
+import           Control.Applicative     (Alternative(..))
 import           Control.Monad           (MonadPlus(..))
 import           Control.Monad.Except    (MonadError(..))
 import           Control.Monad.Fail      (MonadFail(..))
