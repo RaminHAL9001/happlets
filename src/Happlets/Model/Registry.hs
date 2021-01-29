@@ -16,7 +16,7 @@ module Happlets.Model.Registry
     -- *** Registry Clean
     registryClean, registryForceClean,
     -- ** Folds and Maps
-    FoldMapRegistry, reactEventRegistry,
+    FoldMapRegistry, reactEventRegistry, reactEventRegistryIO,
   ) where
 
 import           Happlets.Control.Consequence (Consequence(..))
@@ -74,7 +74,7 @@ registryEnqueueNew obj reg = do
 -- registered object in an 'IndexSelf' constructor yourself, in order to store the object.
 registryEnqueue :: IORef obj -> Registry obj -> IO ()
 registryEnqueue objref (Registry{theRegistryStore=storeref}) =
-  withStore storeref $
+  withStoreIO storeref $
   storeEnqueue $ ObjectNode objref
 
 -- | Evaluating @'registryMoveElem' from to'@ will move an element in the 'Registry' at the @from@
@@ -82,7 +82,7 @@ registryEnqueue objref (Registry{theRegistryStore=storeref}) =
 -- Z-ordering of the registry object.
 registryMoveElem :: Int -> Int -> Registry obj -> IO ()
 registryMoveElem from to (Registry{theRegistryStore=storeref}) =
-  withStore storeref $
+  withStoreIO storeref $
   storeMoveElem to from
 
 -- | This function will trigger a 'registryForceClean' operation but only when a certain number of
@@ -94,7 +94,7 @@ registryMoveElem from to (Registry{theRegistryStore=storeref}) =
 -- registries with lots and lots of objects.
 registryClean :: MonadIO m => Registry obj -> m Int
 registryClean (Registry{theRegistryStore=storeref}) =
-  withStore storeref $
+  withStoreIO storeref $
   fst <$> storeClean ()
 
 -- | Force a sweep of all elements in a 'Registry' and remove all elements that have died. Returns
@@ -102,7 +102,7 @@ registryClean (Registry{theRegistryStore=storeref}) =
 -- 'Registry'.
 registryForceClean :: MonadIO m => Registry obj -> m Int
 registryForceClean (Registry{theRegistryStore=storeref}) =
-  withStore storeref $
+  withStoreIO storeref $
   fst <$> storeForceClean ()
 
 ----------------------------------------------------------------------------------------------------
@@ -165,15 +165,36 @@ foldMapReactorCountDeleted inc =
 --     @obj@ should be deleted from the registry. Evaluating 'cancel' indicates that the @obj@
 --     exited normally, 'fail' indicates it exited with an error.
 --
-reactEventRegistry
+reactEventRegistryIO
   :: MonadIO m
-  => Bool -> fold
-  -> ((Consequence obj -> FoldMapRegistry obj fold m void) ->
-      obj -> FoldMapRegistry obj fold m (Consequence obj))
+  => Bool
+  -> ((Consequence obj -> FoldMapRegistry obj fold m void)
+      -> obj
+      -> FoldMapRegistry obj fold m (Consequence obj)
+     )
   -> Registry obj
+  -> fold
   -> m fold
-reactEventRegistry upward fold action (Registry{theRegistryStore=storeref}) =
-  withStore storeref $
+reactEventRegistryIO upward = reactEventRegistry upward liftIO
+
+-- | Same as 'reactEventRegistryIO', except does not restrict the type variable @m@ to be a member
+-- of 'MonadIO', rather you pass any @liftIO@ function suitable for the type @m@ regardless of
+-- whether it provides access to the underlying IO layer. This is useful in monadic functions that
+-- can lift @IO@ but do not want to instantiate the 'liftIO' API so that access to IO can be
+-- carefully restricted.
+reactEventRegistry
+  :: Monad m
+  => Bool
+  -> (forall a . IO a -> m a)
+  -> ((Consequence obj -> FoldMapRegistry obj fold m void)
+      -> obj
+      -> FoldMapRegistry obj fold m (Consequence obj)
+     )
+  -> Registry obj
+  -> fold
+  -> m fold
+reactEventRegistry upward liftIO action (Registry{theRegistryStore=storeref}) fold =
+  withStore liftIO storeref $
   use storeCount >>= \ count ->
   if count <= 0 then return fold else
   let top = count - 1 in
@@ -182,17 +203,17 @@ reactEventRegistry upward fold action (Registry{theRegistryStore=storeref}) =
   runFoldMapRegistry fold $
   callCC $ \ halt -> mapM_ 
   (\ i ->
-    let delete = foldMapReactorLiftModifyStore $ storeDelete i in
-    liftIO (MVec.read vec i) >>= \ case
+    let delete = foldMapReactorLiftModifyStore $ storeDelete liftIO i in
+    lift (liftIO (MVec.read vec i)) >>= \ case
       NullObject        -> pure ()
       ObjectNode objref ->
         let evalConsequence = \ case
               ActionHalt   -> pure ()
               ActionCancel -> delete
               ActionFail{} -> delete
-              ActionOK upd -> liftIO $ writeIORef objref upd
+              ActionOK upd -> lift $ liftIO $ writeIORef objref upd
         in
-        liftIO (readIORef objref) >>=
+        lift (liftIO (readIORef objref)) >>=
         action (evalConsequence >=> halt) >>=
         -- Note that ^ here evalConsequence is evaluated just before halt. This closure is is passed
         -- to the callback as the halting function. So if the callback evaluates the halting
@@ -220,8 +241,15 @@ newtype ModifyStore obj m a = ModifyStore (StateT (Store obj) m a)
 
 instance MonadTrans (ModifyStore obj) where { lift = ModifyStore . lift; }
 
-withStore :: MonadIO m => IORef (Store obj) -> ModifyStore obj m a -> m a
-withStore ref (ModifyStore f) =
+withStoreIO :: MonadIO m => IORef (Store obj) -> ModifyStore obj m a -> m a
+withStoreIO = withStore liftIO
+
+withStore
+  :: Monad m
+  => (forall a . IO a -> m a)
+  -> IORef (Store obj)
+  -> ModifyStore obj m a -> m a
+withStore liftIO ref (ModifyStore f) =
   liftIO (readIORef ref) >>=
   runStateT f >>= \ (a, store) ->
   liftIO (writeIORef ref store) >>
@@ -342,10 +370,10 @@ storeMoveElem to from = get >>= \ store -> liftIO $
 -- as deleted, the deleted @obj@ value given here is still written and 'storeDeleted' is still
 -- incremented. This is because there is no function defined within this context that could test if
 -- the @obj@ is already null.
-storeDelete :: MonadIO m => Int -> ModifyStore obj m ()
-storeDelete i =
+storeDelete :: Monad m => (forall a . IO a -> m a) -> Int -> ModifyStore obj m ()
+storeDelete liftIO i =
   use storeVector >>= \ vec ->
-  liftIO (MVec.write vec i NullObject) >>
+  lift (liftIO (MVec.write vec i NullObject)) >>
   storeDeleted += 1
 
 -- | First checks the 'storeCleanCondition', and if conditions for cleaning are met, calls
