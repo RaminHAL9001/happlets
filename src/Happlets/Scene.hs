@@ -22,7 +22,7 @@ module Happlets.Scene
   ( -- ** Acts
     Act, actWindow, newActHapplet, actLiftIO,
     -- ** Scenes
-    Scene, newScene, sceneBracket,
+    Scene, newScene, sceneBracket, grabFocus,
     -- *** Selecting Actors in a Scene
     ActorSelect, ActorInfo(..), selectInScene,
     -- ** The Actor data type
@@ -70,7 +70,7 @@ import           Happlets.Control.WindowManager
 import           Control.Applicative        (Alternative(..))
 import           Control.Concurrent.MVar    (newMVar, withMVar)
 import           Control.Lens
-                 ( Lens', lens, cloneLens, view, use, assign, modifying,
+                 ( Lens', lens, cloneLens, view, set, use, assign, modifying,
                    (^.), (%~), (.~), (.=),
                  )
 import           Control.Monad              (MonadPlus(..), (>=>), guard)
@@ -107,6 +107,9 @@ newtype Script model a
 data ScriptState model
   = ScriptState
     { theScriptRole        :: !(Role model) -- ^ The model currently being updated.
+    , theScriptActor       :: !Actor
+      -- ^ If the 'TypedActor' that is currently executing this script has been staged in a 'Scene',
+      -- this value will contain the 'Actor' reference.
     , theScriptScene       :: !Scene -- ^ Access to the 'Scene'.
     , theScriptRoleUpdated :: !Bool
       -- ^ Records whether event handlers (and only event handlers) in 'theScriptRole' have been
@@ -187,12 +190,17 @@ scriptScene = lens theScriptScene $ \ a b -> a{ theScriptScene = b }
 selfLabel :: (Strict.Text -> Strict.Text) -> Script model Strict.Text
 selfLabel f = scriptModify (scriptRole . roleLabel %~ f) >> scriptGetsRole theRoleLabel
 
-scriptWithRole :: Script other a -> Role other -> Script model (Consequence a, Maybe (Role other))
-scriptWithRole (Script (ConsequenceT f)) role = do
-  scene <- scriptGetsScene id
+scriptWithRole
+  :: Script other a
+  -> Actor
+  -> Role other
+  -> Script model (Consequence a, Maybe (Role other))
+scriptWithRole (Script (ConsequenceT f)) actor role = do
+  scriptState <- scriptGets id
   (result, state) <- scriptIO $ runStateT f ScriptState
     { theScriptRole = role
-    , theScriptScene = scene
+    , theScriptActor = actor
+    , theScriptScene = theScriptScene scriptState
     , theScriptRoleUpdated = False
     }
   scriptModify $ scriptScene .~ state ^. scriptScene
@@ -204,9 +212,17 @@ scriptWithRole (Script (ConsequenceT f)) role = do
 scriptWithActor :: Script other a -> TypedActor other -> Script model (Consequence a)
 scriptWithActor f actor = do
   let roleRef = theTypedActorRole actor
-  (result, maybeRole) <- scriptIO (readIORef roleRef) >>= scriptWithRole f
+  (result, maybeRole) <- scriptIO (readIORef roleRef) >>= scriptWithRole f (theUntypedActor actor)
   maybe (pure ()) (scriptIO . writeIORef roleRef) maybeRole
   return result
+
+-- | Steals the spotlight. This function can be evaluated within the event handler for an 'Actor',
+-- it will change the 'sceneFocus' of the current 'Scene' to be the 'Actor' that evaluates this
+-- function.
+grabFocus :: Script model ()
+grabFocus =
+  scriptGets theScriptActor >>=
+  scriptModify . set (scriptScene . sceneFocus) . Just
 
 ----------------------------------------------------------------------------------------------------
 
@@ -623,6 +639,7 @@ encloseEventScript ref act event = Script $ ConsequenceT $ StateT $ \ public -> 
   privateRole <- readIORef ref
   (a, privateState) <- runScript (act event) ScriptState
     { theScriptRole        = privateRole
+    , theScriptActor       = theScriptActor public
     , theScriptScene       = theScriptScene public
     , theScriptRoleUpdated = False
     }
@@ -821,6 +838,7 @@ actor' init model = do
   scriptState <- scriptGets id
   (err, initState) <- scriptIO $ runScript init $ ScriptState
     { theScriptRole        = role model
+    , theScriptActor       = theScriptActor scriptState
     , theScriptScene       = theScriptScene scriptState
     , theScriptRoleUpdated = False
     }
@@ -865,7 +883,7 @@ data Scene
   = Scene
     { theSceneRegistry   :: !(Registry (Role Actor))
       -- ^ The objects in this scene
-    , theSceneFocus      :: !(Maybe (Role Actor))
+    , theSceneFocus      :: !(Maybe Actor)
       -- ^ A reference to the object in 'theSceneRegistry' that currently responds to keyboard
       -- events or double-click events. Also, an object that is being dragged necessarily has focus.
     , theSceneStats      :: !ActorEventHandlerStats
@@ -894,7 +912,7 @@ sceneRegistry :: Lens' Scene (Registry (Role Actor))
 sceneRegistry = lens theSceneRegistry $ \ a b -> a{ theSceneRegistry = b }
 
 -- | The 'Actor' that currently has focus.
-sceneFocus :: Lens' Scene (Maybe (Role Actor))
+sceneFocus :: Lens' Scene (Maybe Actor)
 sceneFocus = lens theSceneFocus $ \ a b -> a{ theSceneFocus = b }
 
 -- | not for export
@@ -1132,19 +1150,21 @@ guiInterpretScript
   :: Script model a
   -> TypedActor model
   -> GUI provider Scene (Consequence a, Maybe (Role model))
-guiInterpretScript script (TypedActor{theTypedActorRole=ioRef}) =
+guiInterpretScript script (TypedActor{theTypedActorRole=ioRef,theUntypedActor=actor}) =
   liftIO (readIORef ioRef) >>=
-  guiInterpretScriptRole script
+  guiInterpretScriptRole script actor
 
 guiInterpretScriptRole
   :: Script model a
+  -> Actor
   -> Role model
   -> GUI provider Scene (Consequence a, Maybe (Role model))
-guiInterpretScriptRole script role = do
+guiInterpretScriptRole script actor role = do
   scene <- get
   (result, state) <- liftIO $
     runScript script ScriptState
     { theScriptRole = role
+    , theScriptActor = actor
     , theScriptScene = scene
     , theScriptRoleUpdated = False
     }
@@ -1212,13 +1232,18 @@ updateRegistryStats upward haltWhenOK liftIO thingLens runUpdate =
 triggerEventHandlers
   :: (Monad m, MonadState Scene m)
   => (forall a . IO a -> m a)
-  -> (forall a model . Script model a -> Role model -> m (Consequence a, Maybe (Role model)))
+  -> (forall a model
+      . Script model a
+      -> Actor
+      -> Role model
+      -> m (Consequence a, Maybe (Role model))
+     )
   -> Lens' (Role Actor) (Maybe (EventAction event Actor))
   -> event
   -> m ()
 triggerEventHandlers liftIO liftScript handler event =
   updateRegistryStats False True liftIO handler $ \ role action ->
-  liftScript (runEventAction action event) role
+  liftScript (runEventAction action event) (theRoleModel role) role
 
 guiTriggerEventHandlers
   :: Lens' (Role Actor) (Maybe (EventAction event Actor))
@@ -1244,8 +1269,10 @@ actLiftIO = (get >>=) . (liftIO .)
 newActHapplet
   :: init
   -> Script init ()
-  -> Initialize Act (Happlet Act)
+  -> Initialize provider (Happlet Act)
 newActHapplet init f = newHappletIO $ do
+  -- TODO: Consider whether a 'newActHapplet' should not take an arbitrary @init@ type, rather it
+  -- should perhaps evaluate an initializer script of type (Script Scene ()).
   scene <- makeEmptyScene 16
   now   <- getCurrentTime
   let act st = Act
@@ -1257,9 +1284,12 @@ newActHapplet init f = newHappletIO $ do
         , theLatestMouseEvent    = Nothing
         , theActHandleRightClick = const $ pure ()
         }
+  let ir = role init
+  actor <- makeActor ir
   runScript f
     ( ScriptState
-      { theScriptRole        = role init
+      { theScriptRole        = ir
+      , theScriptActor       = theUntypedActor actor
       , theScriptScene       = scene
       , theScriptRoleUpdated = False
       }
@@ -1334,17 +1364,20 @@ sceneKeyboardHandler evt = case evt of
   where
   run evt =
     use sceneFocus >>= \ case
-      Nothing    -> return ()
-      Just  role -> case theActionKeyboard role of
-        Nothing     -> return ()
-        Just script ->
-          guiInterpretScriptRole (runEventAction script evt) role >>= \ (result, role) ->
-          let done = sceneFocus .= role in
-          case result of
-            ActionOK ()    -> done >> return ()
-            ActionHalt     -> done >> empty
-            ActionCancel   -> sceneFocus .= Nothing >> cancel
-            ActionFail msg -> sceneFocus .= Nothing >> throwError msg
+      Nothing                -> return ()
+      Just actor@(Actor ref) ->
+        liftIO (readIORef ref) >>= \ role ->
+        case theActionKeyboard role of
+          Nothing     -> return ()
+          Just script ->
+            guiInterpretScriptRole (runEventAction script evt) actor role >>= \ (result, role) ->
+            let keepFocus = sceneFocus .= (theRoleModel <$> role) in
+            let unfocus = sceneFocus .= Nothing in
+            case result of
+              ActionOK ()    -> keepFocus >> return ()
+              ActionHalt     -> keepFocus >> empty
+              ActionCancel   -> unfocus >> cancel
+              ActionFail msg -> unfocus >> throwError msg
 
 ----------------------------------------------------------------------------------------------------
 
