@@ -3,7 +3,7 @@
 -- import the "Happlets" module, so if you would prefer to use a better alternative color data type
 -- it is easier to do so. This module can be imported with the "Happlets.Draw" module.
 module Happlets.View.Color
-  ( Color, FillColor, LineColor,
+  ( Color, FillColor, LineColor, HasFillColor(..), HasLineColor(..),
     get32BitsRGBA, set32BitsRGBA, word32RGBA,
     get32BitsARGB, set32BitsARGB, word32ARGB,
     unpackRGBA32Color, packRGBA32Color,
@@ -38,6 +38,9 @@ type FillColor = Color
 
 -- | For using a type name that describes how the 'Color' value is being used for.
 type LineColor = Color
+
+class HasFillColor a where { fillColor :: Lens' a FillColor }
+class HasLineColor a where { lineColor :: Lens' a LineColor }
 
 newtype Color = Color Word32
   deriving Eq
