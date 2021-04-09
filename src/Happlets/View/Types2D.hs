@@ -8,12 +8,12 @@ module Happlets.View.Types2D
   ( -- * Sample Coordinate
     SampCoord, PixCoord, PixSize, sampCoord,
     -- * Typeclasses
-    Has2DOrigin(..), Is2DPrimitive(..),
+    Has2DOrigin(..), Is2DPrimitive(..), Quantizable(..),
     -- * Primitives
     Draw2DPrimitive(..), Draw2DShape(..), Map2DShape(..),
     -- ** Points
     Point2D, Size2D,
-    point2D, size2D, pointX, pointY, pointXY,
+    point2D, size2D, pointX, pointY, pointXY, bounds2DPoints,
     -- ** Lines
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
     -- ** Rectangles
@@ -30,7 +30,7 @@ module Happlets.View.Types2D
     Cubic2D, Cubic2DSegment(..), cubic2D, cubic2DOrigin, cubic2DPoints,
     cubic2DCtrlPt1, cubic2DCtrlPt2, cubic2DEndPoint,
     -- ** Matrix Transformations
-    BoundingBox2D(..), boxBounds2D, boxTransform2D, boxModel2D,
+    --BoundingBox2D(..), boxBounds2D, boxTransform2D, boxModel2D,
     Transform2D(..), idTrans2D, transform2D, trans2DDraw,
     -- ** Fill Types
     Draw2DFillStroke(..),
@@ -112,6 +112,22 @@ pointY = lens (\ (V2 _ y) -> y) $ \ (V2 x _) y -> (V2 x y)
 pointXY :: Iso' (Point2D n) (n, n)
 pointXY = iso (\ (V2 x y) -> (x, y)) (\ (x,y) -> V2 x y)
 
+-- | Compute the bounding box for a list of 'Point2D' values. Provide an initial point and a list of
+-- points to which it is compared.
+bounds2DPoints :: (Ord n, Num n) => Point2D n -> [Point2D n] -> Rect2D n
+bounds2DPoints (V2 x0 y0) points = rect2D &
+  rect2DTail .~ V2 minX minY &
+  rect2DHead .~ V2 maxX maxY
+  where
+    minmax same@(lo, hi) p =
+      if p > hi then (lo, p) else
+      if p < lo then (p, hi) else
+      same
+    ((minX, maxX), (minY, maxY)) = foldl
+      (\ (xs, ys) (x, y) -> (minmax xs x, minmax ys y))
+      ((x0, x0), (y0, y0))
+      (view pointXY <$> points)
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A matrix of type 'M44' which is used to construct transformations. Although the name of this
@@ -143,30 +159,28 @@ trans2DDraw = lens theDrawing2D $ \ a b -> a{ theDrawing2D = b }
 
 ----------------------------------------------------------------------------------------------------
 
--- | A free-floating 'Widget' ("F.F. Widget") is a 'Widget' that is not constrained by tiling or
--- grid rules, it may exist anywhere on the canvas.
-data BoundingBox2D trans n model
-  = BoundingBox2D
-    { theBoxBounds2D :: !(Transform2D trans (Rect2D n))
-    , theBoxModel2D  :: !model
-    }
-  deriving Functor
-
-boxBoundsTrans2D :: Lens' (BoundingBox2D trans n model) (Transform2D trans (Rect2D n))
-boxBoundsTrans2D = lens theBoxBounds2D $ \ a b -> a{ theBoxBounds2D = b }
-
--- | Operate on the bounding box and transformation of the 'StagedWidget'.
-boxBounds2D :: Lens' (BoundingBox2D trans n model) (Rect2D n)
-boxBounds2D = boxBoundsTrans2D . trans2DDraw
-
--- | Bounding boxes can also have a linear transformation applied, which can be apply to the @model@
--- as when it is rendered to a canvas.
-boxTransform2D :: Lens' (BoundingBox2D trans n model) (M44 trans)
-boxTransform2D = boxBoundsTrans2D . transform2D
-
--- | Operate on the 'Widget' of the 'StagedWidget'.
-boxModel2D :: Lens' (BoundingBox2D trans n model) model
-boxModel2D = lens theBoxModel2D $ \ a b -> a{ theBoxModel2D = b }
+--data BoundingBox2D trans n model
+--  = BoundingBox2D
+--    { theBoxBounds2D :: !(Transform2D trans (Rect2D n))
+--    , theBoxModel2D  :: !model
+--    }
+--  deriving Functor
+--
+--boxBoundsTrans2D :: Lens' (BoundingBox2D trans n model) (Transform2D trans (Rect2D n))
+--boxBoundsTrans2D = lens theBoxBounds2D $ \ a b -> a{ theBoxBounds2D = b }
+--
+---- | Operate on the bounding box and transformation of the 'StagedWidget'.
+--boxBounds2D :: Lens' (BoundingBox2D trans n model) (Rect2D n)
+--boxBounds2D = boxBoundsTrans2D . trans2DDraw
+--
+---- | Bounding boxes can also have a linear transformation applied, which can be apply to the @model@
+---- as when it is rendered to a canvas.
+--boxTransform2D :: Lens' (BoundingBox2D trans n model) (M44 trans)
+--boxTransform2D = boxBoundsTrans2D . transform2D
+--
+---- | Operate on the 'Widget' of the 'StagedWidget'.
+--boxModel2D :: Lens' (BoundingBox2D trans n model) model
+--boxModel2D = lens theBoxModel2D $ \ a b -> a{ theBoxModel2D = b }
 
 ----------------------------------------------------------------------------------------------------
 
@@ -182,9 +196,32 @@ instance HasBoundingBox (Line2D n) where
   type Bounds2DMetric (Line2D n) = n
   theBoundingBox (Line2D a b) = Rect2D a b; 
 
-instance HasBoundingBox (BoundingBox2D trans n model) where
-  type Bounds2DMetric (BoundingBox2D trans n model) = n
-  theBoundingBox = view boxBounds2D; 
+--instance HasBoundingBox (BoundingBox2D trans n model) where
+--  type Bounds2DMetric (BoundingBox2D trans n model) = n
+--  theBoundingBox = view boxBounds2D; 
+
+instance (Ord n, Num n, UVec.Unbox n) => HasBoundingBox (Path2D n) where
+  type Bounds2DMetric (Path2D n) = n
+  theBoundingBox = uncurry bounds2DPoints . path2DPoints
+
+instance (Ord n, Num n, UVec.Unbox n) => HasBoundingBox (Cubic2D n) where
+  type Bounds2DMetric (Cubic2D n) = n
+  theBoundingBox =
+    uncurry bounds2DPoints .
+    fmap (>>= (\ (Cubic2DSegment a b c) -> [a,b,c])) .
+    cubic2DPoints
+
+instance (Ord n, Num n, Real n, Quantizable n) => HasBoundingBox (Arc2D n) where
+  type Bounds2DMetric (Arc2D n) = n
+  theBoundingBox = uncurry bounds2DPoints . arc2DPoints
+
+instance (Ord n, Num n, Real n, UVec.Unbox n, Quantizable n) => HasBoundingBox (Draw2DShape n) where
+  type Bounds2DMetric (Draw2DShape n) = n
+  theBoundingBox = \ case
+    Draw2DRect  o -> theBoundingBox o
+    Draw2DArc   o -> theBoundingBox o
+    Draw2DPath  o -> theBoundingBox o
+    Draw2DCubic o -> theBoundingBox o
 
 ----------------------------------------------------------------------------------------------------
 
@@ -343,6 +380,24 @@ arc2DStart = lens theArc2DStart $ \ a b -> a{ theArc2DStart = b }
 arc2DEnd :: Lens' (Arc2D n) (EndAngle Double)
 arc2DEnd = lens theArc2DEnd $ \ a b -> a{ theArc2DEnd = b }
 
+-- | Returns the origin and the points used to compute 'theBoundingBox'. The list of points returned
+-- will include all points that touch the minimum bounding box of the arc.
+arc2DPoints :: (Real n, Quantizable n) => Arc2D n -> (Point2D n, [Point2D n])
+arc2DPoints (Arc2D (V2 x y) (Magnitude r) start0 end0) = (V2 x y, points) where
+  lim theta = let mod = theta / (2*pi) in 2*pi * (mod - realToFrac (floor mod :: Integer))
+  start = lim $ min start end
+  end   = lim $ max start end
+  between a b c = a <= (c::Double) && c <= b
+  points = fmap snd $
+    filter ((if start0 <= end0 then id else flip) between start end . fst)
+    [ (start   , quantize <$> V2 (realToFrac x + cos start) (realToFrac y + sin start))
+    , (end     , quantize <$> V2 (realToFrac x + cos end  ) (realToFrac y + sin end  ))
+    , (0       , V2 (x+r) y)
+    , (pi/2    , V2 x (y-r))
+    , (pi      , V2 (x-r) y)
+    , (3*(pi/2), V2 x (y+r))
+    ]
+
 ----------------------------------------------------------------------------------------------------
 
 data Path2D n = Path2D !(Point2D n) !(UVec.Vector n)
@@ -459,6 +514,15 @@ instance Is2DPrimitive Arc2D   where { to2DShape paint = Draw2DShapes paint . fm
 instance Is2DPrimitive Rect2D  where { to2DShape paint = Draw2DShapes paint . fmap Draw2DRect; }
 instance Is2DPrimitive Path2D  where { to2DShape paint = Draw2DShapes paint . fmap Draw2DPath; }
 instance Is2DPrimitive Cubic2D where { to2DShape paint = Draw2DShapes paint . fmap Draw2DCubic; }
+
+----------------------------------------------------------------------------------------------------
+
+class Quantizable n where { quantize :: RealFrac r => r -> n }
+instance Quantizable Double where { quantize = realToFrac; }
+instance Quantizable Float where { quantize = realToFrac; }
+instance Quantizable Int32 where { quantize = round; }
+instance Quantizable Int where { quantize = round; }
+instance Quantizable Word where { quantize = round; }
 
 ----------------------------------------------------------------------------------------------------
 
