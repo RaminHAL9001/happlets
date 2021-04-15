@@ -75,9 +75,18 @@ class (Functor render, Applicative render, Monad render, MonadIO render, Sized2D
   -- 'fillPattern's currently set.
   resetGraphicsContext :: render ()
 
-  -- | Evaluate the drawing instructions given by the 'Draw2DPrimitive', with coordinates converted
-  -- to canvas pixel-local coordinates, and an optional bounding box clip region.
-  draw2D :: Maybe (Rect2D SampCoord) -> [Draw2DPrimitive SampCoord] -> render ()
+  -- | Evaluate the drawing instructions given by a 'Drawing' for witch the coordinates have all
+  -- been converted to canvas pixel-local ('SampCoord') coordinates. This function is also given a
+  -- 'Rect2DUnion' clip region so that the drawing algorithm can prune 'Draw2DPrimitive's that do of
+  -- the 'Drawing' that do not intersect with any part of the 'Rect2DUnion' can be pruned from the
+  -- drawing.
+  --
+  -- __NOTE__ that __if__ the 'Rect2DUnion' is __null__ (rect2DUnionNull evaluates to bool), __this
+  -- means to redraw everything__ that intersects with the bounds of the visible window, it does not
+  -- mean to redraw nothing. This is more convenient for programmers as they do not have to
+  -- construct a 'Rect2DUnion' encompassing the entire screen if they want to force-redraw the
+  -- entire screen, they can instead simply pass 'mempty' to force redraw the entire screen.
+  draw2D :: Rect2DUnion SampCoord -> Drawing SampCoord -> render ()
 
   -- | Set all pixels in the screen graphics to the same color value given by the 'fillColor',
   -- deleting all graphics that existed prior. This function does not reset the 'clipRegion'.
@@ -89,7 +98,7 @@ class (Functor render, Applicative render, Monad render, MonadIO render, Sized2D
 defaultClearScreen :: Happlet2DGraphics render => Color -> render ()
 defaultClearScreen c = tempContext $ do
   resetGraphicsContext
-  draw2D Nothing
+  draw2D mempty $ drawing
     [ Draw2DShapes
       (FillOnly $ paintColor c)
       [Draw2DRect (rect2D & rect2DHead .~ V2 maxBound maxBound)]

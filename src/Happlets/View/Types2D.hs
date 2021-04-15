@@ -5,35 +5,39 @@
 -- 'Happlets.GUI.CanBufferImages' type class to load from disk and blit to screen bitmap images,
 -- should be enough to construct minimalist user interfaces.
 module Happlets.View.Types2D
-  ( -- * Sample Coordinate
+  ( -- ** Sample Coordinate
     SampCoord, PixCoord, PixSize, sampCoord,
-    -- * Typeclasses
-    Has2DOrigin(..), Is2DPrimitive(..), Quantizable(..),
-    -- * Primitives
+    -- ** Typeclasses
+    Has2DOrigin(..), Is2DPrimitive(..), Quantizable(..), HasMidpoint(..),
+    Canonical2D(..), ContainsPoint2D(..),
+    -- ** The 'Drawing' datatype
+    Drawing(..), drawing, drawingIsNull, drawingCountPrimitives,
+    -- ** Primitives
     Draw2DPrimitive(..), Draw2DShape(..), Map2DShape(..),
-    -- ** Points
+    -- *** Points
     Point2D, Size2D,
     point2D, size2D, pointX, pointY, pointXY, bounds2DPoints,
-    -- ** Lines
+    -- *** Lines
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
-    -- ** Rectangles
-    Rect2D(..), rect2D, rect2DSize, rect2DHead, rect2DTail, pointInRect2D, rect2DPoints,
-    rect2DCenter, rect2DCentre,
-    canonicalRect2D, rect2DMinBoundOf, rect2DIntersect, rect2DDiagonal, rect2DtoInt,
+    -- *** Rectangles
+    Rect2D(..), Rect2DUnion, rect2DUnion, rect2DUnionToList, rect2DUnionCount, rect2DUnionNull,
+    rect2D, rect2DSize, rect2DHead, rect2DTail, rect2DPoints,
+    rect2DCenter, rect2DCentre, rect2DArea, rect2DContainsRect, bounds2DExpandLineWidth,
+    rect2DMinBoundsOf, rect2DMinBoundsForAll, rect2DIntersect, rect2DDiagonal, rect2DtoInt,
     MaybeSingleton2D(..), HasBoundingBox(..),
-    -- ** Arcs
+    -- *** Arcs
     Magnitude(..), ArcRadius, Angle(..), StartAngle, EndAngle,
     Arc2D(..), arc2D, arc2DOrigin, arc2DRadius, arc2DStart, arc2DEnd,
-    -- ** Paths
+    -- *** Paths
     Path2D, path2D, path2DOrigin, path2DPoints,
-    -- ** Cubic Bezier Spline Paths
+    -- *** Cubic Bezier Spline Paths
     Cubic2D, Cubic2DSegment(..), cubic2D, cubic2DOrigin, cubic2DPoints,
     cubic2DCtrlPt1, cubic2DCtrlPt2, cubic2DEndPoint,
-    -- ** Matrix Transformations
+    -- *** Matrix Transformations
     --BoundingBox2D(..), boxBounds2D, boxTransform2D, boxModel2D,
     Transform2D(..), idTrans2D, transform2D, trans2DDraw,
-    -- ** Fill Types
-    Draw2DFillStroke(..),
+    -- *** Fill Types
+    Draw2DFillStroke(..), fillStrokeLineWidth,
     LineWidth,
     BlitOperator(..),
     PaintSource(..), PaintSourceFunction(..),
@@ -53,11 +57,16 @@ import           Control.Arrow
 import           Control.Lens
 import           Control.Monad
 
-import           Data.Int            (Int32)
-import qualified Data.Vector.Unboxed as UVec
-import           Data.Word           (Word32)
+import           Data.Int                    (Int32)
+import           Data.Function               (on)
+import           Data.List                   (sortBy, nubBy)
+import           Data.Ord                    (Down(..))
+import qualified Data.Vector.Unboxed         as UVec
+import qualified Data.Vector.Unboxed.Mutable as UMVec
+import           Data.Word                   (Word32)
+import qualified Data.Vector                 as Vec
 
-import           Linear.V2
+import           Linear.V2                   (V2(..))
 import           Linear.Matrix
 
 ----------------------------------------------------------------------------------------------------
@@ -130,6 +139,49 @@ bounds2DPoints (V2 x0 y0) points = rect2D &
 
 ----------------------------------------------------------------------------------------------------
 
+-- | A class of data types that have a canonical form.
+--
+-- The 'Rect2D' instantiation of this re-orders the bounding 'Point2D's of the 'Rect2D' such that
+-- 'rect2DHead' is the point closest to the origin @('Linear.V2.V2' 0 0)@ and the 'rect2DTail' is
+-- the point furthest from the origin.
+--
+-- 'UnionRect2D' instantiates this class, it's canonical form in which the list representation
+-- always sorts larger rectangles toward the front of the list, and smaller rectangles that are
+-- fully contained with larger rectangles are removed from the set.
+class Canonical2D r where { canonicalize2DShape :: r -> r; }
+
+instance Ord n => Canonical2D (Rect2D n) where
+  canonicalize2DShape (Rect2D (V2 x0 y0) (V2 x1 y1)) =
+    Rect2D (V2 (min x0 x1) (min y0 y1)) (V2 (max x0 x1) (max y0 y1))
+
+instance (Ord n, Num n, UMVec.Unbox n) => Canonical2D (Rect2DUnion n) where
+  canonicalize2DShape =
+    (uncurry rect2DUnion . (id &&& length)) .
+    nubBy rect2DContainsRect .
+    fmap snd .
+    sortBy (compare `on` fst) .
+    fmap ((Down . rect2DArea &&& id) . canonicalize2DShape) .
+    rect2DUnionToList
+
+----------------------------------------------------------------------------------------------------
+
+-- | Class of 2D-shape types which have a convex hull, provides a function that tests whether a
+-- 'Point2D' lies within the convex hull.
+class HasBoundingBox r => ContainsPoint2D r where
+  containsPoint2D :: Bounds2DMetric r ~ n => r -> Point2D n -> Bool
+
+instance (Ord n, Num n) => ContainsPoint2D (Rect2D n) where
+  containsPoint2D r0 p =
+    let r = canonicalize2DShape r0
+        (V2 w h) = (r ^. rect2DHead) - (r ^. rect2DTail)
+        (V2 x y) = p - (r ^. rect2DTail)
+    in x >= 0 && y >= 0 && x <= w && y <= h
+
+instance (Ord n, Num n, UMVec.Unbox n) => ContainsPoint2D (Rect2DUnion n) where
+  containsPoint2D u p = or $ (`containsPoint2D` p) <$> rect2DUnionToList u
+
+----------------------------------------------------------------------------------------------------
+
 -- | A matrix of type 'M44' which is used to construct transformations. Although the name of this
 -- type implies a 2D transformation, it can actually transform along 4 dimensions, making it easier
 -- to setup transformation matrixies according to the 'mkTransformationMat' function.
@@ -159,34 +211,73 @@ trans2DDraw = lens theDrawing2D $ \ a b -> a{ theDrawing2D = b }
 
 ----------------------------------------------------------------------------------------------------
 
---data BoundingBox2D trans n model
---  = BoundingBox2D
---    { theBoxBounds2D :: !(Transform2D trans (Rect2D n))
---    , theBoxModel2D  :: !model
---    }
---  deriving Functor
+-- | This data type contains a set of 'Rect2D' values stored in an unboxed vector.
 --
---boxBoundsTrans2D :: Lens' (BoundingBox2D trans n model) (Transform2D trans (Rect2D n))
---boxBoundsTrans2D = lens theBoxBounds2D $ \ a b -> a{ theBoxBounds2D = b }
---
----- | Operate on the bounding box and transformation of the 'StagedWidget'.
---boxBounds2D :: Lens' (BoundingBox2D trans n model) (Rect2D n)
---boxBounds2D = boxBoundsTrans2D . trans2DDraw
---
----- | Bounding boxes can also have a linear transformation applied, which can be apply to the @model@
----- as when it is rendered to a canvas.
---boxTransform2D :: Lens' (BoundingBox2D trans n model) (M44 trans)
---boxTransform2D = boxBoundsTrans2D . transform2D
---
----- | Operate on the 'Widget' of the 'StagedWidget'.
---boxModel2D :: Lens' (BoundingBox2D trans n model) model
---boxModel2D = lens theBoxModel2D $ \ a b -> a{ theBoxModel2D = b }
+-- For the sake of convenience, this data type instantiates 'HasBoundingBox', but if the
+-- 'Rect2DUnion' is empty (i.e. the 'rect2DUnionCount' is zero) then a null (all zero) 'Rect2D'
+-- value is the result of 'theBoundingBox'.
+data Rect2DUnion n
+  = Rect2DUnion
+    { rect2DUnionBounds :: !(Rect2D n)
+    , rect2DUnionVector :: !(UVec.Vector n)
+    }
+
+instance (Ord n, Num n, UMVec.Unbox n) => Semigroup (Rect2DUnion n) where
+  (<>) (Rect2DUnion{rect2DUnionBounds=bndsA,rect2DUnionVector=vecA})
+       (Rect2DUnion{rect2DUnionBounds=bndsB,rect2DUnionVector=vecB}) =
+    Rect2DUnion
+    { rect2DUnionBounds = rect2DMinBoundsOf bndsA bndsB
+    , rect2DUnionVector = vecA <> vecB
+    }
+
+instance (Ord n, Num n, UMVec.Unbox n) => Monoid (Rect2DUnion n) where
+  mempty = Rect2DUnion{ rect2DUnionBounds = rect2D, rect2DUnionVector = mempty }
+  mappend = (<>)
+
+-- | Returns the number of rectangular elements in a given 'Rect2DUnion'
+rect2DUnionCount :: UMVec.Unbox n => Rect2DUnion n -> Int
+rect2DUnionCount (Rect2DUnion{rect2DUnionVector=vec}) = UVec.length vec `div` 4
+
+-- | True if the 'Rect2DUnion' is empty.
+rect2DUnionNull :: UMVec.Unbox n => Rect2DUnion n -> Bool
+rect2DUnionNull (Rect2DUnion{rect2DUnionVector=vec}) = UVec.null vec
+
+-- | Construct a 'Rect2DUnion'. Internally, an unboxed vector is constructed, so the number of
+-- elements in the union needs to be given to this constructor, also to ensure an infinite list is
+-- not provided. The constructed union is not immediately canonicalized, so evaluating
+-- 'rect2DUnionToList' on a 'Rect2DUnion' constructed by this function without first evaluating
+-- 'canonicalize2DShape' will produce the same list that was passed to this function up to n
+-- elements (where @n@ is the number of elements given as the second parameter).
+rect2DUnion :: (Ord n, Num n, UVec.Unbox n) => [Rect2D n] -> Int -> Rect2DUnion n
+rect2DUnion rectlist nelems =
+  Rect2DUnion
+  { rect2DUnionBounds = rect2DMinBoundsForAll rectlist
+  , rect2DUnionVector = UVec.create
+      (do vec <- UMVec.new (4 * nelems)
+          mapM_ (uncurry $ UMVec.write vec) $ zip [0 ..] $ do
+            r <- rectlist
+            let (V2 a b) = r ^. rect2DHead
+            let (V2 c d) = r ^. rect2DTail
+            [a, b, c, d]
+          return vec
+      )
+  }
+
+rect2DUnionToList :: (Num n, UMVec.Unbox n) => Rect2DUnion n -> [Rect2D n]
+rect2DUnionToList (Rect2DUnion{rect2DUnionVector=vec}) = loop $ UVec.toList vec where
+  loop = \ case
+    a:b:c:d:more -> (rect2D & rect2DHead .~ V2 a b & rect2DTail .~ V2 c d) : loop more
+    _ -> []
 
 ----------------------------------------------------------------------------------------------------
 
 class HasBoundingBox a where
   type Bounds2DMetric a
   theBoundingBox :: a -> Rect2D (Bounds2DMetric a)
+
+instance HasBoundingBox (Rect2DUnion n) where
+  type Bounds2DMetric (Rect2DUnion n) = n
+  theBoundingBox = rect2DUnionBounds
 
 instance HasBoundingBox (Rect2D n) where
   type Bounds2DMetric (Rect2D n) = n
@@ -215,13 +306,43 @@ instance (Ord n, Num n, Real n, Quantizable n) => HasBoundingBox (Arc2D n) where
   type Bounds2DMetric (Arc2D n) = n
   theBoundingBox = uncurry bounds2DPoints . arc2DPoints
 
-instance (Ord n, Num n, Real n, UVec.Unbox n, Quantizable n) => HasBoundingBox (Draw2DShape n) where
-  type Bounds2DMetric (Draw2DShape n) = n
-  theBoundingBox = \ case
-    Draw2DRect  o -> theBoundingBox o
-    Draw2DArc   o -> theBoundingBox o
-    Draw2DPath  o -> theBoundingBox o
-    Draw2DCubic o -> theBoundingBox o
+instance
+  (Ord n, Num n, Real n, UVec.Unbox n, Quantizable n) =>
+  HasBoundingBox (Draw2DShape n)
+  where
+    type Bounds2DMetric (Draw2DShape n) = n
+    theBoundingBox = \ case
+      Draw2DRect  o -> theBoundingBox o
+      Draw2DArc   o -> theBoundingBox o
+      Draw2DPath  o -> theBoundingBox o
+      Draw2DCubic o -> theBoundingBox o
+
+instance
+  (Ord n, Num n, HasMidpoint n, Real n, UVec.Unbox n, Quantizable n) =>
+  HasBoundingBox (Draw2DPrimitive n)
+  where
+    type Bounds2DMetric (Draw2DPrimitive n) = n
+    theBoundingBox = \ case
+      Draw2DReset -> rect2D
+      Draw2DLines width _ lines -> case theBoundingBox <$> lines of
+        []     -> rect2D
+        bounds ->
+          bounds2DExpandLineWidth
+          (rect2DMinBoundsForAll bounds)
+          width
+      Draw2DShapes stroke shapes -> case theBoundingBox <$> shapes of
+        []     -> rect2D
+        bounds ->
+          bounds2DExpandLineWidth
+          (rect2DMinBoundsForAll bounds)
+          (fillStrokeLineWidth stroke)
+
+instance
+  (Ord n, Num n, Real n, UVec.Unbox n, Quantizable n) =>
+  HasBoundingBox (Drawing n)
+  where
+    type Bounds2DMetric (Drawing n) = n
+    theBoundingBox = drawingBoundingBox
 
 ----------------------------------------------------------------------------------------------------
 
@@ -256,7 +377,7 @@ line2DPoints = iso (\ (Line2D a b) -> (a, b)) (\ (a,b) -> Line2D a b)
 data Rect2D n = Rect2D !(Point2D n) !(Point2D n)
   deriving (Eq, Functor)
 
-instance Ord n => Semigroup (Rect2D n) where { (<>) = rect2DMinBoundOf; }
+instance (Ord n, Num n) => Semigroup (Rect2D n) where { (<>) = rect2DMinBoundsOf; }
 instance Map2DShape Rect2D where { map2DShape = fmap; }
 
 -- | An initializing 'Line2D' where the 'rectLower' and 'rectUpper' values are the zero 'point2D'.
@@ -277,39 +398,45 @@ rect2DSize :: Num n => Rect2D n -> Size2D n
 rect2DSize (Rect2D tail head) = head - tail
 
 -- | Computes the center point of the given 'Rect2D'.
-rect2DCenter :: Fractional n => Rect2D n -> Point2D n
-rect2DCenter r = ((/ 2) <$> rect2DSize r) + (r ^. rect2DHead)
+rect2DCenter :: (Num n, HasMidpoint n) => Rect2D n -> Point2D n
+rect2DCenter r = (midpoint 0 <$> rect2DSize r) + (r ^. rect2DHead)
 
 -- | British spelling of 'rect2DCenter'.
-rect2DCentre :: Fractional n => Rect2D n -> Point2D n
+rect2DCentre :: (Num n, HasMidpoint n) => Rect2D n -> Point2D n
 rect2DCentre = rect2DCenter
+
+-- | Compute the area of a 'Rect2D'.
+rect2DArea :: (Ord n, Num n) => Rect2D n -> n
+rect2DArea = canonicalize2DShape >>> \ r ->
+  let (V2 w h) = (r ^. rect2DHead) - (r ^. rect2DTail) in w * h
+
+-- | Returns 'True' if the second (right-hand) argument is a rectangle that is fully contained
+-- within the first (left-hand) argument.
+rect2DContainsRect :: (Ord n, Num n) => Rect2D n -> Rect2D n -> Bool
+rect2DContainsRect a b =
+  let f len = containsPoint2D a (b ^. cloneLens len) in
+  f rect2DHead && f rect2DTail
 
 -- | Expresses a 'Rect2D' as a tuple of 'Point2D' values.
 rect2DPoints :: Iso' (Rect2D n) (Point2D n, Point2D n)
 rect2DPoints = iso (\ (Rect2D a b) -> (a, b)) (\ (a,b) -> Rect2D a b)
 
--- | Re-order the bounding 'Point2D's of the 'Rect2D' such that the 'rect2DHead' is the point
--- closest to the origin @('Linear.V2.V2' 0 0)@ and the 'rect2DTail' is the point furthest from the
--- origin.
-canonicalRect2D :: Ord n => Rect2D n -> Rect2D n
-canonicalRect2D (Rect2D (V2 x0 y0) (V2 x1 y1)) =
-  Rect2D (V2 (min x0 x1) (min y0 y1)) (V2 (max x0 x1) (max y0 y1))
-
--- | Test if the given 'Point2D' lies within, or on the bounding box of, the given 'Rect2D'.
-pointInRect2D :: Ord n => Point2D n -> Rect2D n -> Bool
-pointInRect2D (V2 x y) = view rect2DPoints . canonicalRect2D >>> \ (p0, p1) ->
-  let (xlo, ylo) = p0 ^. pointXY
-      (xhi, yhi) = p1 ^. pointXY
-      between a b c = a <= b && b <= c
-  in  between xlo x xhi && between ylo y yhi
-
 -- | Computes the smallest possible rectangle that can contain both rectangles, no matter how far
 -- apart they are.
-rect2DMinBoundOf :: Ord n => Rect2D n -> Rect2D n -> Rect2D n
-rect2DMinBoundOf (Rect2D(V2 xa ya)(V2 xb yb)) (Rect2D(V2 xc yc)(V2 xd yd)) =
+rect2DMinBoundsOf :: (Ord n, Num n) => Rect2D n -> Rect2D n -> Rect2D n
+rect2DMinBoundsOf a@(Rect2D(V2 xa ya)(V2 xb yb)) b@(Rect2D(V2 xc yc)(V2 xd yd)) =
+  if a == rect2D then b else if b == rect2D then a else
   let f4 comp a b c d = comp a $ comp b $ comp c d in Rect2D
     (V2 (f4 min xa xb xc xd) (f4 min ya yb yc yd))
     (V2 (f4 max xa xb xc xd) (f4 max ya yb yc yd))
+
+-- | This function computes the minimum bounding box for all 'Rect2D' values in a list, excluding
+-- null rectangles equal to 'rect2D'. If the given list is empty, the null 'rect2D' value is
+-- returned.
+rect2DMinBoundsForAll :: (Ord n, Num n) => [Rect2D n] -> Rect2D n
+rect2DMinBoundsForAll = \ case
+  []   -> rect2D
+  r:rs -> foldl rect2DMinBoundsOf r rs
 
 -- | Returns an intersection of two 'Rect2D's if the two 'Rect2D's overlap.
 rect2DIntersect :: Ord n => Rect2D n -> Rect2D n -> Maybe (Rect2D n)
@@ -335,6 +462,16 @@ rect2DtoInt :: (RealFrac n, Integral i) => Rect2D n -> Rect2D i
 rect2DtoInt r = rect2D
   & rect2DTail .~ (floor <$> (r ^. rect2DTail))
   & rect2DHead .~ (ceiling <$> (r ^. rect2DHead))
+
+-- | If some 'Draw2DPrimitive' value is to be drawn with a 'Draw2DFillStroke' with a non-zero
+-- 'LineWidth', then grow the given bounds 'Rect2D' of the primitive by enough such that it's ideal
+-- bounding box includes the line width.
+bounds2DExpandLineWidth :: (Ord n, Num n, HasMidpoint n) => Rect2D n -> LineWidth n -> Rect2D n
+bounds2DExpandLineWidth box0 n =
+  let box = canonicalize2DShape box0 in
+  let w = midpoint 0 (abs n) in
+  let w2 = V2 w w in
+  box & rect2DHead +~ w2 & rect2DTail -~ w2
 
 ----------------------------------------------------------------------------------------------------
 
@@ -464,6 +601,43 @@ cubic2DCtrlPt2 = lens theCubic2DCtrlPt1 $ \ a b -> a{ theCubic2DCtrlPt2 = b }
 cubic2DEndPoint :: Lens' (Cubic2DSegment n) (Point2D n)
 cubic2DEndPoint = lens theCubic2DEndPoint $ \ a b -> a{ theCubic2DEndPoint = b }
 
+
+----------------------------------------------------------------------------------------------------
+
+-- | A function used to draw a @model@ to the canvas.
+data Drawing n
+  = Drawing
+    { drawingBoundingBox :: !(Rect2D n)
+    , unwrapDrawing :: Vec.Vector (Draw2DPrimitive n)
+    }
+  deriving Eq
+
+instance (Ord n, Num n) => Semigroup (Drawing n) where
+  (<>) (Drawing{drawingBoundingBox=boxA,unwrapDrawing=a})
+       (Drawing{drawingBoundingBox=boxB,unwrapDrawing=b}) =
+    Drawing (rect2DMinBoundsOf boxA boxB) (a <> b)
+
+instance (Ord n, Num n) => Monoid (Drawing n) where
+  mempty = Drawing{ drawingBoundingBox = rect2D, unwrapDrawing = mempty }
+  mappend = (<>)
+
+-- | Consruct a 'Drawing' 
+drawing
+  :: (Ord n, Num n, Real n, HasMidpoint n, Quantizable n, UMVec.Unbox n)
+  => [Draw2DPrimitive n] -> Drawing n
+drawing prims = Drawing
+  { unwrapDrawing = Vec.fromList prims
+  , drawingBoundingBox = rect2DMinBoundsForAll $ theBoundingBox <$> prims
+  }
+
+-- | 'True' if the 'Drawing' is 'mempty'.
+drawingIsNull :: Drawing n -> Bool
+drawingIsNull (Drawing{unwrapDrawing=vec}) = Vec.null vec
+
+-- | Count the number of 'Draw2DPrimitive's in a 'Drawing'.
+drawingCountPrimitives :: Drawing n -> Int
+drawingCountPrimitives (Drawing{unwrapDrawing=vec}) = Vec.length vec
+
 ----------------------------------------------------------------------------------------------------
 
 data Draw2DShape n
@@ -517,15 +691,42 @@ instance Is2DPrimitive Cubic2D where { to2DShape paint = Draw2DShapes paint . fm
 
 ----------------------------------------------------------------------------------------------------
 
+-- | A number (typically of some 'Integral' type) that can be mapped from some 'RealFrac' value.
 class Quantizable n where { quantize :: RealFrac r => r -> n }
 instance Quantizable Double where { quantize = realToFrac; }
 instance Quantizable Float where { quantize = realToFrac; }
 instance Quantizable Int32 where { quantize = round; }
 instance Quantizable Int where { quantize = round; }
 instance Quantizable Word where { quantize = round; }
+instance Quantizable n => Quantizable (Magnitude n) where
+  quantize = Magnitude . quantize
 
 ----------------------------------------------------------------------------------------------------
 
+-- | A class of values for which it makes sense to compute a "midpoint" value. The midpoint should
+-- be negative if the first argument is greater than the second, positive if the first argument is
+-- less than the second, or otherwise zero if the first and second arguments are equal.
+class HasMidpoint n where { midpoint :: n -> n -> n; }
+instance HasMidpoint Double where { midpoint = midpointFractional; }
+instance HasMidpoint Float where { midpoint = midpointFractional; }
+instance HasMidpoint Int where { midpoint = midpointIntegral; }
+instance HasMidpoint Int32 where { midpoint = midpointIntegral; }
+instance HasMidpoint n => HasMidpoint (Magnitude n) where
+  midpoint (Magnitude a) (Magnitude b) = Magnitude $ midpoint a b
+
+-- | Compute midpoint for any 'Fractional' value.
+midpointFractional :: Fractional n => n -> n -> n
+midpointFractional a b = (a - b) / 2
+
+-- | Compute midpoint for any 'Integral' value.
+midpointIntegral :: Integral n => n -> n -> n
+midpointIntegral a b = (a - b) `div` 2
+
+----------------------------------------------------------------------------------------------------
+
+-- | Things that have a starting point. For circles, this is the center point, but for lines or
+-- rectangles, this is the 'rect2DHead' or 'line2DHead' point and not the center point as you might
+-- expect.
 class Has2DOrigin shape where
   origin2D :: Lens' (shape n) (Point2D n)
 
@@ -689,13 +890,13 @@ type LineWidth n = n
 data Draw2DFillStroke n
   = FillOnly   (PaintSource n)
     -- ^ Only draw the area of the shape, not the outline.
-  | StrokeOnly !(LineWidth   n) (PaintSource n)
+  | StrokeOnly !(LineWidth  n) (PaintSource n)
     -- ^ Only draw the outline of the shape, not the area.
-  | FillStroke !(LineWidth   n) (PaintSource n) (PaintSource n)
+  | FillStroke !(LineWidth  n) (PaintSource n) (PaintSource n)
     -- ^ Draw first the area of the shape, and then on top of that, draw the outline of the
     -- shape. The first 'PaintSource' is used for the fill (area), the second 'PaintSource' is used
     -- for the stroke (outline). The 'LineWidth' defines the thickness of the stroke.
-  | StrokeFill !(LineWidth   n) (PaintSource n) (PaintSource n)
+  | StrokeFill !(LineWidth  n) (PaintSource n) (PaintSource n)
     -- ^ Draw first the outline of the shape, and then on top of that, draw the area of the
     -- shape. The first 'PaintSource' is used for the stroke (outline), the second 'PaintSource' is
     -- used for the fill (area). The 'LineWidth' defines the thickness of the stroke.
@@ -707,3 +908,11 @@ instance Map2DShape Draw2DFillStroke where
     StrokeOnly w b   -> StrokeOnly (f w) (map2DShape f b)
     FillStroke w a b -> FillStroke (f w) (map2DShape f a) (map2DShape f b)
     StrokeFill w b a -> StrokeFill (f w) (map2DShape f b) (map2DShape f a)
+
+-- | Get the 'LineWidth' of a 'Draw2DFillStroke' value. 'FillOnly' returns a zero width.
+fillStrokeLineWidth :: Num n => Draw2DFillStroke n -> LineWidth n
+fillStrokeLineWidth = \ case
+  FillOnly{} -> 0
+  StrokeOnly w _ -> w
+  FillStroke w _ _ -> w
+  StrokeFill w _ _ -> w
