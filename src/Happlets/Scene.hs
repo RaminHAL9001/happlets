@@ -61,9 +61,14 @@ import           Happlets.Model.Registry
                  ( Registry, newRegistry, registryEnqueue,
                    reactEventRegistry, reactEventRegistryIO
                  )
-import           Happlets.View (Happlet2DGraphics(draw2D), HappletWindow(onCanvas))
+import           Happlets.View
+                 ( Happlet2DGraphics(draw2D),
+                   HappletWindow(onCanvas),
+                   Sized2DRaster(getViewSize)
+                 )
 import           Happlets.View.Types2D
                  ( SampCoord, PixSize,
+                   Rect2D, rect2D, rect2DSize, rect2DHead,
                    Drawing, drawingIsNull, canonicalize2DShape,
                    rect2DUnion, rect2DUnionNull, theBoundingBox,
                  )
@@ -87,7 +92,7 @@ import           Control.Applicative (Alternative(..))
 import           Control.Concurrent.MVar (newMVar, withMVar)
 import           Control.Lens
                  ( Lens', lens, cloneLens, view, set, use, assign, modifying,
-                   (&), (^.), (%~), (.~), (.=),
+                   (&), (^.), (%~), (.~), (.=), (%=)
                  )
 import           Control.Monad (MonadPlus(..), guard, unless)
 import           Control.Monad.Except (MonadError(throwError, catchError))
@@ -121,6 +126,9 @@ import           System.IO (hPutStrLn, stderr)
 --
 -- 'Script' instantiates the 'CancelableAction' function, so you can evaluate 'cancel' somwhere in
 -- the 'Script' to indicate that this particular event should no longer be reacted to by an 'Actor'.
+--
+-- The 'Script' function type also instantiates 'Sized2DRaster', so it is possible to use
+-- 'getViewSize' and use this information to render 'Drawing's to within a particular area.
 newtype Script model a
   = Script{ unwrapScript :: ConsequenceT (StateT (ScriptState model) IO) a }
   deriving Functor -- NOT deriving MonadIO
@@ -171,6 +179,9 @@ instance Monoid a => Semigroup (Script model a) where
 instance Monoid a => Monoid (Script model a) where
   mempty = pure mempty
   mappend = (<>)
+
+instance Sized2DRaster (Script model) where
+  getViewSize = scriptGetsScene $ rect2DSize . theSceneGlobalBounds
 
 -- | Run a 'Script' which performs some update on the @model@.
 runScript :: Script model a -> ScriptState model -> IO (Consequence a, ScriptState model)
@@ -775,6 +786,12 @@ data Scene
       -- ^ A reference to the object in 'theSceneRegistry' that currently responds to keyboard
       -- events or double-click events. Also, an object that is being dragged necessarily has focus.
     , theSceneStats      :: !ActorEventHandlerStats
+      -- ^ Statistics about the number of event handlers installed across all 'Actor's within the
+      -- 'Scene', this helps to determine if the 'Scene' should install it's own event handler
+      -- to delegate events to any of it's 'Actor's.
+    , theSceneGlobalBounds :: !(Rect2D SampCoord)
+      -- ^ The 'Rect2D', in global coordinates of this 'Scene's viewable window, in the 'GUI'
+      -- monad's coordinate system.
     , sceneWriteErrorLog :: !(ReportLevel -> Strict.Text -> IO ())
     }
 
@@ -802,6 +819,11 @@ sceneRegistry = lens theSceneRegistry $ \ a b -> a{ theSceneRegistry = b }
 -- | The 'Actor' that currently has focus.
 sceneFocus :: Lens' Scene (Maybe Actor)
 sceneFocus = lens theSceneFocus $ \ a b -> a{ theSceneFocus = b }
+
+-- | The 'Rect2D', in global coordinates of this 'Scene's viewable window, in the 'GUI' monad's
+-- coordinate system.
+sceneGlobalBounds :: Lens' Scene (Rect2D SampCoord)
+sceneGlobalBounds = lens theSceneGlobalBounds $ \ a b -> a{ theSceneGlobalBounds = b }
 
 -- | not for export
 --
@@ -832,10 +854,11 @@ makeEmptyScene size = do
   registry <- newRegistry size
   errlock  <- newMVar ()
   return Scene
-    { theSceneRegistry   = registry
-    , theSceneFocus      = Nothing
-    , theSceneStats      = mempty
-    , sceneWriteErrorLog = \ _ msg ->
+    { theSceneRegistry     = registry
+    , theSceneFocus        = Nothing
+    , theSceneStats        = mempty
+    , theSceneGlobalBounds = rect2D
+    , sceneWriteErrorLog   = \ _ msg ->
         withMVar errlock $ \ () -> hPutStrLn stderr $ Strict.unpack msg
     }
 
@@ -1268,6 +1291,8 @@ resetEventHandlers
      )
   => GUI provider Act ()
 resetEventHandlers = do
+  newSize <- onCanvas getViewSize
+  onScene $ sceneGlobalBounds %= (rect2DHead .~ newSize)
   actResetMouseEvents
   onScene actResetKeyboardEvents
   actResetAnimationEvents
