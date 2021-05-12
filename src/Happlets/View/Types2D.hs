@@ -11,7 +11,8 @@ module Happlets.View.Types2D
     Has2DOrigin(..), Is2DPrimitive(..), Quantizable(..), HasMidpoint(..),
     Canonical2D(..), ContainsPoint2D(..),
     -- ** The 'Drawing' datatype
-    Drawing(..), drawing, drawingIsNull, drawingCountPrimitives,
+    Drawing(..), drawing, drawingIsNull, drawingIntersects,
+    drawingPrimitives, drawingCountPrimitives,
     -- ** Primitives
     Draw2DPrimitive(..), Draw2DShape(..), Map2DShape(..),
     -- *** Points
@@ -51,23 +52,27 @@ module Happlets.View.Types2D
     module Linear.Matrix,
   ) where
 
-import           Happlets.View.Color
+import           Happlets.View.Color (Color, get32BitsRGBA, set32BitsRGBA)
 
-import           Control.Arrow
+import           Control.Arrow ((&&&), (>>>))
 import           Control.Lens
-import           Control.Monad
+                 ( (&), (^.), (.~), (+~), (-~),
+                   Lens', Iso', lens, iso, view, cloneLens
+                 )
+import           Control.Monad (mapM_, guard)
 
-import           Data.Int                    (Int32)
-import           Data.Function               (on)
-import           Data.List                   (sortBy, nubBy)
-import           Data.Ord                    (Down(..))
-import qualified Data.Vector.Unboxed         as UVec
+import           Data.Int  (Int32)
+import           Data.Function (on)
+import           Data.List (sortBy, nubBy)
+import           Data.Maybe (isJust)
+import           Data.Ord (Down(..))
+import qualified Data.Vector.Unboxed  as UVec
 import qualified Data.Vector.Unboxed.Mutable as UMVec
-import           Data.Word                   (Word32)
-import qualified Data.Vector                 as Vec
+import           Data.Word (Word32)
+import qualified Data.Vector as Vec
 
-import           Linear.V2                   (V2(..))
-import           Linear.Matrix
+import           Linear.V2 (V2(..))
+import           Linear.Matrix (M44, identity)
 
 ----------------------------------------------------------------------------------------------------
 
@@ -92,7 +97,7 @@ sampCoord = fromIntegral
 -- | Some of the shapes in this module cannot instantiate 'Functor' because there are constrains on
 -- the numerical type used to define the shape, namely 'RealFrac' and 'UVec.Unbox'.
 class Map2DShape shape where
-  map2DShape :: (Real n,  UVec.Unbox n) => (n -> n) -> shape n -> shape n
+  map2DShape :: (Real n, UVec.Unbox n) => (n -> n) -> shape n -> shape n
 
 instance Map2DShape V2 where { map2DShape = fmap; }
 
@@ -621,6 +626,12 @@ instance (Ord n, Num n) => Monoid (Drawing n) where
   mempty = Drawing{ drawingBoundingBox = rect2D, unwrapDrawing = mempty }
   mappend = (<>)
 
+instance Map2DShape Drawing where
+  map2DShape f d = Drawing
+    { drawingBoundingBox = map2DShape f $ drawingBoundingBox d
+    , unwrapDrawing = map2DShape f <$> unwrapDrawing d
+    }
+
 -- | Consruct a 'Drawing' 
 drawing
   :: (Ord n, Num n, Real n, HasMidpoint n, Quantizable n, UMVec.Unbox n)
@@ -630,9 +641,18 @@ drawing prims = Drawing
   , drawingBoundingBox = rect2DMinBoundsForAll $ theBoundingBox <$> prims
   }
 
+-- | Extract a list of 'Draw2DPrimitive' data structures from a 'Drawing'.
+drawingPrimitives :: Drawing n -> [Draw2DPrimitive n]
+drawingPrimitives = Vec.toList . unwrapDrawing
+
 -- | 'True' if the 'Drawing' is 'mempty'.
 drawingIsNull :: Drawing n -> Bool
 drawingIsNull (Drawing{unwrapDrawing=vec}) = Vec.null vec
+
+-- | Returns 'True' if the 'drawingBoundingBox' intersects with the 'rect2DUnionBounds' of a
+-- 'Rect2DUnion'.
+drawingIntersects :: Ord n => Drawing n -> Rect2DUnion n -> Bool
+drawingIntersects d u = isJust $ drawingBoundingBox d `rect2DIntersect` rect2DUnionBounds u
 
 -- | Count the number of 'Draw2DPrimitive's in a 'Drawing'.
 drawingCountPrimitives :: Drawing n -> Int
