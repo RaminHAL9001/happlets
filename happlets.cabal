@@ -21,6 +21,7 @@ library
   hs-source-dirs: src
   exposed-modules:
     Happlets
+    Happlets.Logging
     Happlets.Model
     Happlets.Model.Audio
     Happlets.Model.GUI

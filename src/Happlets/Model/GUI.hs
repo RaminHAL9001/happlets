@@ -39,14 +39,14 @@ module Happlets.Model.GUI
 
     -- * The GUI Function Type
     GUI, onSubModel, getModel, getSubModel, putModel, modifyModel, askHapplet,
-    consequenceGUI, changeRootHapplet, mzeroIfBusy, howBusy,
+    consequenceGUI, changeRootHapplet, mzeroIfBusy, howBusy, guiLogReportWriter,
 
     -- ** GUI Threads
     SendGUISignal, forkGUI, bracketGUI, guiCatch,
 
     -- * Functions for Providers
     liftGUIProvider, providerLiftGUI,
-    MonadProvider(..),
+    MonadProvider(..), ProvidesLogReporter(..),
     EventSetup(..), simpleSetup, installEventHandler,
 
     -- ** Multi-Threading
@@ -63,6 +63,7 @@ module Happlets.Model.GUI
 
 import           Prelude                 hiding ((.), id)
 
+import           Happlets.Logging
 import           Happlets.Control.Consequence
 import           Happlets.Provider.React
 import           Happlets.View.Types2D   (PixSize)
@@ -299,7 +300,6 @@ instance Alternative (GUI provider model) where
     ActionHalt   -> b
     otherwise    -> pure otherwise
 
-
 instance MonadPlus (GUI provider model) where
   mzero = empty
   mplus = (<|>)
@@ -310,6 +310,13 @@ instance Semigroup a => Semigroup (GUI provider model a) where
 instance Monoid a => Monoid (GUI provider model a) where
   mempty = return mempty
   mappend a b = mappend <$> a <*> b
+
+instance ProvidesLogReporter provider => CanWriteReports (GUI provider model) where
+  report msgLevel msg =
+    guiLogReportWriter >>=
+    liftIO .
+    ($ msg) .
+    ($ msgLevel)
 
 -- | Force a 'GUI' computation's result to assume the value of the given 'Consequence', i.e. when
 -- given 'ActionOK', evaluate to 'return', when given 'ActionHalt' evaluate to 'mzero', when given
@@ -440,6 +447,10 @@ putModel = put
 modifyModel :: (model -> model) -> GUI provider model ()
 modifyModel = modify
 
+-- | Get the 'LogReporter' for the current 'GUI' context.
+guiLogReportWriter :: ProvidesLogReporter provider => GUI provider model (LogReporter IO)
+guiLogReportWriter = providesLogReporter . theGUIProvider <$> getGUIState
+
 -- | Force the OS window (view port) to change the 'Happlet' model that is currently being displayed
 -- as the root model. This function takes the new 'Happlet' and an initializer action which must
 -- setup the event handlers for the OS window to use with the new 'Happlet' model.
@@ -532,6 +543,14 @@ initProviderState init = do
   let ref  = ProviderStateLock mvar
   init ref >>= putMVar mvar
   return ref
+
+class ProvidesLogReporter provider where
+  -- | The @provider@ is expected to save a copy of the 'InitConfig' data that it receives when the
+   -- 'doGUIEventLoopLaunch' function is called, and this function needs to evaluate
+   -- 'theActualLogReporter' on the 'InitConfig' stored in the @provider@ to instnatiate this
+   -- function. The 'providerLogReporter' is used to instantiate the 'GUI' function type into the
+   -- 'CanWriteReports' typeclass.
+  providesLogReporter :: provider -> LogReporter IO
 
 class (MonadIO m, MonadState provider m) => MonadProvider provider m | provider -> m where
   -- | This function should work like 'runStateT' for the function type @m@.

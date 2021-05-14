@@ -55,8 +55,11 @@ module Happlets.Scene
     sceneMouseOver, sceneMouseDrag,
   ) where
 
+import           Happlets.Logging (CanWriteReports(report), LogReporter)
 import           Happlets.Initialize (Initialize, newHappletIO)
-import           Happlets.Model.GUI (GUI, Happlet, onSubModel)
+import           Happlets.Model.GUI
+                 ( GUI, Happlet, ProvidesLogReporter, guiLogReportWriter, onSubModel
+                 )
 import           Happlets.Model.Registry
                  ( Registry, newRegistry, registryEnqueue,
                    reactEventRegistry, reactEventRegistryIO
@@ -89,7 +92,6 @@ import           Happlets.Control.Keyboard
 import           Happlets.Control.WindowManager
 
 import           Control.Applicative (Alternative(..))
-import           Control.Concurrent.MVar (newMVar, withMVar)
 import           Control.Lens
                  ( Lens', lens, cloneLens, view, set, use, assign, modifying,
                    (&), (^.), (%~), (.~), (.=), (%=)
@@ -792,23 +794,12 @@ data Scene
     , theSceneGlobalBounds :: !(Rect2D SampCoord)
       -- ^ The 'Rect2D', in global coordinates of this 'Scene's viewable window, in the 'GUI'
       -- monad's coordinate system.
-    , sceneWriteErrorLog :: !(ReportLevel -> Strict.Text -> IO ())
+    , sceneWriteErrorLog :: !(LogReporter IO)
     }
 
--- | TODO: move this into the GUI module.
-data ReportLevel = DEBUG | ERROR | WARN | INFO
-  deriving (Eq, Ord, Show, Enum)
-
--- | TODO: move this into the GUI module.
-class Monad m => CanWriteReports m where
-  report :: ReportLevel -> Strict.Text -> m ()
-
 instance CanWriteReports (Script any) where
-  report lvl msg = scriptGetsScene sceneWriteErrorLog >>= \ log -> scriptIO $ log lvl msg
-
-instance CanWriteReports (GUI provider Scene) where
   report lvl msg =
-    gets sceneWriteErrorLog >>= \ log -> liftIO $ log lvl msg
+    scriptGetsScene sceneWriteErrorLog >>= \ log -> scriptIO $ log lvl msg
 
 -- | not for export
 --
@@ -849,17 +840,15 @@ onStage (TypedActor{theUntypedActor=actor}) = stageActor actor
 
 -- | Function used internally by 'newActHapplet' to create a new scene. Scenes that can be
 -- manipulated by end users of this API are always wrapped in a 'TypedActor'.
-makeEmptyScene :: Int -> IO Scene
-makeEmptyScene size = do
+makeEmptyScene :: LogReporter IO -> Int -> IO Scene
+makeEmptyScene logReporter size = do
   registry <- newRegistry size
-  errlock  <- newMVar ()
   return Scene
     { theSceneRegistry     = registry
     , theSceneFocus        = Nothing
     , theSceneStats        = mempty
     , theSceneGlobalBounds = rect2D
-    , sceneWriteErrorLog   = \ _ msg ->
-        withMVar errlock $ \ () -> hPutStrLn stderr $ Strict.unpack msg
+    , sceneWriteErrorLog   = logReporter
     }
 
 -- | Like the 'Control.Exception.bracket' function, evaluates a 'Script' function, but ensures a
@@ -900,7 +889,8 @@ sceneToTypedActor init =
 -- the most part will simply call 'actor' or 'actress' to place actors into the scene.
 newScene :: Int -> Script Scene () -> Script any (TypedActor Scene)
 newScene size init =
-  scriptIO (makeEmptyScene size) >>=
+  scriptGetsScene sceneWriteErrorLog >>= \ logReporter ->
+  scriptIO (makeEmptyScene logReporter size) >>=
   sceneToTypedActor init >>= \ ((), actor) ->
   onStage actor >>
   return actor
@@ -977,7 +967,8 @@ selectInScene
   -> fold
   -> Script any (TypedActor Scene, fold)
 selectInScene (ActorSelect select) fold = do
-  scene <- scriptIO $ makeEmptyScene 16
+  logReporter <- scriptGetsScene sceneWriteErrorLog
+  scene <- scriptIO $ makeEmptyScene logReporter 16
   fold  <- reactEventRegistry True
     scriptIO
     (\ halt role ->
@@ -1019,9 +1010,6 @@ data Act
     , theActHandleRightClick :: !([Role Actor] -> IO ())
     }
 
-instance CanWriteReports (GUI provider Act) where
-  report lvl = onScene . report lvl
-
 actLatestMouseTime :: Lens' Act UTCTime
 actLatestMouseTime = lens theLatestMouseTime $ \ a b -> a{ theLatestMouseTime = b }
 
@@ -1050,7 +1038,8 @@ onScene = onSubModel actCurrentScene
 
 -- | Execute a 'Script' within the context of the current 'Act'.
 guiInterpretScript
-  :: Script model a
+  :: ProvidesLogReporter provider
+  => Script model a
   -> TypedActor model
   -> GUI provider Scene (Consequence a, Maybe (Role model))
 guiInterpretScript script (TypedActor{theTypedActorRole=ioRef,theUntypedActor=actor}) =
@@ -1058,17 +1047,21 @@ guiInterpretScript script (TypedActor{theTypedActorRole=ioRef,theUntypedActor=ac
   guiInterpretScriptRole script actor
 
 guiInterpretScriptRole
-  :: Script model a
+  :: ProvidesLogReporter provider
+  => Script model a
   -> Actor
   -> Role model
   -> GUI provider Scene (Consequence a, Maybe (Role model))
 guiInterpretScriptRole script actor role = do
+  logReporter <- guiLogReportWriter
   scene <- get
   (result, state) <- liftIO $
     runScript script ScriptState
     { theScriptRole = role
     , theScriptActor = actor
     , theScriptScene = scene
+      { sceneWriteErrorLog = logReporter
+      }
     , theScriptRoleUpdated = False
     }
   put $ theScriptScene state
@@ -1142,7 +1135,8 @@ triggerEventHandlers liftIO liftScript handler event =
   liftScript (runEventAction action event) (theRoleModel role) role
 
 guiTriggerEventHandlers
-  :: Lens' (Role Actor) (Maybe (EventAction event Actor))
+  :: ProvidesLogReporter provider
+  => Lens' (Role Actor) (Maybe (EventAction event Actor))
   -> event
   -> GUI provider Scene ()
 guiTriggerEventHandlers = triggerEventHandlers liftIO guiInterpretScriptRole
@@ -1211,13 +1205,14 @@ actLiftIO = (get >>=) . (liftIO .)
 -- only be used at initialization time. It takes an initial model of any value (type variable
 -- @init@), creates a 'Scene', and uses the given 'Script' function to initialize the scene.
 newActHapplet
-  :: init
+  :: ProvidesLogReporter provider
+  => init
   -> Script init ()
   -> Initialize provider (Happlet Act)
 newActHapplet init f = newHappletIO $ do
   -- TODO: Consider whether a 'newActHapplet' should not take an arbitrary @init@ type, rather it
   -- should perhaps evaluate an initializer script of type (Script Scene ()).
-  scene <- makeEmptyScene 16
+  scene <- makeEmptyScene (const $ hPutStrLn stderr . Strict.unpack) 16
   now   <- getCurrentTime
   let act st = Act
         { theActCurrentScene     = theScriptScene st
@@ -1247,7 +1242,7 @@ newActHapplet init f = newHappletIO $ do
 -- the OS window.
 actWindow
   :: ( CanMouse provider, CanKeyboard provider, CanAnimate provider, Managed provider
-     , HappletWindow provider render, Happlet2DGraphics render
+     , HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider
      )
   => PixSize -> GUI provider Act ()
 actWindow _initSize = resetEventHandlers
@@ -1259,6 +1254,7 @@ actWindow _initSize = resetEventHandlers
 actResetMouseEvents
   :: ( CanAnimate provider, CanMouse provider, Managed provider
      , HappletWindow provider render, Happlet2DGraphics render
+     , ProvidesLogReporter provider
      )
   => GUI provider Act ()
 actResetMouseEvents =
@@ -1270,7 +1266,9 @@ actResetMouseEvents =
   else if has countActionClick || has countActionDoubleClick then react MouseButton
   else mouseEvents MouseAll $ const cancel
 
-actResetKeyboardEvents :: CanKeyboard provider => GUI provider Scene ()
+actResetKeyboardEvents
+  :: (CanKeyboard provider, ProvidesLogReporter provider)
+  => GUI provider Scene ()
 actResetKeyboardEvents = do
   keyboard <- maybe False (const True) <$> gets theSceneFocus
   keyboardEvents $ if keyboard then sceneKeyboardHandler else const cancel
@@ -1278,6 +1276,7 @@ actResetKeyboardEvents = do
 actResetAnimationEvents
   :: ( CanAnimate provider, HappletWindow provider render
      , Managed provider, Happlet2DGraphics render
+     , ProvidesLogReporter provider
      )
   => GUI provider Act ()
 actResetAnimationEvents =
@@ -1288,6 +1287,7 @@ actResetAnimationEvents =
 resetEventHandlers
   :: ( CanMouse provider, CanKeyboard provider, CanAnimate provider, Managed provider
      , HappletWindow provider render, Happlet2DGraphics render
+     , ProvidesLogReporter provider
      )
   => GUI provider Act ()
 resetEventHandlers = do
@@ -1302,7 +1302,9 @@ resetEventHandlers = do
 -- Keyboard handler
 
 -- | Force a 'Keyboard' event to occur in the current 'Act'.
-sceneKeyboardHandler :: Keyboard -> GUI provider Scene ()
+sceneKeyboardHandler
+  :: ProvidesLogReporter provider
+  => Keyboard -> GUI provider Scene ()
 sceneKeyboardHandler evt = case evt of
   Keyboard True _ _ -> run evt
   RawKey   True _ _ -> run evt
@@ -1331,7 +1333,9 @@ sceneKeyboardHandler evt = case evt of
 
 -- | Force an animation step event to occur in the current 'Act'.
 actAnimationHandler
-  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
+  :: ( HappletWindow provider render, Managed provider, Happlet2DGraphics render
+     , ProvidesLogReporter provider
+     )
   => UTCTime -> GUI provider Act ()
 actAnimationHandler t0 = do
   -- If there is an animation handler in effect, mouse actions are stored in 'actNextMouseAction' so
@@ -1370,6 +1374,7 @@ data MouseStatus
 actMouseHandler
   :: ( CanAnimate provider, Managed provider
      , HappletWindow provider render, Happlet2DGraphics render
+     , ProvidesLogReporter provider
      )
   => Mouse -> GUI provider Act ()
 actMouseHandler new =
@@ -1401,7 +1406,9 @@ actMouseHandler new =
 -- | This is the function that actually executes the mouse action. The mouse action is taken from
 -- the 'Act' state field 'theNextMouseAction'.
 actActualMouseHandler
-  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
+  :: ( HappletWindow provider render, Managed provider, Happlet2DGraphics render
+     , ProvidesLogReporter provider
+     )
   => GUI provider Act ()
 actActualMouseHandler =
   liftIO getCurrentTime >>= \ t ->
@@ -1454,25 +1461,29 @@ actActualMouseHandler =
               else step MouseMoved >> onScene (sceneMouseOver new)
 
 -- | Force a 'Mouse' action button click event to occur in the current 'Act'.
-sceneClick :: Mouse -> GUI provider Scene ()
+sceneClick :: ProvidesLogReporter provider => Mouse -> GUI provider Scene ()
 sceneClick = guiTriggerEventHandlers actionClick
 
 -- | Force a 'Mouse' context menu button click event to occur in the current 'Act'.
-actRightClick :: Mouse -> GUI provider Scene ()
+actRightClick :: ProvidesLogReporter provider => Mouse -> GUI provider Scene ()
 actRightClick = guiTriggerEventHandlers actionRightClick
 
 -- | Force a 'Mouse' action button double click event to occur in the current 'Act'.
-sceneDoubleClick :: Mouse -> GUI provider Scene ()
+sceneDoubleClick :: ProvidesLogReporter provider => Mouse -> GUI provider Scene ()
 sceneDoubleClick = guiTriggerEventHandlers actionDoubleClick
 
 -- | Force a 'Mouse'-over event to occur in the current 'Act'.
 sceneMouseOver
-  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
+  :: ( HappletWindow provider render, Managed provider, Happlet2DGraphics render
+     , ProvidesLogReporter provider
+     )
   => Mouse -> GUI provider Scene ()
 sceneMouseOver = guiTriggerEventHandlers actionMouseOver
 
 -- | Force a 'Mouse' drag event to occur in the current 'Act'.
 sceneMouseDrag
-  :: (HappletWindow provider render, Managed provider, Happlet2DGraphics render)
+  :: ( HappletWindow provider render, Managed provider, Happlet2DGraphics render
+     , ProvidesLogReporter provider
+     )
   => Mouse -> GUI provider Scene ()
 sceneMouseDrag = guiTriggerEventHandlers actionMouseDrag
