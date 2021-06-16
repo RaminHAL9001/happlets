@@ -21,8 +21,10 @@ type AnimationMoment = NominalDiffTime
 -- at fast, regular time intervals, usually 60 frames per second.
 class CanAnimate provider where
   -- | This function will be called repeatedly with a time delta indicating how much time has passed
-  -- since the animation handler was installed. The given 'GUI' function should update the
-  -- 'Happlet.View.Readraw' state each time.
+  -- since the animation handler was installed. The given 'GUI' function will be called once as soon
+  -- as it is installed, and if it doesn't evaluate to 'cancle' immediately, an event handler
+  -- callback will be installed into the operating system event handler loop that gets evaluated
+  -- periodically.
   stepFrameEvents :: (UTCTime -> GUI provider model ()) -> GUI provider model ()
 
   -- | This function returns true of false if there is currently an animation event handler

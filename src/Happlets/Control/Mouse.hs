@@ -7,15 +7,29 @@ import           Happlets.Model.GUI
 
 ----------------------------------------------------------------------------------------------------
 
--- | An abstraction for mouse events. Includes whether a button was pressed or released, which
+-- | A low-level abstraction for mouse events. Values of this type are received in a stream from the
+-- operating system, although typically this information is not polled as an ordinary stream signal
+-- would be, any change to the mouse state generates a signal value of this data type which can
+-- trigger 'GUI' event handlers.
+--
+-- Information stored in this data type include whether a button was pressed or released, which
 -- keyboard keys were pressed when the button was pressed, which buttons were pressed. An
 -- 'InputDeviceId' is also included in the event information in the case that there are multiple
 -- mouse devices provided by the back-end, especially for two-player games.
-data Mouse
-  = Mouse !InputDeviceId !Pressed !ModifierBits !MouseButton !PixCoord
+--
+-- This data type does not contain information about clicks, double-clicks, or drags, which is why
+-- it is a "signal" and not an "event." For events, you need to use a 'Happlets.Scene.Act' and
+-- 'Happlets.Scene.Scene' which has it's own high-level event handlers based on this low-level
+-- 'MouseSignal' data type. Or you can use a functional reactive programming framework and establish
+-- your own methods of translating signals to events.
+data MouseSignal
+  = MouseSignal !InputDeviceId !Pressed !ModifierBits !MouseButtonSignal !PixCoord
   deriving (Eq, Ord, Show)
 
-data MouseButton
+-- | Which button was pressed. This data structure accomodates a large variety of typical mouse
+-- types, but most applications will only ever be interested in 'LeftClick', 'RightClick,' or
+-- 'MotionOnly'.
+data MouseButtonSignal
   = MotionOnly  -- ^ indicates no button is pressed but there is still a mouse motion event
   | LeftClick   -- ^ this could also map to a track-pad tap event
   | RightClick  -- ^ this could also map to a track-pad hold event
@@ -30,8 +44,8 @@ data MouseButton
 -- event is "similar" if it has the same pixel coordinate location, the same mouse button, and the
 -- same modifier bits set. Only the "pressed" status is not considered when computing similarity, as
 -- it is the pressed status that changes rapidly when a bounce occurs.
-similarMouseEvents :: Mouse -> Mouse -> Bool
-similarMouseEvents (Mouse _ _ modA butnA ptA) (Mouse _ _ modB butnB ptB) =
+similarMouseSignals :: MouseSignal -> MouseSignal -> Bool
+similarMouseSignals (MouseSignal _ _ modA butnA ptA) (MouseSignal _ _ modB butnB ptB) =
   modA == modB &&
   butnA == butnB &&
   ptA == ptB
@@ -39,8 +53,8 @@ similarMouseEvents (Mouse _ _ modA butnA ptA) (Mouse _ _ modB butnB ptB) =
 -- | Compute the square of the distance (in pixels) between two 'Mouse' event data structures. This
 -- allows you to decide whether two mouse events occurred close-enough together for the events to
 -- have occurred at the same place.
-mouseEventDistance :: Mouse -> Mouse -> SampCoord
-mouseEventDistance (Mouse _ _ _ _ (V2 xA yA)) (Mouse _ _ _ _ (V2 xB yB)) =
+mouseSignalDistance :: MouseSignal -> MouseSignal -> SampCoord
+mouseSignalDistance (MouseSignal _ _ _ _ (V2 xA yA)) (MouseSignal _ _ _ _ (V2 xB yB)) =
   let dx = xA - xB in
   let dy = yA - yB in
   dx * dx + dy * dy
@@ -51,7 +65,7 @@ mouseEventDistance (Mouse _ _ _ _ (V2 xA yA)) (Mouse _ _ _ _ (V2 xB yB)) =
 -- efficiency, the 'mouseEvents' function take a parameter that lets you filter only certain mouse
 -- events, so your 'GUI' function is only called when mouse events matching one of these patterns
 -- occur.
-data MouseEventPattern
+data MouseSignalPattern
   = MouseButton -- ^ Matches only mouse button click events.
   | MouseDrag   -- ^ Matches mouse motion events only when a button is clicked down.
   | MouseAll    -- ^ Matches all mouse motion and mouse button events.
@@ -62,9 +76,9 @@ data MouseEventPattern
 class CanMouse window where
   -- | Install a 'GUI' function that only responds to mouse button clicks. All mouse cursor motion
   -- is ignored.
-  mouseEvents
-    :: MouseEventPattern
-    -> (Mouse -> GUI window model ())
+  mouseSignals
+    :: MouseSignalPattern
+    -> (MouseSignal -> GUI window model ())
     -> GUI window model ()
   -- | This function should return a list of all possible mouse devices. If an empty list is
   -- returned, only one device, the default device, is provided.

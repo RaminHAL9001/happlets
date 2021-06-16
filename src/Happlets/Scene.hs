@@ -81,9 +81,9 @@ import           Happlets.Control.Consequence
                    Consequence(..), ConsequenceT(..), runConsequenceT
                  )
 import           Happlets.Control.Mouse
-                 ( CanMouse(mouseEvents), Mouse(..),
-                   MouseEventPattern(MouseButton, MouseDrag, MouseAll),
-                   similarMouseEvents, mouseEventDistance
+                 ( CanMouse(mouseSignals), MouseSignal(..),
+                   MouseSignalPattern(MouseButton, MouseDrag, MouseAll),
+                   similarMouseSignals, mouseSignalDistance
                  )
 import           Happlets.Control.Keyboard
                  ( CanKeyboard(keyboardEvents),
@@ -316,29 +316,29 @@ onKeyboard = onQueue actionKeyboard
 
 -- | Alter the mouse action button single-click event handler function. The mouse action button is
 -- usually the left mouse button.
-onClick :: OnQueue Mouse model
+onClick :: OnQueue MouseSignal model
 onClick = onQueue actionClick
 
 -- | Alter the mouse action button single-click event handler function. The mouse action button is
 -- usually the left mouse button.
-onDoubleClick :: OnQueue Mouse model
+onDoubleClick :: OnQueue MouseSignal model
 onDoubleClick = onQueue actionDoubleClick
 
 -- | Alter the mouse context menu button event handler function. The mouse context menu button is
 -- usually the right mouse button.
-onRightClick :: OnQueue Mouse model
+onRightClick :: OnQueue MouseSignal model
 onRightClick = onQueue actionRightClick
 
 -- | Alter the mouse-over event handler function, which is an event that occurs if the mouse is
 -- moving over the drawn graphical representation of the 'TypedActor', but none of the mouse buttons
 -- are depressed.
-onMouseOver :: OnQueue Mouse model
+onMouseOver :: OnQueue MouseSignal model
 onMouseOver = onQueue actionMouseOver
 
 -- | Alter the mouse-drag event handler function, which is an event that occurs when a mouse drag
 -- action begins while the mouse action button (usually the left mouse button) is depressed and
 -- begins moving while cursor is over the 'TypedActor's drawn graphical representation in the scene.
-onMouseDrag :: OnQueue Mouse model
+onMouseDrag :: OnQueue MouseSignal model
 onMouseDrag = onQueue actionMouseDrag
 
 -- | If any 'TypedActor' in a 'Scene' has an animation type event handler set, an animation event
@@ -374,11 +374,11 @@ data Role model
     , theActionRedraw      :: !(Maybe (Drawing SampCoord))
     , theActionSelect      :: !(Maybe (EventAction SampCoord model))
     , theActionKeyboard    :: !(Maybe (EventAction Keyboard model))
-    , theActionClick       :: !(Maybe (EventAction Mouse model))
-    , theActionDoubleClick :: !(Maybe (EventAction Mouse model))
-    , theActionRightClick  :: !(Maybe (EventAction Mouse model))
-    , theActionMouseOver   :: !(Maybe (EventAction Mouse model))
-    , theActionMouseDrag   :: !(Maybe (EventAction Mouse model))
+    , theActionClick       :: !(Maybe (EventAction MouseSignal model))
+    , theActionDoubleClick :: !(Maybe (EventAction MouseSignal model))
+    , theActionRightClick  :: !(Maybe (EventAction MouseSignal model))
+    , theActionMouseOver   :: !(Maybe (EventAction MouseSignal model))
+    , theActionMouseDrag   :: !(Maybe (EventAction MouseSignal model))
     , theActionAnimation   :: !(Maybe (EventAction UTCTime model))
     }
 
@@ -551,19 +551,19 @@ actionSelect = lens theActionSelect $ \ a b -> a{ theActionSelect = b }
 actionKeyboard :: Lens' (Role model) (Maybe (EventAction Keyboard model))
 actionKeyboard = lens theActionKeyboard $ \ a b -> a{ theActionKeyboard = b }
 
-actionClick :: Lens' (Role model) (Maybe (EventAction Mouse model))
+actionClick :: Lens' (Role model) (Maybe (EventAction MouseSignal model))
 actionClick = lens theActionClick $ \ a b -> a{ theActionClick = b }
 
-actionDoubleClick :: Lens' (Role model) (Maybe (EventAction Mouse model))
+actionDoubleClick :: Lens' (Role model) (Maybe (EventAction MouseSignal model))
 actionDoubleClick = lens theActionDoubleClick $ \ a b -> a{ theActionDoubleClick = b }
 
-actionRightClick :: Lens' (Role model) (Maybe (EventAction Mouse model))
+actionRightClick :: Lens' (Role model) (Maybe (EventAction MouseSignal model))
 actionRightClick = lens theActionRightClick $ \ a b -> a{ theActionRightClick = b }
 
-actionMouseOver :: Lens' (Role model) (Maybe (EventAction Mouse model))
+actionMouseOver :: Lens' (Role model) (Maybe (EventAction MouseSignal model))
 actionMouseOver = lens theActionMouseOver $ \ a b -> a{ theActionMouseOver = b }
 
-actionMouseDrag :: Lens' (Role model) (Maybe (EventAction Mouse model))
+actionMouseDrag :: Lens' (Role model) (Maybe (EventAction MouseSignal model))
 actionMouseDrag = lens theActionMouseDrag $ \ a b -> a{ theActionMouseDrag = b }
 
 -- | Set the action to perform when an animation step occurs.
@@ -659,33 +659,33 @@ actorKeyboard :: Keyboard -> Script model ()
 actorKeyboard key =
   scriptGetsRole theActionKeyboard >>= maybe (pure ()) (flip runEventAction key)
 
--- | Delegate or send a new 'Mouse' click event to the current 'TypedActor' of the 'Script' function
+-- | Delegate or send a new 'MouseSignal' click event to the current 'TypedActor' of the 'Script' function
 -- context.
-actorClick :: Mouse -> Script model ()
+actorClick :: MouseSignal -> Script model ()
 actorClick mouse =
   scriptGetsRole theActionClick >>= maybe (pure ()) (flip runEventAction mouse)
 
--- | Delegate or send a new 'Mouse' double click event to the current 'TypedActor' of the 'Script'
+-- | Delegate or send a new 'MouseSignal' double click event to the current 'TypedActor' of the 'Script'
 -- function context.
-actorDoubleClick :: Mouse -> Script model ()
+actorDoubleClick :: MouseSignal -> Script model ()
 actorDoubleClick mouse =
   scriptGetsRole theActionDoubleClick >>= maybe (pure ()) (flip runEventAction mouse)
 
--- | Delegate or send a new 'Mouse' double click event to the current 'TypedActor' of the 'Script'
+-- | Delegate or send a new 'MouseSignal' double click event to the current 'TypedActor' of the 'Script'
 -- function context.
-actorRightClick :: Mouse -> Script model ()
+actorRightClick :: MouseSignal -> Script model ()
 actorRightClick mouse =
   scriptGetsRole theActionRightClick >>= maybe (pure ()) (flip runEventAction mouse)
 
--- | Delegate or send a new 'Mouse' mouse-over event to the current 'TypedActor' of the 'Script'
+-- | Delegate or send a new 'MouseSignal' mouse-over event to the current 'TypedActor' of the 'Script'
 -- function context.
-actorMouseOver :: Mouse -> Script model ()
+actorMouseOver :: MouseSignal -> Script model ()
 actorMouseOver mouse =
   scriptGetsRole theActionMouseOver >>= maybe (pure ()) (flip runEventAction mouse)
 
--- | Delegate or send a new 'Mouse' mouse-drag event to the current 'TypedActor' of the 'Script'
+-- | Delegate or send a new 'MouseSignal' mouse-drag event to the current 'TypedActor' of the 'Script'
 -- function context.
-actorMouseDrag :: Mouse -> Script model ()
+actorMouseDrag :: MouseSignal -> Script model ()
 actorMouseDrag drag =
   scriptGetsRole theActionMouseDrag >>= maybe (pure ()) (flip runEventAction drag)
 
@@ -1004,8 +1004,8 @@ data Act
     , theCurrentMouseStatus :: !MouseStatus
     , theLatestMouseTime    :: !UTCTime
     , theCurrentDragItem    :: !(Maybe (Role Actor))
-    , thePreviousMouseEvent :: !(Maybe Mouse)
-    , theLatestMouseEvent   :: !(Maybe Mouse)
+    , thePreviousMouseEvent :: !(Maybe MouseSignal)
+    , theLatestMouseEvent   :: !(Maybe MouseSignal)
       -- ^ Used for timing mouse reactions with animations.
     , theActHandleRightClick :: !([Role Actor] -> IO ())
     }
@@ -1016,7 +1016,7 @@ actLatestMouseTime = lens theLatestMouseTime $ \ a b -> a{ theLatestMouseTime = 
 actCurrentMouseStatus :: Lens' Act MouseStatus
 actCurrentMouseStatus = lens theCurrentMouseStatus $ \ a b -> a{ theCurrentMouseStatus = b }
 
-actLatestMouseEvent :: Lens' Act (Maybe Mouse)
+actLatestMouseEvent :: Lens' Act (Maybe MouseSignal)
 actLatestMouseEvent = lens theLatestMouseEvent $ \ a b -> a{ theLatestMouseEvent = b }
 
 -- | It is important to understand that once a drag item is selected, that item receives all drag
@@ -1027,7 +1027,7 @@ actLatestMouseEvent = lens theLatestMouseEvent $ \ a b -> a{ theLatestMouseEvent
 actCurrentDragItem :: Lens' Act (Maybe (Role Actor))
 actCurrentDragItem = lens theCurrentDragItem $ \ a b -> a{ theCurrentDragItem = b }
 
-actPreviousMouseEvent :: Lens' Act (Maybe Mouse)
+actPreviousMouseEvent :: Lens' Act (Maybe MouseSignal)
 actPreviousMouseEvent = lens thePreviousMouseEvent $ \ a b -> a{ thePreviousMouseEvent = b }
 
 actCurrentScene :: Lens' Act Scene
@@ -1260,11 +1260,11 @@ actResetMouseEvents
 actResetMouseEvents =
   theSceneStats <$> use actCurrentScene >>= \ stats ->
   let has f = f stats > 0 in
-  let react which = mouseEvents which actMouseHandler in
+  let react which = mouseSignals which actMouseHandler in
   if has countActionMouseOver then react MouseAll
   else if has countActionMouseDrag then react MouseDrag
   else if has countActionClick || has countActionDoubleClick then react MouseButton
-  else mouseEvents MouseAll $ const cancel
+  else mouseSignals MouseAll $ const cancel
 
 actResetKeyboardEvents
   :: (CanKeyboard provider, ProvidesLogReporter provider)
@@ -1376,7 +1376,7 @@ actMouseHandler
      , HappletWindow provider render, Happlet2DGraphics render
      , ProvidesLogReporter provider
      )
-  => Mouse -> GUI provider Act ()
+  => MouseSignal -> GUI provider Act ()
 actMouseHandler new =
   -- TODO: certain constant values have been hard-coded into this function, like the double-click
   -- distance, and the minimum time required to elapse between events for the event to not be
@@ -1386,7 +1386,7 @@ actMouseHandler new =
   use actLatestMouseTime >>= \ past ->
   liftIO getCurrentTime >>= \ present ->
   use actLatestMouseEvent >>= \ old ->
-  if maybe False (similarMouseEvents new) old &&
+  if maybe False (similarMouseSignals new) old &&
      diffUTCTime present past < minDelayBetweenEvents
   then actLatestMouseEvent .= Just new
   else
@@ -1423,7 +1423,7 @@ actActualMouseHandler =
   else
   use actLatestMouseEvent >>= \ case
     Nothing -> return ()
-    Just new@(Mouse _devID newPressed _newModBits _newButton _newPoint) ->
+    Just new@(MouseSignal _devID newPressed _newModBits _newButton _newPoint) ->
       use actCurrentMouseStatus >>= \ stat ->
       use actPreviousMouseEvent >>= \ old ->
       let step0 state = do
@@ -1436,9 +1436,9 @@ actActualMouseHandler =
       let firstAction = if newPressed then step Mouse1stDown else step MouseMoved in
       case old of
         Nothing -> firstAction
-        Just old@(Mouse _devID _oldPressed _oldModBits _oldButton _oldPoint) ->
+        Just old@(MouseSignal _devID _oldPressed _oldModBits _oldButton _oldPoint) ->
           let thresh = 8 in -- TODO: make this threshold configurable
-          let dist = mouseEventDistance new old in
+          let dist = mouseSignalDistance new old in
           case stat of
             MouseReady   -> firstAction
             MouseMoved   ->
@@ -1460,30 +1460,30 @@ actActualMouseHandler =
               then onScene (sceneMouseDrag new)
               else step MouseMoved >> onScene (sceneMouseOver new)
 
--- | Force a 'Mouse' action button click event to occur in the current 'Act'.
-sceneClick :: ProvidesLogReporter provider => Mouse -> GUI provider Scene ()
+-- | Force a 'MouseSignal' action button click event to occur in the current 'Act'.
+sceneClick :: ProvidesLogReporter provider => MouseSignal -> GUI provider Scene ()
 sceneClick = guiTriggerEventHandlers actionClick
 
--- | Force a 'Mouse' context menu button click event to occur in the current 'Act'.
-actRightClick :: ProvidesLogReporter provider => Mouse -> GUI provider Scene ()
+-- | Force a 'MouseSignal' context menu button click event to occur in the current 'Act'.
+actRightClick :: ProvidesLogReporter provider => MouseSignal -> GUI provider Scene ()
 actRightClick = guiTriggerEventHandlers actionRightClick
 
--- | Force a 'Mouse' action button double click event to occur in the current 'Act'.
-sceneDoubleClick :: ProvidesLogReporter provider => Mouse -> GUI provider Scene ()
+-- | Force a 'MouseSignal' action button double click event to occur in the current 'Act'.
+sceneDoubleClick :: ProvidesLogReporter provider => MouseSignal -> GUI provider Scene ()
 sceneDoubleClick = guiTriggerEventHandlers actionDoubleClick
 
--- | Force a 'Mouse'-over event to occur in the current 'Act'.
+-- | Force a 'MouseSignal'-over event to occur in the current 'Act'.
 sceneMouseOver
   :: ( HappletWindow provider render, Managed provider, Happlet2DGraphics render
      , ProvidesLogReporter provider
      )
-  => Mouse -> GUI provider Scene ()
+  => MouseSignal -> GUI provider Scene ()
 sceneMouseOver = guiTriggerEventHandlers actionMouseOver
 
--- | Force a 'Mouse' drag event to occur in the current 'Act'.
+-- | Force a 'MouseSignal' drag event to occur in the current 'Act'.
 sceneMouseDrag
   :: ( HappletWindow provider render, Managed provider, Happlet2DGraphics render
      , ProvidesLogReporter provider
      )
-  => Mouse -> GUI provider Scene ()
+  => MouseSignal -> GUI provider Scene ()
 sceneMouseDrag = guiTriggerEventHandlers actionMouseDrag
