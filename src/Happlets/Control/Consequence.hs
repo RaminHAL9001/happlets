@@ -53,6 +53,9 @@ class Applicative m => Consequential m where
   -- For the 'GUI' monad, 'cancel' is equivalent to 'cancelGUIEventHandler'.
   cancel :: m void
 
+class Consequential m => CatchConsequence m where
+  catchConsequence :: m a -> m (Consequence a)
+
 discontinue :: String -> Consequence a -> Consequence b
 discontinue msg = fmap $ const $ error $ "internal: Consequence." ++ msg
 
@@ -91,6 +94,8 @@ instance MonadError Strict.Text Consequence where
 
 instance Consequential Consequence where { cancel = ActionCancel; }
 
+instance CatchConsequence Consequence where { catchConsequence = ActionOK; }
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'Consequence' monad transformer similar to 'ExceptT' but uses 'Consequence' rather than
@@ -99,6 +104,9 @@ newtype ConsequenceT m a = ConsequenceT { runConsequenceT :: m (Consequence a) }
 
 instance Applicative m => Consequential (ConsequenceT m) where
   cancel = ConsequenceT $ pure ActionCancel
+
+instance Applicative m => CatchConsequence (ConsequenceT m) where
+  catchConsequence (ConsequenceT f) = ConsequenceT (ActionOK <$> f)
 
 instance Functor m => Functor (ConsequenceT m) where
   fmap f (ConsequenceT a) = ConsequenceT $ fmap f <$> a

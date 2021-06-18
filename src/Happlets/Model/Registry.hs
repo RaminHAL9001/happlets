@@ -168,9 +168,9 @@ foldMapReactorCountDeleted inc =
 reactEventRegistryIO
   :: MonadIO m
   => Bool
-  -> ((Consequence obj -> FoldMapRegistry obj fold m void)
-      -> obj
-      -> FoldMapRegistry obj fold m (Consequence obj)
+  -> ((Consequence () -> FoldMapRegistry obj fold m halt)
+      -> IORef obj
+      -> FoldMapRegistry obj fold m (Consequence ())
      )
   -> Registry obj
   -> fold
@@ -186,9 +186,9 @@ reactEventRegistry
   :: Monad m
   => Bool
   -> (forall a . IO a -> m a)
-  -> ((Consequence obj -> FoldMapRegistry obj fold m void)
-      -> obj
-      -> FoldMapRegistry obj fold m (Consequence obj)
+  -> ((Consequence () -> FoldMapRegistry obj fold m halt)
+      -> IORef obj
+      -> FoldMapRegistry obj fold m (Consequence ())
      )
   -> Registry obj
   -> fold
@@ -197,7 +197,6 @@ reactEventRegistry upward liftIO action (Registry{theRegistryStore=storeref}) fo
   withStore liftIO storeref $
   use storeCount >>= \ count ->
   if count <= 0 then return fold else
-  let top = count - 1 in
   use storeVector >>= \ vec ->
   fmap snd $
   runFoldMapRegistry fold $
@@ -211,16 +210,18 @@ reactEventRegistry upward liftIO action (Registry{theRegistryStore=storeref}) fo
               ActionHalt   -> pure ()
               ActionCancel -> delete
               ActionFail{} -> delete
-              ActionOK upd -> lift $ liftIO $ writeIORef objref upd
+              ActionOK  () -> pure ()
         in
-        lift (liftIO (readIORef objref)) >>=
-        action (evalConsequence >=> halt) >>=
+        -- lift (liftIO (readIORef objref)) >>=
+        action (evalConsequence >=> halt) objref >>=
         -- Note that ^ here evalConsequence is evaluated just before halt. This closure is is passed
         -- to the callback as the halting function. So if the callback evaluates the halting
         -- closure, it is actually evaluating 'evalConsequences' one final time and then halting.
         evalConsequence
   )
-  (if upward then [0 .. top] else takeWhile (>= 0) $ iterate (subtract 1) top)
+  ( if upward then [0 .. count-1] else
+    subtract 1 <$> takeWhile (> 0) (iterate (subtract 1) count)
+  )
 
 ----------------------------------------------------------------------------------------------------
 
