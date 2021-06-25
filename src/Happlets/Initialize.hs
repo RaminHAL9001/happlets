@@ -94,7 +94,7 @@ module Happlets.Initialize
     registeredAppName, initWindowTitleBar, initBackgroundTransparency, initBackgroundGreyValue,
     recommendWindowPosition, recommendWindowSize, animationFrameRate,
     deleteWindowOnClose, quitOnWindowClose, initDecorateWindow, theActualLogReporter,
-    setMinLogReportLevel, setLogReportWriter,
+    setMaxLogReportLevel, setLogReportWriter,
   ) where
 
 import           Happlets.Logging
@@ -213,7 +213,7 @@ data InitState
 getUpdateReporter :: Initialize provider (LogReporter IO)
 getUpdateReporter = Initialize $ do
   InitState{theInitConfig=config,theInitLogReporter=report} <- get
-  return $ report (theGlobalLogReporter config) (theConfigMinLogLevel config)
+  return $ report (theGlobalLogReporter config) (theConfigMaxLogLevel config)
 
 -- not for export
 asksInit :: (Provider provider -> a) -> Initialize provider a
@@ -230,16 +230,16 @@ happlet provider userInit = do
     (runReaderT init provider) $
     InitState
     { theInitConfig = config0
-    , theInitLogReporter   = \ print minLevel msgLevel msg ->
+    , theInitLogReporter   = \ print maxLevel msgLevel msg ->
         withMVar logLock $ \ () ->
-        when (msgLevel >= minLevel) $
+        when (msgLevel <= maxLevel) $
         print msg >>=
         evaluate
     }
   let config =
         (theInitConfig init)
         { theActualLogReporter =
-          theInitLogReporter init (theGlobalLogReporter config) (theConfigMinLogLevel config)
+          theInitLogReporter init (theGlobalLogReporter config) (theConfigMaxLogLevel config)
         }
   liftIO $ doGUIEventLoopLaunch provider config
   return a
@@ -292,7 +292,7 @@ type StrictFilePath = Strict.Text
 -- color for the canvas.
 data InitConfig
   = InitConfig
-    { theConfigMinLogLevel       :: ReportLevel
+    { theConfigMaxLogLevel       :: ReportLevel
     , theGlobalLogReporter       :: Strict.Text -> IO ()
     , theActualLogReporter       :: LogReporter IO
       -- ^ This function is the 'LogReporter' that was setup by the 'Initialze' callback that was
@@ -315,7 +315,7 @@ makeInitConfig :: IO InitConfig
 makeInitConfig = return config where
   config =
     InitConfig
-    { theConfigMinLogLevel = INFO
+    { theConfigMaxLogLevel = INFO
     , theGlobalLogReporter = hPutStrLn stderr . Strict.unpack
     , theActualLogReporter = const $ theGlobalLogReporter config
     , theInitConfigFilePath = ""
@@ -351,9 +351,9 @@ sanitizeName = let sp = ' ' in Strict.unpack >>>
 -- to 'report' actually display a message in the log. The 'ReportLevel' value passed to 'report'
 -- must be larger than the minimum value set here in order for the message to actually appear in the
 -- log.
-setMinLogReportLevel :: ReportLevel -> Initialize provider ()
-setMinLogReportLevel level = do
-  configMinLogLevel .= level
+setMaxLogReportLevel :: ReportLevel -> Initialize provider ()
+setMaxLogReportLevel level = do
+  configMaxLogLevel .= level
   getUpdateReporter >>= assign actualLogReporter
 
 -- | This function set's the minimum logging level that will be used to determine whether for calls
@@ -374,12 +374,12 @@ setLogReportWriter reporter = do
 initConfigFilePath :: Lens' InitConfig StrictFilePath
 initConfigFilePath = lens theInitConfigFilePath $ \ a b -> a{ theInitConfigFilePath = b }
 
--- Not for export: must be set by 'setMinLogReportLevel'
+-- Not for export: must be set by 'setMaxLogReportLevel'
 --
 -- Configure the minimum 'ReportLevel' to accept from the 'report' function. If messages passed to
 -- the 'report' function are lower than this minimum level, they are not reported.
-configMinLogLevel :: Lens' InitConfig ReportLevel
-configMinLogLevel = lens theConfigMinLogLevel $ \ a b -> a{ theConfigMinLogLevel = b }
+configMaxLogLevel :: Lens' InitConfig ReportLevel
+configMaxLogLevel = lens theConfigMaxLogLevel $ \ a b -> a{ theConfigMaxLogLevel = b }
 
 ---- Not for export: must be set by 'setLogReportWriter'
 --globalLogReporter :: Lens' InitConfig (Strict.Text -> IO ())

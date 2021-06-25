@@ -74,7 +74,7 @@ import           Happlets.View
                    Has2DOrigin(origin2D)
                  )
 import           Happlets.View.Types2D
-                 ( SampCoord, PixSize, Point2D,
+                 ( SampCoord, PixSize, PixCoord, Point2D, V2(..),
                    Rect2D, rect2D, rect2DSize, rect2DHead,
                    Drawing, drawingIsNull, canonicalize2DShape,
                    rect2DUnion, rect2DUnionNull, theBoundingBox,
@@ -88,7 +88,7 @@ import           Happlets.Control.Mouse
                  ( CanMouse(mouseSignals), MouseSignal(..),
                    MouseSignalPattern(MouseButton, MouseDrag, MouseAll),
                    MouseButtonSignal(MotionOnly,LeftClick,RightClick),
-                   similarMouseSignals, mouseSignalDistance
+                   similarMouseSignals
                  )
 import           Happlets.Control.Keyboard
                  ( CanKeyboard(keyboardEvents),
@@ -99,7 +99,7 @@ import           Happlets.Control.WindowManager
 
 import           Control.Applicative (Alternative(..))
 import           Control.Lens
-                 ( ALens', Lens', lens, cloneLens, view, set, use, assign, modifying,
+                 ( Lens', lens, cloneLens, view, set, use, assign, modifying,
                    (&), (^.), (%~), (.~), (<>~), (.=), (%=)
                  )
 import           Control.Monad (MonadPlus(..), guard, when, unless, (>=>))
@@ -116,7 +116,7 @@ import           Control.Monad.Trans (MonadTrans(..))
 --import           Data.Functor.Const         (Const(..))
 import           Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import qualified Data.Text as Strict
-import           Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
+import           Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 
 import           System.IO (hPutStrLn, stderr)
 
@@ -638,7 +638,6 @@ data MouseButton = RightMouseButton | LeftMouseButton
   deriving (Eq, Ord, Show, Enum)
 
 instance Has2DOrigin Mouse2D where { origin2D = mouse2DPosition; }
-
 roleMouseEvents :: RoleMouseEvents model
 roleMouseEvents = RoleMouseEvents
   { theActionMouseDown = Nothing
@@ -1705,22 +1704,57 @@ actAnimationHandler t0 = do
 
 ----------------------------------------------------------------------------------------------------
 
+-- | There are two 'MouseState' values in an act, one for the left and right mouse buttons, so each
+-- mouse button has it's own state value. This data structure along with the 'MouseFSA' determines
+-- how the low-level 'MouseSignal' stream is translated to mouse events.
 data MouseState
   = MouseState
-    { theMouseStateTime     :: !UTCTime
-    , theMouseStatePrevious :: !(Maybe MouseSignal)
-    , theMouseStateSignal   :: !(Maybe MouseSignal)
+    { theMouseStateTime       :: !UTCTime
+      -- ^ Used for debouncing when animation events are not set.
+    , theMouseStateSignal     :: !(Maybe MouseSignal)
       -- ^ Used for timing mouse reactions with animations.
+    , theMouseStateCoordinate :: !(Maybe (PixCoord, UTCTime))
+      -- ^ If a mouse down event has occurred, the pixel coordinate associated with that signal is
+      -- registered here so that a drag distance can be computed.
+    , theMouseStateFSA        :: !MouseFSA
+      -- ^ Used to decide which 'MouseSignals' to accept, and which to ignore. Also used to
+      -- determine when an actual 'PixelMouse' event triggers an event handler.
     }
   deriving Eq
+
+-- | The 'MouseFSA' is the state of a finite state automata (FSA) that describes the mouse event
+-- state, used to translate the 'MouseSignal' stream into higher-level events that trigger event
+-- handlers like 'sceneMouseDrag' or 'sceneMouseDoubleClick'. Each mouse button (only right and
+-- left, we do not assume a middle mouse button) has it's own FSA, so click, drag, and double-click
+-- events are parameterized as either a right or left variety.
+--
+-- The FSA itself determines what next 'MouseSignal' events can transition to the next FSA state,
+-- and if a 'MouseSignal' that is not expected by the FSA is received, this signal is ignored. The
+-- result of this is that you may have a noisy 'MouseSignal' stream, but the behavior of the mouse
+-- will remain somewhat predictable as event handlers are only fired when some recognizable sequence
+-- of events occurs, regardless of how many intervening noisy signals may occur in between state
+-- transitions. The FSA tends toward triggering the correct event handlers.
+data MouseFSA
+  = MouseOverState -- ^ The default state.
+  | MouseDownState -- ^ A "down" occurs after a mouse-down but before a mouse-up.
+  | MouseClickState
+    -- ^ A "click" occurs after a single mouse-down and a single mouse-up. In this state, if another
+    -- mouse-down" occurs within the mouse drag threshold, a "double-click" event is triggered and
+    -- the FSA is reset to 'MouseOverState'.
+  | MouseDragState
+    -- ^ A "drag" occurs after a "down" occurs, and then another "down" occurs but moved some
+    -- distance greater than a mouse drag threshold value. Mouse "drag" events continue to be
+    -- generated for every 'MouseSignal' until a "mouse-up" signal is received.
+  deriving (Eq, Ord, Show, Read, Bounded, Enum)
 
 -- | The empty 'MouseState'
 mouseState :: UTCTime -> MouseState
 mouseState t0 =
   MouseState
-  { theMouseStateTime     = t0
-  , theMouseStatePrevious = Nothing
-  , theMouseStateSignal   = Nothing
+  { theMouseStateTime       = t0
+  , theMouseStateSignal     = Nothing
+  , theMouseStateCoordinate = Nothing
+  , theMouseStateFSA        = MouseOverState
   }
 
 mouseStateTime :: Lens' MouseState UTCTime
@@ -1729,8 +1763,11 @@ mouseStateTime = lens theMouseStateTime $ \ a b -> a{ theMouseStateTime = b }
 mouseStateSignal :: Lens' MouseState (Maybe MouseSignal)
 mouseStateSignal = lens theMouseStateSignal $ \ a b -> a{ theMouseStateSignal = b }
 
-mouseStatePrevious :: Lens' MouseState (Maybe MouseSignal)
-mouseStatePrevious = lens theMouseStateSignal $ \ a b -> a{ theMouseStateSignal = b }
+mouseStateCoordinate :: Lens' MouseState (Maybe (PixCoord, UTCTime))
+mouseStateCoordinate = lens theMouseStateCoordinate $ \ a b -> a{ theMouseStateCoordinate = b }
+
+mouseStateFSA :: Lens' MouseState MouseFSA
+mouseStateFSA = lens theMouseStateFSA $ \ a b -> a{ theMouseStateFSA = b }
 
 -- | The 'actMouseHandler' has some pretty complex logic in order to make sure the mouse user
 -- experience is very consistent across all apps built with the "Happlets.Actor" API.
@@ -1775,27 +1812,18 @@ actMouseHandler new@(MouseSignal _ pressed mods signalButton coord) = case signa
           report DEBUG $ Strict.pack $ "actMouseHandler: debounce (" <> show new <> ")"
           cloneLens buttonLens . mouseStateSignal .= Just new
         else do
-          -- Here we set the mouse signal to be processed and pass control over toe
+          -- Here we set the mouse signal to be processed and pass control over to
           -- 'actActualMouseHandler', unless there is an animation handler, in which case we do
           -- nothing and let the animation handler call 'actActualMouseHandler'.
-          use (cloneLens buttonLens . mouseStateSignal) >>=
-            assign (cloneLens buttonLens . mouseStatePrevious)
           cloneLens buttonLens . mouseStateSignal .= Just new
           cloneLens buttonLens . mouseStateTime   .= present
           stats <- actSceneStats
           if countActionAnimation stats <= 0 then actActualMouseHandler else
             report DEBUG $ Strict.pack $ "actMouseHandler: defer event " <> show new
 
--- Mouse events that can happen:
--- 1. First down -> set latest event
--- 2. Anomalous close before time-in -> push latest to previous, ignore all but latest
--- 3. Anomalous close after time-in -> ignore any but mouse up, an up generates click + push to previous
--- 4. Anomalous far before time-in -> if down, clear prior state, set new latest event
--- 5. Second down close after time-in -> update state, set latest event
--- 6. Second down far after time-in -> set state to drag event
-
--- | This is the function that actually executes the mouse action. The mouse action is taken from
--- the 'Act' state field 'theNextMouseAction'.
+-- | This function implements the interpretation of the 'MouseFSA', so it sets 'theMouseStateFSA'
+-- and will transition the state when expected 'MouseSignal's are received. Unexpected
+-- 'MouseSignal's are simply ignored.
 actActualMouseHandler
   :: ( HappletWindow provider render, Managed provider, Happlet2DGraphics render
      , ProvidesLogReporter provider
@@ -1803,67 +1831,63 @@ actActualMouseHandler
   => GUI provider Act ()
 actActualMouseHandler = stepFSA LeftMouseButton >> stepFSA RightMouseButton where
   stepFSA button = do
+    -- TODO: certain constant values have been hard-coded into this function, like the double-click
+    -- distance, and the minimum time required to elapse between events for the event to not be
+    -- considered a "bounce". These hard-coded values should be taken from a global configuration
+    -- variable.
     let dragThreshold = 8
-    let click2Threshold = 8
-    -- TODO: certain constant values have been hard-coded into this function, like the
-    -- double-click distance, and the minimum time required to elapse between events for the event
-    -- to not be considered a "bounce". These hard-coded values should be taken from a global
-    -- configuration variable.
-    let buttonLens = actMouseButtonLens button :: ALens' Act MouseState
-    let getData (MouseSignal _ _ mod _ coord) = Mouse2D
-          { theMouse2DPosition = coord
-          , theMouse2DModifiers = mod
-          }
-    let isPressed (MouseSignal _ pressed _ _ _) = pressed
-    let clearSignals = cloneLens buttonLens %=
-          (mouseStateSignal .~ Nothing) .
-          (mouseStatePrevious .~ Nothing)
-    st <- use (cloneLens buttonLens)
-    case st ^. mouseStateSignal of
-      Nothing -> case st ^. mouseStatePrevious of
-        -- no previous signal, this is the first recent event
-        Nothing -> return ()
-          -- No signals at all, this function does nothing. This makes it safe to call at every step
-          -- of an animation handler.
-        Just signal1 ->
-          if isPressed signal1 then
-            onScene $ sceneMouseDown button $ getData signal1
-          else
-            return () -- Ignore isolated mouse up events.
-      Just signal1 ->
-        -- A previous signal exists. This is a more complex event dispatch.
-        case st ^. mouseStateSignal of
-          Nothing -> do
-            clearSignals
-            report DEBUG $ Strict.pack $
-              "ignored mouse dispatch, mouseStateSignal is not set for " <> show button
-          Just signal2 ->
-            if isPressed signal1 then
-              if isPressed signal2 then do
-                -- Button depressed for 2 singals in a row means a drag event occurred.
-                onScene $ sceneMouseDrag button $ Just $ getData signal2
-              else if mouseSignalDistance signal1 signal2 >= dragThreshold then do
-                -- Button down then up but distance between is greater than drag threshold means a
-                -- drag occurred but started and completed very quickly.
-                onScene $ sceneMouseDrag button $ Just $ getData signal2
-                onScene $ sceneMouseDrag button Nothing
-                clearSignals
-              else do
-                -- Button down then up, but within a distance less than the drag threshold means a
-                -- mouse click occurred.
-                onScene $ sceneMouseClick button $ getData signal2
-                clearSignals
-            else -- signal1 is not pressed
-              if isPressed signal2 then
-                if mouseSignalDistance signal1 signal2 < click2Threshold then do
-                  onScene $ sceneMouseDoubleClick button $ getData signal2
-                  clearSignals
-                else
-                  onScene $ sceneMouseDown button$ getData signal2
-              else do
-                clearSignals
-                report DEBUG $ Strict.pack $
-                  "ignored double-mouse up event on " <> show button
+    let maxDoubleClickTimeDiff = 0.5 :: NominalDiffTime
+    let buttonLens = actMouseButtonLens button
+    stButton <- use (cloneLens buttonLens)
+    let stFSA = stButton ^. mouseStateFSA
+    case stButton ^. mouseStateSignal of
+      Nothing -> pure ()
+      Just (MouseSignal _dev pressed mods _button coord1) -> do
+        let t = stButton ^. mouseStateTime
+        let coordTime = stButton ^. mouseStateCoordinate
+        let (dt, dist) = maybe (999999.0 :: NominalDiffTime, 0)
+              (\ (coord0, t0) ->
+                 ( diffUTCTime t t0
+                 , let (V2 x y) = coord1 - coord0 in x * x + y * y
+                 )
+              ) coordTime
+        let keep  = cloneLens buttonLens . mouseStateCoordinate .= Just (coord1, t)
+        let clear = cloneLens buttonLens . mouseStateCoordinate .= Nothing
+        let step stNext keepOrClear handler = do
+              cloneLens buttonLens . mouseStateFSA .= stNext
+              keepOrClear
+              onScene $ handler button $ Mouse2D
+                { theMouse2DPosition  = coord1
+                , theMouse2DModifiers = mods
+                }
+        cloneLens buttonLens . mouseStateSignal .= Nothing
+        case stFSA of
+          MouseOverState
+            | pressed ->
+              step MouseDownState keep sceneMouseDown
+          MouseDownState
+            | not pressed ->
+              step MouseClickState clear sceneMouseClick
+          MouseDownState
+            | pressed && dist >= dragThreshold ->
+              step MouseDragState (pure ()) $ \ b ->
+              sceneMouseDrag b . Just
+          MouseClickState
+            | pressed && dist < dragThreshold && dt < maxDoubleClickTimeDiff ->
+              step MouseOverState clear sceneMouseDoubleClick
+          MouseClickState
+            | not pressed ->
+              step MouseOverState clear (\ _ _ -> pure ())
+          MouseDragState
+            | pressed ->
+              step MouseDragState clear $ \ b ->
+              sceneMouseDrag b . Just
+          MouseDragState
+            | not pressed ->
+              step MouseOverState clear $ \ b evt -> do
+                sceneMouseDrag b (Just evt)
+                sceneMouseDrag b Nothing
+          _ -> report DEBUG "Mouse FSA ignored"
 
 -- | Force a 'MouseSignal'-over event to occur in the current 'Act'.
 sceneMouseOver
