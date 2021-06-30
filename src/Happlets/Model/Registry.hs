@@ -17,12 +17,14 @@ module Happlets.Model.Registry
     registryClean, registryForceClean,
     -- ** Folds and Maps
     FoldMapRegistry, reactEventRegistry, reactEventRegistryIO,
+    -- ** Debugging
+    debugPrintRegistry, debugShowRegistry
   ) where
 
 import           Happlets.Control.Consequence (Consequence(..))
 
 import           Control.Lens            (Lens', lens, use, (^.), (.=), (+=))
-import           Control.Monad           (void, when, (>=>))
+import           Control.Monad           (void, when, forM_, (>=>))
 import           Control.Monad.Cont      (MonadCont(..), ContT(..), runContT, callCC)
 import           Control.Monad.IO.Class  (MonadIO(..))
 import           Control.Monad.State     (MonadState(..), get, gets, StateT(..), evalStateT)
@@ -30,8 +32,12 @@ import           Control.Monad.Trans     (MonadTrans(..))
 
 import           Data.Function           (fix)
 import           Data.IORef              (IORef, newIORef, readIORef, writeIORef)
+import qualified Data.Text               as Strict
+import qualified Data.Text.IO            as Strict
 import qualified Data.Vector.Mutable     as MVec
 import           Data.Unique             (Unique, newUnique)
+
+import Debug.Trace
 
 ----------------------------------------------------------------------------------------------------
 
@@ -330,6 +336,7 @@ storeEnqueue obj = do
   -- completely used up.
   vec <- if count < size then return vec else liftIO $
     let newsize = head $ dropWhile (< newcount) $ iterate (* 2) size in
+    trace ("Resize registry vector to " <> show newsize) $
     MVec.new newsize >>= \ newvec ->
     MVec.copy (MVec.slice 0 count newvec) vec >>
     return newvec
@@ -340,6 +347,7 @@ storeEnqueue obj = do
   -- updated value.
   count <- use storeCount
   liftIO $ MVec.write vec count obj
+  traceM ("Store element into registry at index " <> show count)
   storeCount += 1
 
 -- | Move an element within the 'Store', shifting elements around without re-allocating anything.
@@ -421,3 +429,44 @@ storeForceClean fold =
         liftIO (MVec.write vec rem obj) >>
         (loop rem $! i + 1)
   ) 0 0
+
+----------------------------------------------------------------------------------------------------
+
+-- | This debugging function evaluates an continuation of type `m` on every cell in the given
+-- 'Registry'.  A cell may be defined or undefined, so the continuation takes a 'Maybe' value which
+-- will receive 'Nothing' for undefined cells, and will receive 'Just' containing the content of the
+-- cell for defined cells. It also receives a 'Text' string indicating the cell's index in the
+-- 'Registry' vector. The state of the vector is not change in any way. You must pass a
+-- 'liftIO'-like function as the first argument to this function.
+debugPrintRegistry
+  :: Monad m
+  => (forall a . IO a -> m a) -- ^ usually 'liftIO' or a function similar to it
+  -> Registry obj -- ^ the registry to inspect
+  -> (Strict.Text -> Maybe obj -> m ()) -- ^ evaluated on each cell
+  -> m ()
+debugPrintRegistry liftIO (Registry{theRegistryStore=storeref}) onElem = do
+  store <- liftIO (readIORef storeref)
+  let vec = theStoreVector store
+  let len = MVec.length vec
+  let align = \ case
+        i | i < 10 -> "    "
+        i | i < 100 -> "   "
+        i | i < 1000 -> "  "
+        i | i < 10000 -> " "
+        _              -> ""
+  let showIndex i = Strict.pack $ align i <> show i
+  forM_ [0 .. len-1] $ \ i ->  liftIO (MVec.read vec i) >>= \ case
+    NullObject     -> onElem (showIndex i) Nothing
+    ObjectNode ref -> liftIO (readIORef ref) >>= onElem (showIndex i) . Just
+
+-- | Like 'debugPrintRegistry' but uses the 'Show' instance of the @obj@ instead of taking an
+-- arbitrary action.
+debugShowRegistry
+  :: (Monad m, Show obj)
+  => (forall a . IO a -> m a) -- ^ usually 'liftIO' or a function similar to it
+  -> Registry obj -- ^ the registry to inspect
+  -> m ()
+debugShowRegistry liftIO reg = debugPrintRegistry liftIO reg $ \ line ->
+  liftIO . Strict.putStrLn . \ case
+    Nothing   -> line
+    Just elem -> line <> Strict.pack (": " <> show elem)

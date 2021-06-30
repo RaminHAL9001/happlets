@@ -47,6 +47,7 @@ library
     Happlets.View.Text
     Happlets.View.Types2D
   other-modules:
+    Happlets.Model.Test
     Paths_happlets
   default-extensions:
     DeriveDataTypeable

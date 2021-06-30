@@ -26,7 +26,7 @@ module Happlets.Scene
     -- *** Selecting Actors in a Scene
     ActorSelect, ActorInfo(..), selectInScene,
     -- ** The Actor data type
-    Actor, TypedActor, theUntypedActor, actor, actress, onStage, selfLabel, actorTypedActor,
+    Actor, TypedActor, theUntypedActor, actor, actress, onStage, selfLabel, thisLabel, actorTypedActor,
     -- ** The Script function type
     Script, scriptWithActor,
     -- ** Event Handlers
@@ -250,15 +250,21 @@ scriptRole = lens theScriptRole $ \ a b -> a{ theScriptRole = b, theScriptRoleUp
 scriptScene :: Lens' (ScriptState model) Scene
 scriptScene = lens theScriptScene $ \ a b -> a{ theScriptScene = b }
 
--- | A 'TypedActor' allows you to assign an arbitrary text string to it called a "label". This text
--- string can be used for any reason at all, it need not be unique. It is usually used to provide
--- some kind of information to end users about the 'Actor', like what it is and where it originated,
--- or perhaps even the code that constructed it.
+-- | A 'TypedActor' allows you to assign an arbitrary text string to it called a "label" to identify
+-- actors, which is especially useful when debugging. This text string can be used for any reason at
+-- all, it need not be unique. It is usually used to provide some kind of information to end users
+-- about the 'Actor', like what it is and where it originated, or perhaps even the code that
+-- constructed it.
 --
 -- Provide a function for modifying the description, the modified description is returned. Evaluate
 -- @('selfDescribe' 'id')@ to retrieve the description without modifying it.
 selfLabel :: (Strict.Text -> Strict.Text) -> Script model Strict.Text
-selfLabel f = scriptModify (scriptRole . roleLabel %~ f) >> scriptGetsRole theRoleLabel
+selfLabel f = scriptModify (scriptRole . roleLabel %~ f) >> thisLabel
+
+-- | Get the self-applied label set by 'selfLabel'. This arbitrary text can be used to identify
+-- actors, and is especially useful for debugging.
+thisLabel :: Script model Strict.Text
+thisLabel = scriptGetsRole theRoleLabel
 
 -- | This function hands control over to another 'TypedActor' to act out another 'Script' function,
 -- then returns control to the current 'Script' and 'TypedActor'. Any modifications made to the
@@ -1001,6 +1007,19 @@ encloseMouseEvents ref = maybe Nothing $ \ pack -> Just $
   , theActionMouseDrag   = encloseEventAction ref <$> theActionMouseDrag pack
   }
 
+reportSelfLabel :: Strict.Text -> Script model ()
+reportSelfLabel msg = do
+  lbl <- thisLabel
+  report DEBUG (msg <> ":\n" <> lbl)
+
+-- | Print a debug message before and after evaluating a 'Script' function.
+reportSubScript :: Strict.Text -> Script model a -> Script model a
+reportSubScript msg f = do
+  report DEBUG ("begin " <> msg)
+  result <- f
+  report DEBUG ("end " <> msg)
+  return result
+
 -- | not for export
 --
 -- This function creates a 'TypedActor' without registering it with a 'Registry' in a 'Scene'.
@@ -1024,7 +1043,10 @@ makeActor :: Script model a -> model -> Script any (a, TypedActor model)
 makeActor init model =
   Script $ ConsequenceT $ StateT $ \ st0 -> do
     typed <- makeActorIO $ role model
-    (result, st) <- runScript init (theScriptScene st0) typed
+    (result, st) <- runScript
+      (reportSubScript "makeActor" $ init <* reportSelfLabel "Actor initialized")
+      (theScriptScene st0)
+      typed
     return
       ( (\ a -> (a, typed)) <$> result
       , st0
@@ -1842,25 +1864,28 @@ actActualMouseHandler = stepFSA LeftMouseButton >> stepFSA RightMouseButton wher
     let stFSA = stButton ^. mouseStateFSA
     case stButton ^. mouseStateSignal of
       Nothing -> pure ()
-      Just (MouseSignal _dev pressed mods _button coord1) -> do
+      Just (signal@(MouseSignal _dev pressed mods _button coord1)) -> do
         let t = stButton ^. mouseStateTime
-        let coordTime = stButton ^. mouseStateCoordinate
         let (dt, dist) = maybe (999999.0 :: NominalDiffTime, 0)
               (\ (coord0, t0) ->
-                 ( diffUTCTime t t0
+                 ( diffUTCTime t0 t
                  , let (V2 x y) = coord1 - coord0 in x * x + y * y
                  )
-              ) coordTime
+              )
+              (stButton ^. mouseStateCoordinate)
         let keep  = cloneLens buttonLens . mouseStateCoordinate .= Just (coord1, t)
         let clear = cloneLens buttonLens . mouseStateCoordinate .= Nothing
+        let nextStep stNext = cloneLens buttonLens . mouseStateFSA .= stNext
         let step stNext keepOrClear handler = do
-              cloneLens buttonLens . mouseStateFSA .= stNext
+              nextStep stNext
               keepOrClear
               onScene $ handler button $ Mouse2D
                 { theMouse2DPosition  = coord1
                 , theMouse2DModifiers = mods
                 }
-        cloneLens buttonLens . mouseStateSignal .= Nothing
+        let ignore = report DEBUG $ Strict.pack $
+              "Mouse FSA " <> show stFSA <>
+              ": unexpected signal ignored (" <> show signal <> ")"
         case stFSA of
           MouseOverState
             | pressed ->
@@ -1875,9 +1900,8 @@ actActualMouseHandler = stepFSA LeftMouseButton >> stepFSA RightMouseButton wher
           MouseClickState
             | pressed && dist < dragThreshold && dt < maxDoubleClickTimeDiff ->
               step MouseOverState clear sceneMouseDoubleClick
-          MouseClickState
-            | not pressed ->
-              step MouseOverState clear (\ _ _ -> pure ())
+          MouseClickState ->
+              nextStep MouseOverState >> clear
           MouseDragState
             | pressed ->
               step MouseDragState clear $ \ b ->
@@ -1887,7 +1911,7 @@ actActualMouseHandler = stepFSA LeftMouseButton >> stepFSA RightMouseButton wher
               step MouseOverState clear $ \ b evt -> do
                 sceneMouseDrag b (Just evt)
                 sceneMouseDrag b Nothing
-          _ -> report DEBUG "Mouse FSA ignored"
+          _ -> ignore
 
 -- | Force a 'MouseSignal'-over event to occur in the current 'Act'.
 sceneMouseOver
