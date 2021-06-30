@@ -16,15 +16,13 @@ module Happlets.Model.Registry
     -- *** Registry Clean
     registryClean, registryForceClean,
     -- ** Folds and Maps
-    FoldMapRegistry, reactEventRegistry, reactEventRegistryIO,
+    FoldMapRegistry, KeepOrDelete(..), reactEventRegistry, reactEventRegistryIO,
     -- ** Debugging
     debugPrintRegistry, debugShowRegistry
   ) where
 
-import           Happlets.Control.Consequence (Consequence(..))
-
 import           Control.Lens            (Lens', lens, use, (^.), (.=), (+=))
-import           Control.Monad           (void, when, forM_, (>=>))
+import           Control.Monad           (void, when, forM_)
 import           Control.Monad.Cont      (MonadCont(..), ContT(..), runContT, callCC)
 import           Control.Monad.IO.Class  (MonadIO(..))
 import           Control.Monad.State     (MonadState(..), get, gets, StateT(..), evalStateT)
@@ -134,6 +132,18 @@ instance Monad m => MonadState fold (FoldMapRegistry obj fold m) where
   state f = FoldMapRegistry $
     state $ \ (del, fold0) -> let (a, fold) = f fold0 in (a, (del, fold))
 
+-- | This value is used by the callback for 'reactEventRegistry' to control iteration over the
+-- 'Registry' elements. The 'reactEventRegistry' function provides the iterated continuation with an
+-- 'IORef' that can perform stateful (impure) updates on elements in the 'Registry', and you can
+-- control whether you have encountered an element that should halt iteration or allow it to
+-- continue, and you can declare whether the element should be kept or deleted.
+data KeepOrDelete
+  = KeepObject -- ^ Keep the object in the 'Registry', continue iteration.
+  | DeleteObject -- ^ Delete the object from the 'Registry', continue iteration.
+  | KeepObjectHalt -- ^ Keep the object in the 'Registry', halt iteration.
+  | DeleteObjectHalt -- ^ Delete the object from the 'Registry', halt iteration.
+  deriving (Eq, Ord, Show, Bounded, Enum)
+
 runFoldMapRegistry
   :: Monad m
   => fold -> FoldMapRegistry obj fold m void -> ModifyStore obj m (Int, fold)
@@ -153,31 +163,14 @@ foldMapReactorCountDeleted inc =
 ----------------------------------------------------------------------------------------------------
 
 -- | Iterate through all items in a 'Reactor', evaluating a reaction function on each @obj@
--- element. Iteration may be halted by evaluating the continuation halting function provided as the
--- first parameter to the reaction function.
---
--- It is a good idea to evaluate 'reactorClean' after evaluating this function.
---
--- The semantics of the 'Consequence' returned by this function control whether the @obj@ value is
--- updated in the registry's storage vector:
---
---   - Return 'pure' or 'return' (e.g. @return (pure obj)@) with an updated @obj@ value to write a
---     new value to the vector.
---
---   - Return to 'empty' or 'mzero' (e.g. @return empty@) to indicate success but no update to the
---   - vector.
---
---   - Return 'cancel' or 'fail' (e.g. @return (fail "event handler failed")@) "to indicate that the
---     @obj@ should be deleted from the registry. Evaluating 'cancel' indicates that the @obj@
---     exited normally, 'fail' indicates it exited with an error.
---
+-- element. The reaction function takes an updating continuation function, and the current @obj@
+-- value of the 'IORef' stored in the 'Registry'. The reaction function may perform a stateful
+-- update on the @obj@ value in the 'Registry' by evaluating the updating continuation with a new
+-- @obj@ value. Iteration is controlled by returning a 'KeepOrDelete' value.
 reactEventRegistryIO
   :: MonadIO m
   => Bool
-  -> ((Consequence () -> FoldMapRegistry obj fold m halt)
-      -> IORef obj
-      -> FoldMapRegistry obj fold m (Consequence ())
-     )
+  -> ((obj -> FoldMapRegistry obj fold m ()) -> obj -> FoldMapRegistry obj fold m KeepOrDelete)
   -> Registry obj
   -> fold
   -> m fold
@@ -192,10 +185,7 @@ reactEventRegistry
   :: Monad m
   => Bool
   -> (forall a . IO a -> m a)
-  -> ((Consequence () -> FoldMapRegistry obj fold m halt)
-      -> IORef obj
-      -> FoldMapRegistry obj fold m (Consequence ())
-     )
+  -> ((obj -> FoldMapRegistry obj fold m ()) -> obj -> FoldMapRegistry obj fold m KeepOrDelete)
   -> Registry obj
   -> fold
   -> m fold
@@ -212,18 +202,12 @@ reactEventRegistry upward liftIO action (Registry{theRegistryStore=storeref}) fo
     lift (liftIO (MVec.read vec i)) >>= \ case
       NullObject        -> pure ()
       ObjectNode objref ->
-        let evalConsequence = \ case
-              ActionHalt   -> pure ()
-              ActionCancel -> delete
-              ActionFail{} -> delete
-              ActionOK  () -> pure ()
-        in
-        -- lift (liftIO (readIORef objref)) >>=
-        action (evalConsequence >=> halt) objref >>=
-        -- Note that ^ here evalConsequence is evaluated just before halt. This closure is is passed
-        -- to the callback as the halting function. So if the callback evaluates the halting
-        -- closure, it is actually evaluating 'evalConsequences' one final time and then halting.
-        evalConsequence
+        lift (liftIO $ readIORef objref) >>=
+        action (lift . liftIO . writeIORef objref) >>= \ case
+          KeepObject       -> pure ()
+          DeleteObject     -> delete
+          KeepObjectHalt   -> halt ()
+          DeleteObjectHalt -> delete >> halt ()
   )
   ( if upward then [0 .. count-1] else
     subtract 1 <$> takeWhile (> 0) (iterate (subtract 1) count)
@@ -334,11 +318,12 @@ storeEnqueue obj = do
   -- 'storeEnqueue' operation. We want to be sure that there is always more than enough space for
   -- all elements so as to prevent a 'storeClean' from being forced every time the allocation is
   -- completely used up.
-  vec <- if count < size then return vec else liftIO $
-    let newsize = head $ dropWhile (< newcount) $ iterate (* 2) size in
-    trace ("Resize registry vector to " <> show newsize) $
-    MVec.new newsize >>= \ newvec ->
-    MVec.copy (MVec.slice 0 count newvec) vec >>
+  vec <- if count < size then return vec else liftIO $ do
+    let newsize = head $ dropWhile (< newcount) $ iterate (* 2) size
+    traceM ("Resize registry vector to " <> show newsize)
+    newvec <- MVec.new newsize
+    MVec.copy (MVec.slice 0 count newvec) vec
+    MVec.set (MVec.slice count (newsize - count) newvec) NullObject
     return newvec
   storeVector .= vec
   -- Now perform a 'storeClean' operation, if the old allocation count turned out to be not enough.

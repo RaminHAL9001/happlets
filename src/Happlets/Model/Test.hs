@@ -1,17 +1,14 @@
 module Happlets.Model.Test where
 
-import Happlets.Control.Consequence (Consequence, cancel)
 import Happlets.Model.Registry
        ( Registry, newRegistry, registryEnqueueNew, registryForceClean,
          registrySize, registryAllocation, debugShowRegistry,
-         FoldMapRegistry, reactEventRegistryIO
+         FoldMapRegistry, KeepOrDelete(..), reactEventRegistryIO
        )
 
-import Control.Applicative (empty)
-import Control.Monad (when)
+import Control.Monad (when, (>=>))
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.State.Class (modify)
-import Data.IORef (IORef, readIORef, writeIORef)
 import qualified Data.Text as Strict
 import Data.String (IsString(fromString))
 
@@ -35,43 +32,40 @@ printRegistryAllocation = printPropIO "registryAllocation" . registryAllocation
 printRegistryInfo :: Registry r -> IO ()
 printRegistryInfo r = printRegistrySize r >> printRegistryAllocation r
 
-type Halt fold = Consequence () -> FoldMapRegistry Elem fold IO (Consequence ())
+type UpdateElem fold = Elem -> FoldMapRegistry Elem fold IO ()
 
-displayElem :: Halt () -> IORef Elem -> FoldMapRegistry Elem () IO (Consequence ())
-displayElem _ ref = liftIO $ readIORef ref >>= putStrLn . show >>= pure . pure
+displayElem :: UpdateElem () -> Elem -> FoldMapRegistry Elem () IO KeepOrDelete
+displayElem _ = liftIO . putStrLn . show >=> return . const KeepObject
 
 -- | Evaluate a predicate on the 'Text' of each 'Elem', set it's boolean value to the result of the
 -- predicate.
 markAllElems
-  :: (Strict.Text -> Bool) -> Halt Int -> IORef Elem
-  -> FoldMapRegistry Elem Int IO (Consequence ())
-markAllElems check _halt ref = do
-  (Elem _ txt) <- liftIO $ readIORef ref
+  :: (Strict.Text -> Bool)
+  -> UpdateElem Int -> Elem -> FoldMapRegistry Elem Int IO KeepOrDelete
+markAllElems check update (Elem _ txt) = do
   let ok = check txt
-  liftIO $ writeIORef ref (Elem ok txt)
+  update (Elem ok txt)
   when ok $ modify (+ 1)
-  return empty
+  return KeepObject
 
 -- | Search through the 'Registry' by evaluating a predicate on the 'Text' of each 'Elem', if the
 -- predicate is 'True' then toggle the boolean value and halt the search.
 toggleElem
-  :: (Strict.Text -> Bool) -> Halt Int -> IORef Elem
-  -> FoldMapRegistry Elem Int IO (Consequence ())
-toggleElem check halt ref = do
-  (Elem bool txt) <- liftIO (readIORef ref)
-  let doToggle = check txt
+  :: (Strict.Text -> Bool)
+  -> UpdateElem Int -> Elem -> FoldMapRegistry Elem Int IO KeepOrDelete
+toggleElem check update (Elem bool txt) =
+  let doToggle = check txt in
   if doToggle then do
-      liftIO $ writeIORef ref (Elem (not bool) txt)
-      modify (+ 1)
-      halt empty
-    else
-      return empty
+    update (Elem (not bool) txt)
+    modify (+ 1)
+    return DeleteObjectHalt
+  else
+    return KeepObject
 
-clearFalseElems :: Halt Int -> IORef Elem -> FoldMapRegistry Elem Int IO (Consequence ())
-clearFalseElems _halt ref =
-  liftIO (readIORef ref) >>= \ (Elem ok _) ->
-  if not ok then modify (+ 1) >> return cancel
-  else return empty
+clearFalseElems :: UpdateElem Int -> Elem -> FoldMapRegistry Elem Int IO KeepOrDelete
+clearFalseElems _halt (Elem ok _) =
+  if not ok then modify (+ 1) >> return DeleteObject
+  else return KeepObject
 
 up :: Bool
 up = True

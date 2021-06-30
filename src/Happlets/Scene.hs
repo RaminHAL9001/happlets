@@ -23,8 +23,6 @@ module Happlets.Scene
     Act, actWindow, newActHapplet, actLiftIO,
     -- ** Scenes
     Scene, newScene, sceneBracket, grabFocus, delegateSceneEvents, debugEventHandlerStats,
-    -- *** Selecting Actors in a Scene
-    ActorSelect, ActorInfo(..), selectInScene,
     -- ** The Actor data type
     Actor, TypedActor, theUntypedActor, actor, actress, onStage, selfLabel, thisLabel, actorTypedActor,
     -- ** The Script function type
@@ -47,7 +45,8 @@ module Happlets.Scene
     actorAnimate, actorKeyboard,
     actorMouseOver, actorDown, actorClick, actorDoubleClick, actorDrag,
     -- *** Actor Event Handler Accounting
-    ActorEventHandlerStats(..), MouseEventHandlerStats(..), getEventHandlerStats,
+    ActorEventHandlerStats(..), MouseEventHandlerStats(..),
+    getEventHandlerStats, diffActorEventHandlerStats,
     -- ** Low-Level Happlets APIs
     guiRunScriptTypedActor, guiRunScriptActor, sceneRedraw, forceSceneRedraw,
     sceneKeyboardHandler, actAnimationHandler,
@@ -64,7 +63,7 @@ import           Happlets.Model.GUI
                  ( GUI, Happlet, ProvidesLogReporter, onSubModel
                  )
 import           Happlets.Model.Registry
-                 ( Registry, newRegistry, registryEnqueue,
+                 ( Registry, KeepOrDelete(..), newRegistry, registryEnqueue,
                    reactEventRegistry, reactEventRegistryIO
                  )
 import           Happlets.View
@@ -99,14 +98,13 @@ import           Happlets.Control.WindowManager
 
 import           Control.Applicative (Alternative(..))
 import           Control.Lens
-                 ( Lens', lens, cloneLens, view, set, use, assign, modifying,
+                 ( Lens', lens, cloneLens, view, set, use, assign,
                    (&), (^.), (%~), (.~), (<>~), (.=), (%=)
                  )
 import           Control.Monad (MonadPlus(..), guard, when, unless, (>=>))
 import           Control.Monad.Except (MonadError(throwError, catchError))
 import           Control.Monad.Fail (MonadFail(fail))
 import           Control.Monad.IO.Class (MonadIO(..))
-import           Control.Monad.Reader (MonadReader(..), ReaderT(..))
 import           Control.Monad.State
                  ( MonadState(state, get), StateT(..),
                    gets, modify, runStateT
@@ -1212,11 +1210,7 @@ newScene size init =
 sceneRecountActionStats :: Registry (Role Actor) -> IO ActorEventHandlerStats
 sceneRecountActionStats registry =
   reactEventRegistryIO True
-  (\ _halt roleRef ->
-     liftIO (readIORef roleRef) >>=
-     modify . mappend . roleEventStats >>
-     pure empty
-  )
+  (const $ modify . mappend . roleEventStats >=> return . const KeepObject)
   registry
   mempty
 
@@ -1310,65 +1304,6 @@ delegateSceneEvents = do
 
 ----------------------------------------------------------------------------------------------------
 
--- | This is the Reader environment that can be inspected within an 'ActorSelect' function using the
--- 'ask' or 'asks' function.
-data ActorInfo
-  = ActorInfo
-    { actorEvents :: ActorEventHandlerStats
-    , actorLabel :: !Strict.Text
-    }
-
--- | This function type is used by the 'selectInScene' function. This function should inspect the
--- 'ActorInfo' value provided by way of the 'ask' or 'asks' function. Return a value of type @fold@
--- to select the 'Actor', all returned values are combined using 'mappend', and the inspected
--- 'Actor' is stored in the new 'Scene' as a side effect. Evaluate to 'empty' to ignore the 'Actor'
--- (it will not be stored in the new 'Scene'). Evaluate to 'cancel' to halt the loop.
-newtype ActorSelect a = ActorSelect (ReaderT ActorInfo (ConsequenceT IO) a)
-  deriving (Functor, Applicative, Monad, MonadReader ActorInfo, MonadFail)
-
-instance Consequential ActorSelect where { cancel = ActorSelect $ lift cancel; }
-
--- | This function constructs a new 'Scene' by scanning through the current 'Scene' in the 'Script'
--- context and picking out all 'Actor's that satisfy an 'ActorSelect' function.
---
--- The new 'Scene' is not staged or made visible, call 'onStage' on the result of this function if
--- you want it to be satged.
-selectInScene
-  :: Monoid fold
-  => ActorSelect fold
-  -> fold
-  -> Script any (TypedActor Scene, fold)
-selectInScene (ActorSelect select) fold = do
-  logReporter <- scriptGetsScene sceneWriteErrorLog
-  scene <- scriptIO $ makeEmptyScene logReporter 16
-  fold  <- reactEventRegistry True
-    scriptIO
-    (\ halt roleRef ->
-       lift (scriptIO $ readIORef roleRef) >>= \ role ->
-       lift
-       ( scriptIO $
-         runConsequenceT $
-         runReaderT select ActorInfo
-         { actorEvents = roleEventStats role
-         , actorLabel  = theRoleLabel   role
-         }
-       ) >>= \ case
-        ActionOK  fold -> do
-          modify (<> fold)
-          lift $ stageActor $ theRoleModel role
-          halt $ ActionOK ()
-        ActionHalt     -> pure ActionHalt
-        ActionCancel   -> pure ActionCancel
-        ActionFail msg -> pure (ActionFail msg)
-    )
-    (theSceneRegistry scene)
-    fold
-  -- Construct a new 'TypedActor' for the newly created 'Scene'.
-  (fold, actor) <- sceneToTypedActor (return fold) scene
-  return (actor, fold)
-
-----------------------------------------------------------------------------------------------------
-
 -- | An 'Act' (noun) is a container with 1 or more 'Scene's. This is the root object of the
 -- 'Happlet'.
 data Act
@@ -1430,45 +1365,6 @@ guiRunScriptActor f untyped = do
     flip (runScript (f <* scriptModify (scriptRoleUpdated .~ False)))
     (actorTypedActor untyped)
   state $ const (result, theScriptScene scene)
-  
--- | This function uses 'reactEventRegistry' to step through the event 'Registry' of a 'Scene', uses
--- a lens to select a @thing@ from each 'Role' of each 'Actor' in the 'Registry', and executes a
--- continuation function that 'Role' and that @thing@ for all 'Role's for which the @thing@ is not
--- 'Nothing'. Importantly, this function also udpates the 'ActorEventHandlerStats' for the 'Scene'
--- using the 'diffActorEventHandlerStats' function, which also tracks which 'Actor's need to be
--- redrawn, and thus which regions need to be deleted.
-forActorsInRegistry
-  :: (Monad m, MonadState Scene m, CanWriteReports m)
-  => Bool -- ^ Scan upwards? (Fiven as first argument to 'reactEventRegistry'.)
-  -> Bool -- ^ Should halt on first Role to evaluate to a successful 'ActionOK' result.
-  -> (forall a . IO a -> m a)
-  -> Lens' (Role Actor) (Maybe thing)
-  -> (thing -> Actor -> m (Consequence ()))
-  -> m ()
-forActorsInRegistry upward haltWhenOK liftIO thingLens runUpdate =
-  use sceneRegistry >>= \ registry ->
-  ( reactEventRegistry upward liftIO
-    (\ halt roleRef ->
-      lift (liftIO $ readIORef roleRef) >>= \ role0 ->
-      case role0 ^. thingLens of
-        Nothing    -> pure empty
-        Just thing -> do
-          consequence <- lift (runUpdate thing $ Actor roleRef)
-          role <- lift (liftIO $ readIORef roleRef)
-          let stats = roleEventStats role
-          let update stats =
-                modify $ mappend $!
-                diffActorEventHandlerStats stats (roleEventStats role0)
-          case consequence of
-            ActionOK   ()  -> update stats >> (if haltWhenOK then halt else pure) consequence
-            ActionHalt     -> update stats >> pure consequence
-            ActionCancel   -> update mempty >> pure consequence
-            ActionFail msg -> lift (report ERROR msg) >> update mempty >> pure consequence
-    )
-    registry
-    mempty
-  ) >>=
-  modifying sceneStats . (<>)
 
 -- | Not for export
 --
@@ -1483,9 +1379,19 @@ triggerEventHandlers
   -> event
   -> m ()
 triggerEventHandlers liftIO liftScript handler event = do
-  report DEBUG ("triggerEventHandlers -> forActorsInRegistry")
-  forActorsInRegistry False True liftIO handler $ \ action actor ->
-    liftScript (runEventAction action event) actor
+  report DEBUG "triggerEventHandlers"
+  reg <- use sceneRegistry
+  reactEventRegistry False liftIO
+    (\ _update role -> case role ^. handler of
+      Nothing -> pure KeepObject
+      Just action ->
+        lift (liftScript (runEventAction action event) (role ^. roleModel)) >>= \ case
+          ActionOK ()    -> pure KeepObjectHalt
+          ActionHalt     -> pure KeepObject
+          ActionCancel   -> pure DeleteObjectHalt
+          ActionFail msg -> lift (report ERROR msg) >> pure DeleteObjectHalt
+    )
+    reg ()
 
 guiTriggerEventHandlers
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
@@ -1506,16 +1412,15 @@ forceSceneRedraw =
   report DEBUG "forceSceneRedraw" >>
   use sceneRegistry >>= \ registry ->
   reactEventRegistryIO True
-    (\ _halt roleRef -> do
-        role0 <- lift (liftIO $ readIORef roleRef)
+    (\ update role0 -> do
         let role = role0 &
               actionDraw %~ maybe id const (role0 ^. actionRedraw) &
               actionRedraw .~ Nothing
         lift $ onCanvas $ draw2D mempty (role ^. actionDraw)
         -- TODO ^ Skip if clipRect does not intersects with 'theBoundingBox' of 'actionDraw'?
         modify $ (<> (roleEventStats role))
-        lift (liftIO $ writeIORef roleRef role)
-        return (pure ())
+        update role
+        return KeepObject
     )
     registry mempty >>=
   assign sceneStats
@@ -1531,30 +1436,27 @@ sceneRedraw = do
   -- first scan the registry for 'Actor's that need to be erased
   eraseRegion <- canonicalize2DShape . uncurry rect2DUnion <$>
     reactEventRegistryIO True
-    (\ _halt roleRef -> do
-       role <- liftIO (readIORef roleRef)
+    (\ _update role -> do
        modify $ \ (stack, count) -> case role ^. actionRedraw of
          Nothing -> (stack, count)
          Just {} -> (theBoundingBox (role ^. actionDraw) : stack, seq count $! count + 1)
-       return empty
+       return KeepObject
     )
     registry
     ([], 0)
   -- now redraw
   unless (rect2DUnionNull eraseRegion) $
     reactEventRegistryIO True
-    (\ _halt roleRef ->
-      liftIO (readIORef roleRef) >>= \ role0 ->
-      case role0 ^. actionRedraw of
-        Nothing -> do
-          lift $ onCanvas $ draw2D eraseRegion $ role0 ^. actionDraw
-          return empty
-        Just newDraw -> do
-          lift $ onCanvas $ draw2D eraseRegion newDraw
-          let role = role0 & actionDraw .~ newDraw & actionRedraw .~ Nothing
-          liftIO (writeIORef roleRef role)
-          modify $ (<> (roleEventStats role))
-          return $ pure ()
+    (\ update role0 -> case role0 ^. actionRedraw of
+      Nothing -> do
+        lift $ onCanvas $ draw2D eraseRegion $ role0 ^. actionDraw
+        return KeepObject
+      Just newDraw -> do
+        lift $ onCanvas $ draw2D eraseRegion newDraw
+        let role = role0 & actionDraw .~ newDraw & actionRedraw .~ Nothing
+        update role
+        modify $ (<> (roleEventStats role))
+        return KeepObject
     )
     registry
     mempty >>=
