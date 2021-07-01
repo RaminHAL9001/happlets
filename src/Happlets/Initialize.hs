@@ -94,7 +94,7 @@ module Happlets.Initialize
     registeredAppName, initWindowTitleBar, initBackgroundTransparency, initBackgroundGreyValue,
     recommendWindowPosition, recommendWindowSize, animationFrameRate,
     deleteWindowOnClose, quitOnWindowClose, initDecorateWindow, theActualLogReporter,
-    setMaxLogReportLevel, setLogReportWriter,
+    setMinLogReportLevel, setLogReportWriter,
   ) where
 
 import           Happlets.Logging
@@ -230,9 +230,9 @@ happlet provider userInit = do
     (runReaderT init provider) $
     InitState
     { theInitConfig = config0
-    , theInitLogReporter   = \ print maxLevel msgLevel msg ->
+    , theInitLogReporter   = \ print minLevel msgLevel msg ->
         withMVar logLock $ \ () ->
-        when (msgLevel <= maxLevel) $
+        when (msgLevel >= minLevel) $
         print msg >>=
         evaluate
     }
@@ -351,9 +351,9 @@ sanitizeName = let sp = ' ' in Strict.unpack >>>
 -- to 'report' actually display a message in the log. The 'ReportLevel' value passed to 'report'
 -- must be larger than the minimum value set here in order for the message to actually appear in the
 -- log.
-setMaxLogReportLevel :: ReportLevel -> Initialize provider ()
-setMaxLogReportLevel level = do
-  configMaxLogLevel .= level
+setMinLogReportLevel :: ReportLevel -> Initialize provider ()
+setMinLogReportLevel level = do
+  configMinLogLevel .= level
   getUpdateReporter >>= assign actualLogReporter
 
 -- | This function set's the minimum logging level that will be used to determine whether for calls
@@ -378,8 +378,8 @@ initConfigFilePath = lens theInitConfigFilePath $ \ a b -> a{ theInitConfigFileP
 --
 -- Configure the minimum 'ReportLevel' to accept from the 'report' function. If messages passed to
 -- the 'report' function are lower than this minimum level, they are not reported.
-configMaxLogLevel :: Lens' InitConfig ReportLevel
-configMaxLogLevel = lens theConfigMaxLogLevel $ \ a b -> a{ theConfigMaxLogLevel = b }
+configMinLogLevel :: Lens' InitConfig ReportLevel
+configMinLogLevel = lens theConfigMaxLogLevel $ \ a b -> a{ theConfigMaxLogLevel = b }
 
 ---- Not for export: must be set by 'setLogReportWriter'
 --globalLogReporter :: Lens' InitConfig (Strict.Text -> IO ())

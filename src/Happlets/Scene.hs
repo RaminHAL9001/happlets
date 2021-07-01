@@ -57,7 +57,7 @@ module Happlets.Scene
 
 import           Happlets.Logging
                  ( CanWriteReports(report), LogReporter,
-                   ReportLevel(DEBUG, ERROR, INFO)
+                   ReportLevel(ERROR, INFO, OBJECT, EVENT, DEBUG_ALL)
                  )
 import           Happlets.Initialize (Initialize, newHappletIO)
 import           Happlets.Model.GUI
@@ -222,7 +222,7 @@ runScript (Script f) scene actor@(TypedActor{theUntypedActor=(Actor untyped)}) =
 debugEventHandlerStats :: Strict.Text -> Script model ()
 debugEventHandlerStats message = do
   role <- scriptGets theScriptRole
-  report DEBUG $ message <> "\n  Role:\n" <> theRoleLabel role <>
+  report EVENT $ message <> "\n  Role:\n" <> theRoleLabel role <>
     "\n  Event handler stats:\n" <> Strict.pack (show $ roleEventStats role)
 
 -- | not for export
@@ -362,7 +362,7 @@ onQueue handle f = do
     (scriptRole . cloneLens handle %~ Just . f)
   stats <- scriptGetsScene theSceneStats
   role  <- scriptGets theScriptRole
-  report DEBUG $ Strict.pack $
+  report OBJECT $ Strict.pack $
     "Updated event handlers for " ++
     show (theRoleLabel role) ++ ":\n" ++
     show stats
@@ -1010,14 +1010,14 @@ encloseMouseEvents ref = maybe Nothing $ \ pack -> Just $
 reportSelfLabel :: Strict.Text -> Script model ()
 reportSelfLabel msg = do
   lbl <- thisLabel
-  report DEBUG (msg <> ":\n" <> lbl)
+  report INFO (msg <> ":\n" <> lbl)
 
 -- | Print a debug message before and after evaluating a 'Script' function.
 reportSubScript :: Strict.Text -> Script model a -> Script model a
 reportSubScript msg f = do
-  report DEBUG ("begin " <> msg)
+  report OBJECT ("begin " <> msg)
   result <- f
-  report DEBUG ("end " <> msg)
+  report OBJECT ("end " <> msg)
   return result
 
 -- | not for export
@@ -1160,7 +1160,7 @@ stageActor (Actor actorRef) = do
   scriptGets (view $ scriptScene . sceneRegistry) >>=
     scriptIO . registryEnqueue actorRef
   stats <- scriptIO (roleEventStats <$> readIORef actorRef)
-  report DEBUG (Strict.pack $ "Staging actor, stats:\n" <> show stats)
+  report OBJECT (Strict.pack $ "Staging actor, stats:\n" <> show stats)
   scriptModify $ scriptScene . sceneStats <>~ stats
 
 -- | Place a 'TypedActor' on stage, making it visible and able to respond to events. After defining
@@ -1412,7 +1412,7 @@ triggerEventHandlers
   -> event
   -> m ()
 triggerEventHandlers liftIO liftScript handler event = do
-  report DEBUG "triggerEventHandlers"
+  report EVENT "triggerEventHandlers"
   registry <- use sceneRegistry
   reactEventRegistry False liftIO
     (\ _update role -> case role ^. handler of
@@ -1422,7 +1422,7 @@ triggerEventHandlers liftIO liftScript handler event = do
           ActionOK ()    -> pure KeepObjectHalt
           ActionHalt     -> pure KeepObject
           ActionCancel   -> do
-            lift (report DEBUG $ "delete object: " <> (role ^. roleLabel))
+            lift (report OBJECT $ "delete object: " <> (role ^. roleLabel))
             pure DeleteObjectHalt
           ActionFail msg -> do
             lift (report ERROR msg)
@@ -1447,7 +1447,7 @@ forceSceneRedraw
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
   => GUI provider Scene ()
 forceSceneRedraw =
-  report DEBUG "forceSceneRedraw" >>
+  report EVENT "forceSceneRedraw" >>
   use sceneRegistry >>= \ registry ->
   reactEventRegistryIO True
     (\ update role0 -> do
@@ -1455,7 +1455,7 @@ forceSceneRedraw =
               actionDraw %~ maybe id const (role0 ^. actionRedraw) &
               actionRedraw .~ Nothing
         let drawing = (role ^. actionDraw)
-        lift $ report DEBUG $ "Redraw " <> (role ^. roleLabel) <> "\n" <> Strict.pack (show drawing)
+        report EVENT $ "Redraw " <> (role ^. roleLabel) <> "\n" <> Strict.pack (show drawing)
         lift $ onCanvas $ draw2D mempty drawing
         -- TODO ^ Skip if clipRect does not intersects with 'theBoundingBox' of 'actionDraw'?
         modify $ (<> (roleEventStats role))
@@ -1472,7 +1472,7 @@ sceneRedraw
   :: (HappletWindow provider render, ProvidesLogReporter provider, Happlet2DGraphics render)
   => GUI provider Scene ()
 sceneRedraw = do
-  report DEBUG "sceneRedraw"
+  report EVENT "sceneRedraw"
   registry <- use sceneRegistry
   -- first scan the registry for 'Actor's that need to be erased
   eraseRegion <- canonicalize2DShape . uncurry rect2DUnion <$>
@@ -1575,19 +1575,19 @@ actResetMouseEvents stats =
   in
   let react which = mouseSignals which actMouseHandler in
   if countActionMouseOver stats > 0
-  then report DEBUG "actResetMouseSignals MouseAll" >> react MouseAll
+  then report EVENT "actResetMouseSignals MouseAll" >> react MouseAll
   else if has countActionMouseDrag
-  then report DEBUG "actResetMouseSignals MouseDrag" >> react MouseDrag
+  then report EVENT "actResetMouseSignals MouseDrag" >> react MouseDrag
   else if has countActionMouseDown || has countActionMouseClick || has countActionMouseDouble
-  then report DEBUG "actResetMouseSignals MouseButton" >> react MouseButton
-  else report DEBUG "actResetMouseSignals MouseAll cancel" >> (mouseSignals MouseAll $ const cancel)
+  then report EVENT "actResetMouseSignals MouseButton" >> react MouseButton
+  else report EVENT "actResetMouseSignals MouseAll cancel" >> (mouseSignals MouseAll $ const cancel)
 
 actResetKeyboardEvents
   :: (CanKeyboard provider, ProvidesLogReporter provider)
   => GUI provider Scene ()
 actResetKeyboardEvents = do
   keyboard <- maybe False (const True) <$> gets theSceneFocus
-  report DEBUG ("actResetKeyboardEvents: " <> Strict.pack (show keyboard))
+  report EVENT ("actResetKeyboardEvents: " <> Strict.pack (show keyboard))
   keyboardEvents $ if keyboard then sceneKeyboardHandler else const cancel
 
 actResetAnimationEvents
@@ -1597,7 +1597,7 @@ actResetAnimationEvents
      )
   => ActorEventHandlerStats -> GUI provider Act ()
 actResetAnimationEvents stats = do
-  report DEBUG "actResetAnimationEvents"
+  report EVENT "actResetAnimationEvents"
   stepFrameEvents $
     if countActionAnimation stats > 0 then actAnimationHandler else const cancel
 
@@ -1610,7 +1610,7 @@ resetEventHandlers
 resetEventHandlers = do
   onScene forceSceneRedraw -- This also retabluates the event hanlder statistics.
   stats <- actSceneStats
-  report DEBUG $ Strict.pack $ "resetEventHandlers:\n" <> (show stats)
+  report EVENT $ Strict.pack $ "resetEventHandlers:\n" <> (show stats)
   newSize <- onCanvas getViewSize
   onScene $ sceneGlobalBounds %= (rect2DHead .~ newSize)
   actResetMouseEvents stats
@@ -1631,7 +1631,7 @@ sceneKeyboardHandler evt = case evt of
   _                 -> return ()
   where
   run evt =
-    report DEBUG "sceneKeyboardHandler" >>
+    report EVENT "sceneKeyboardHandler" >>
     use sceneFocus >>= \ case
       Nothing                -> return ()
       Just actor@(Actor ref) ->
@@ -1664,7 +1664,7 @@ actAnimationHandler t0 = do
   -- mouse event was delayed until after the frame step, so clicking on moving objects that are no
   -- longer under the mouse will feel to an end user like the mouse click is so slow it didn't hit
   -- the target in time.
-  report DEBUG (Strict.pack $ "actAnimationHandler " <> show t0)
+  report DEBUG_ALL (Strict.pack $ "actAnimationHandler " <> show t0)
   actActualMouseHandler
   onScene $ guiTriggerEventHandlers actionAnimation t0
 
@@ -1758,7 +1758,7 @@ actMouseHandler new@(MouseSignal _ pressed mods signalButton coord) = case signa
     }
   LeftClick  -> debounce actLeftMouseState
   RightClick -> debounce actRightMouseState
-  _ -> report DEBUG $ Strict.pack $ "ignored mouse signal (" <> show new <> ")"
+  _ -> report EVENT $ Strict.pack $ "ignored mouse signal (" <> show new <> ")"
   where
     debounce buttonLens = do
       -- TODO: certain constant values have been hard-coded into this function, like the
@@ -1775,7 +1775,7 @@ actMouseHandler new@(MouseSignal _ pressed mods signalButton coord) = case signa
           -- If the time difference between button-down and button-up signals are too small, the
           -- event is ignored, the latest event is recorded, overwriting the previously recorded
           -- event.
-          report DEBUG $ Strict.pack $ "actMouseHandler: debounce (" <> show new <> ")"
+          report EVENT $ Strict.pack $ "actMouseHandler: debounce (" <> show new <> ")"
           cloneLens buttonLens . mouseStateSignal .= Just new
         else do
           -- Here we set the mouse signal to be processed and pass control over to
@@ -1785,7 +1785,7 @@ actMouseHandler new@(MouseSignal _ pressed mods signalButton coord) = case signa
           cloneLens buttonLens . mouseStateTime   .= present
           stats <- actSceneStats
           if countActionAnimation stats <= 0 then actActualMouseHandler else
-            report DEBUG $ Strict.pack $ "actMouseHandler: defer event " <> show new
+            report EVENT $ Strict.pack $ "actMouseHandler: defer event " <> show new
 
 -- | This function implements the interpretation of the 'MouseFSA', so it sets 'theMouseStateFSA'
 -- and will transition the state when expected 'MouseSignal's are received. Unexpected
@@ -1827,7 +1827,7 @@ actActualMouseHandler = stepFSA LeftMouseButton >> stepFSA RightMouseButton wher
                 { theMouse2DPosition  = coord1
                 , theMouse2DModifiers = mods
                 }
-        let ignore = report DEBUG $ Strict.pack $
+        let ignore = report EVENT $ Strict.pack $
               "Mouse FSA " <> show stFSA <>
               ": unexpected signal ignored (" <> show signal <> ")"
         case stFSA of
@@ -1870,7 +1870,7 @@ sceneMouseDown
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
   => MouseButton -> PixelMouse -> GUI provider Scene ()
 sceneMouseDown button event = do
-  report DEBUG "sceneMouseDown"
+  report EVENT "sceneMouseDown"
   guiTriggerEventHandlers (actionMouseDown button) event
 
 -- | Force a 'Mouse' context menu button click event to occur in the current 'Act'.
@@ -1878,7 +1878,7 @@ sceneMouseClick
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
   => MouseButton -> PixelMouse -> GUI provider Scene ()
 sceneMouseClick button event = do
-  report DEBUG "sceneMouseClick"
+  report EVENT "sceneMouseClick"
   guiTriggerEventHandlers (actionMouseClick button) event
 
 -- | Force a 'Mouse' action button double click event to occur in the current 'Act'.
@@ -1886,7 +1886,7 @@ sceneMouseDoubleClick
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
   => MouseButton -> PixelMouse -> GUI provider Scene ()
 sceneMouseDoubleClick button event = do
-  report DEBUG "sceneMouseDoubleClick"
+  report EVENT "sceneMouseDoubleClick"
   guiTriggerEventHandlers (actionMouseDouble button) event
 
 -- | Force a 'MouseSignal' drag event to occur in the current 'Act'.
@@ -1896,5 +1896,5 @@ sceneMouseDrag
      )
   => MouseButton -> Maybe PixelMouse -> GUI provider Scene ()
 sceneMouseDrag button event = do
-  report DEBUG "sceneMouseDrag"
+  report DEBUG_ALL "sceneMouseDrag"
   guiTriggerEventHandlers (actionMouseDrag button) event
