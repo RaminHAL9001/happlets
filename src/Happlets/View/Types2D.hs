@@ -11,7 +11,7 @@ module Happlets.View.Types2D
     Has2DOrigin(..), Is2DPrimitive(..), Quantizable(..), HasMidpoint(..),
     Canonical2D(..), ContainsPoint2D(..),
     -- ** The 'Drawing' datatype
-    Drawing(..), drawing, drawingIsNull, drawingIntersects,
+    Drawing(..), drawing, drawingIsNull, drawingIntersectsAny, drawingIntersects,
     drawingPrimitives, drawingCountPrimitives,
     -- ** Primitives
     Draw2DPrimitive(..), Draw2DShape(..), Map2DShape(..),
@@ -21,11 +21,14 @@ module Happlets.View.Types2D
     -- *** Lines
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
     -- *** Rectangles
-    Rect2D(..), Rect2DUnion, rect2DUnion, rect2DUnionToList, rect2DUnionCount, rect2DUnionNull,
+    Rect2D(..),
     rect2D, rect2DSize, rect2DHead, rect2DTail, rect2DPoints,
     rect2DCenter, rect2DCentre, rect2DArea, rect2DContainsRect, bounds2DExpandLineWidth,
     rect2DMinBoundsOf, rect2DMinBoundsForAll, rect2DIntersect, rect2DDiagonal, rect2DtoInt,
-    MaybeSingleton2D(..), HasBoundingBox(..),
+    Rect2DUnion, rect2DUnion, rect2DUnionSingle,
+    rect2DUnionToList, rect2DUnionCount, rect2DUnionNull,
+    rect2DUnionIntersect, rect2DUnionFromIntersect,
+    MaybeSingleton2D(..), HasBoundingBox(..), HasRect2DUnionMask(..),
     -- *** Arcs
     Magnitude(..), ArcRadius, Angle(..), StartAngle, EndAngle,
     Arc2D(..), arc2D, arc2DOrigin, arc2DRadius, arc2DStart, arc2DEnd,
@@ -64,7 +67,7 @@ import           Control.Monad (guard)
 import           Data.Int  (Int32)
 import           Data.Function (on)
 import           Data.List (sortBy, nubBy)
-import           Data.Maybe (isJust)
+import           Data.Maybe (isNothing, maybeToList)
 import           Data.Ord (Down(..))
 import qualified Data.Vector.Unboxed  as UVec
 import qualified Data.Vector.Unboxed.Mutable as UMVec
@@ -97,7 +100,9 @@ sampCoord = fromIntegral
 -- | Some of the shapes in this module cannot instantiate 'Functor' because there are constrains on
 -- the numerical type used to define the shape, namely 'RealFrac' and 'UVec.Unbox'.
 class Map2DShape shape where
-  map2DShape :: (Real n, UVec.Unbox n) => (n -> n) -> shape n -> shape n
+  map2DShape
+    :: (Real n, UVec.Unbox n, HasMidpoint n, Quantizable n)
+    => (n -> n) -> shape n -> shape n
 
 instance Map2DShape V2 where { map2DShape = fmap; }
 
@@ -160,13 +165,7 @@ instance Ord n => Canonical2D (Rect2D n) where
     Rect2D (V2 (min x0 x1) (min y0 y1)) (V2 (max x0 x1) (max y0 y1))
 
 instance (Ord n, Num n, UMVec.Unbox n) => Canonical2D (Rect2DUnion n) where
-  canonicalize2DShape =
-    (uncurry rect2DUnion . (id &&& length)) .
-    nubBy rect2DContainsRect .
-    fmap snd .
-    sortBy (compare `on` fst) .
-    fmap ((Down . rect2DArea &&& id) . canonicalize2DShape) .
-    rect2DUnionToList
+  canonicalize2DShape = rect2DUnionFromList . rect2DUnionToList
 
 ----------------------------------------------------------------------------------------------------
 
@@ -226,6 +225,7 @@ data Rect2DUnion n
     { rect2DUnionBounds :: !(Rect2D n)
     , rect2DUnionVector :: !(UVec.Vector n)
     }
+  deriving Eq
 
 instance (Ord n, Num n, UMVec.Unbox n) => Semigroup (Rect2DUnion n) where
   (<>) (Rect2DUnion{rect2DUnionBounds=bndsA,rect2DUnionVector=vecA})
@@ -268,11 +268,51 @@ rect2DUnion rectlist nelems =
       )
   }
 
+canonicalizeRect2DUnionList :: (Ord n, Num n) => [Rect2D n] -> [Rect2D n]
+canonicalizeRect2DUnionList =
+  nubBy rect2DContainsRect .
+  fmap snd .
+  sortBy (compare `on` fst) .
+  fmap ((Down . rect2DArea &&& id) . canonicalize2DShape)
+
+-- not for export
+rect2DUnionFromList :: (Ord n, Num n, UMVec.Unbox n) => [Rect2D n] -> Rect2DUnion n
+rect2DUnionFromList =
+  uncurry rect2DUnion .
+  (id &&& length) .
+  canonicalizeRect2DUnionList
+
+rect2DUnionSingle :: (Ord n, Num n, UVec.Unbox n) => Rect2D n -> Rect2DUnion n
+rect2DUnionSingle = flip rect2DUnion 1 . pure
+
+-- | A function which simply uses the 'theBoundingBox' of a shape to construct a
+-- 'rect2DUnionSingle'. This function should not be used to instantiate 'theRect2DUnionMask' unless it is
+-- a primitive shape element.
+primitiveRect2DUnion
+  :: (HasBoundingBox a, n ~ Bounds2DMetric a,
+      Ord n, Num n, UMVec.Unbox n
+     ) => a -> Rect2DUnion (Bounds2DMetric a)
+primitiveRect2DUnion = rect2DUnionSingle . theBoundingBox
+
 rect2DUnionToList :: (Num n, UMVec.Unbox n) => Rect2DUnion n -> [Rect2D n]
 rect2DUnionToList (Rect2DUnion{rect2DUnionVector=vec}) = loop $ UVec.toList vec where
   loop = \ case
     a:b:c:d:more -> (rect2D & rect2DHead .~ V2 a b & rect2DTail .~ V2 c d) : loop more
     _ -> []
+
+-- | Get the list of intersecting rectangles from two 'Rect2DUnion' values.
+rect2DUnionIntersect
+  :: (Ord n, Num n, UMVec.Unbox n)
+  => Rect2DUnion n -> Rect2DUnion n -> [Rect2D n]
+rect2DUnionIntersect a b =
+  rect2DIntersect <$> rect2DUnionToList a <*> rect2DUnionToList b >>=
+  maybeToList
+
+-- | Like 'rect2DUnionIntersect' but creates a new 'Rect2DUnion' from the list of intersections.
+rect2DUnionFromIntersect
+  :: (Ord n, Num n, UMVec.Unbox n)
+  => Rect2DUnion n -> Rect2DUnion n -> Rect2DUnion n
+rect2DUnionFromIntersect = (.) rect2DUnionFromList . rect2DUnionIntersect
 
 ----------------------------------------------------------------------------------------------------
 
@@ -280,25 +320,40 @@ class HasBoundingBox a where
   type Bounds2DMetric a
   theBoundingBox :: a -> Rect2D (Bounds2DMetric a)
 
+-- | This is the class of 'Drawing' elements that are composed of multiple primitive elements and
+-- thus can be masked by a 'Rect2DUnion' containing each 'Rect2D' bounding box for each primitive.
+class HasRect2DUnionMask obj where
+  -- | This function produces a 'Rect2DUnion' of all 'theBoundingBox' values of each primitive
+  -- element.
+  theRect2DUnionMask :: obj -> Rect2DUnion (Bounds2DMetric obj)
+
 instance HasBoundingBox (Rect2DUnion n) where
   type Bounds2DMetric (Rect2DUnion n) = n
   theBoundingBox = rect2DUnionBounds
+
+instance HasRect2DUnionMask (Rect2DUnion n) where
+  theRect2DUnionMask = id
 
 instance HasBoundingBox (Rect2D n) where
   type Bounds2DMetric (Rect2D n) = n
   theBoundingBox = id; 
 
-instance HasBoundingBox (Line2D n) where
+instance (Ord n, Num n, UMVec.Unbox n) => HasRect2DUnionMask (Rect2D n) where
+  theRect2DUnionMask = rect2DUnionSingle
+
+instance (Ord n, Num n) => HasBoundingBox (Line2D n) where
   type Bounds2DMetric (Line2D n) = n
   theBoundingBox (Line2D a b) = Rect2D a b; 
 
---instance HasBoundingBox (BoundingBox2D trans n model) where
---  type Bounds2DMetric (BoundingBox2D trans n model) = n
---  theBoundingBox = view boxBounds2D; 
+instance (Ord n, Num n, UMVec.Unbox n) => HasRect2DUnionMask (Line2D n) where
+  theRect2DUnionMask = rect2DUnionSingle . theBoundingBox
 
 instance (Ord n, Num n, UVec.Unbox n) => HasBoundingBox (Path2D n) where
   type Bounds2DMetric (Path2D n) = n
   theBoundingBox = uncurry bounds2DPoints . path2DPoints
+
+instance (Ord n, Num n, UMVec.Unbox n) => HasRect2DUnionMask (Path2D n) where
+  theRect2DUnionMask = primitiveRect2DUnion
 
 instance (Ord n, Num n, UVec.Unbox n) => HasBoundingBox (Cubic2D n) where
   type Bounds2DMetric (Cubic2D n) = n
@@ -307,9 +362,17 @@ instance (Ord n, Num n, UVec.Unbox n) => HasBoundingBox (Cubic2D n) where
     fmap (>>= (\ (Cubic2DSegment a b c) -> [a,b,c])) .
     cubic2DPoints
 
+instance (Ord n, Num n, UMVec.Unbox n) => HasRect2DUnionMask (Cubic2D n) where
+  theRect2DUnionMask = primitiveRect2DUnion
+
 instance (Ord n, Num n, Real n, Quantizable n) => HasBoundingBox (Arc2D n) where
   type Bounds2DMetric (Arc2D n) = n
   theBoundingBox = uncurry bounds2DPoints . arc2DPoints
+
+instance
+  (Ord n, Num n, Real n, UMVec.Unbox n, Quantizable n) =>
+  HasRect2DUnionMask (Arc2D n) where
+    theRect2DUnionMask = primitiveRect2DUnion
 
 instance
   (Ord n, Num n, Real n, UVec.Unbox n, Quantizable n) =>
@@ -321,6 +384,11 @@ instance
       Draw2DArc   o -> theBoundingBox o
       Draw2DPath  o -> theBoundingBox o
       Draw2DCubic o -> theBoundingBox o
+
+instance
+  (Ord n, Num n, Real n, UVec.Unbox n, Quantizable n) =>
+  HasRect2DUnionMask (Draw2DShape n) where
+    theRect2DUnionMask = primitiveRect2DUnion
 
 instance
   (Ord n, Num n, HasMidpoint n, Real n, UVec.Unbox n, Quantizable n) =>
@@ -343,11 +411,19 @@ instance
           (fillStrokeLineWidth stroke)
 
 instance
+  (Ord n, Num n, Real n, UMVec.Unbox n, HasMidpoint n, Quantizable n) =>
+  HasRect2DUnionMask (Draw2DPrimitive n) where
+    theRect2DUnionMask = primitiveRect2DUnion
+
+instance
   (Ord n, Num n, Real n, UVec.Unbox n, Quantizable n) =>
   HasBoundingBox (Drawing n)
   where
     type Bounds2DMetric (Drawing n) = n
-    theBoundingBox = drawingBoundingBox
+    theBoundingBox = rect2DUnionBounds . drawingRect2DMask
+
+instance HasRect2DUnionMask (Drawing n) where
+  theRect2DUnionMask = drawingRect2DMask
 
 ----------------------------------------------------------------------------------------------------
 
@@ -611,7 +687,7 @@ cubic2DEndPoint = lens theCubic2DEndPoint $ \ a b -> a{ theCubic2DEndPoint = b }
 -- | A function used to draw a @model@ to the canvas.
 data Drawing n
   = Drawing
-    { drawingBoundingBox :: !(Rect2D n)
+    { drawingRect2DMask :: !(Rect2DUnion n)
     , unwrapDrawing :: Vec.Vector (Draw2DPrimitive n)
     }
   deriving Eq
@@ -622,19 +698,27 @@ instance Show (Drawing n) where
     [p] -> "[" <> show p <> "]"
     p:px -> "[ " <> show p <> (px >>= ("\n, " <>) . show) <> "\n]"
 
-instance (Ord n, Num n) => Semigroup (Drawing n) where
-  (<>) (Drawing{drawingBoundingBox=boxA,unwrapDrawing=a})
-       (Drawing{drawingBoundingBox=boxB,unwrapDrawing=b}) =
-    Drawing (rect2DMinBoundsOf boxA boxB) (a <> b)
+instance (Ord n, Num n, UMVec.Unbox n) => Semigroup (Drawing n) where
+  (<>) (Drawing{drawingRect2DMask=boxA,unwrapDrawing=a})
+       (Drawing{drawingRect2DMask=boxB,unwrapDrawing=b}) =
+    Drawing
+    { drawingRect2DMask = boxA <> boxB
+    , unwrapDrawing = a <> b
+    }
 
-instance (Ord n, Num n) => Monoid (Drawing n) where
-  mempty = Drawing{ drawingBoundingBox = rect2D, unwrapDrawing = mempty }
+instance (Ord n, Num n, UMVec.Unbox n) => Monoid (Drawing n) where
+  mempty = Drawing{ drawingRect2DMask = mempty, unwrapDrawing = mempty }
   mappend = (<>)
 
 instance Map2DShape Drawing where
-  map2DShape f d = Drawing
-    { drawingBoundingBox = map2DShape f $ drawingBoundingBox d
-    , unwrapDrawing = map2DShape f <$> unwrapDrawing d
+  map2DShape f d =
+    let newShapes = map2DShape f <$> unwrapDrawing d in
+    Drawing
+    { drawingRect2DMask =
+      rect2DUnionFromList $
+      fmap theBoundingBox $
+      Vec.toList newShapes
+    , unwrapDrawing = newShapes
     }
 
 -- | Consruct a 'Drawing' 
@@ -643,7 +727,7 @@ drawing
   => [Draw2DPrimitive n] -> Drawing n
 drawing prims = Drawing
   { unwrapDrawing = Vec.fromList prims
-  , drawingBoundingBox = rect2DMinBoundsForAll $ theBoundingBox <$> prims
+  , drawingRect2DMask = rect2DUnionFromList $ theBoundingBox <$> prims
   }
 
 -- | Extract a list of 'Draw2DPrimitive' data structures from a 'Drawing'.
@@ -654,10 +738,17 @@ drawingPrimitives = Vec.toList . unwrapDrawing
 drawingIsNull :: Drawing n -> Bool
 drawingIsNull (Drawing{unwrapDrawing=vec}) = Vec.null vec
 
--- | Returns 'True' if the 'drawingBoundingBox' intersects with the 'rect2DUnionBounds' of a
--- 'Rect2DUnion'.
-drawingIntersects :: Ord n => Drawing n -> Rect2DUnion n -> Bool
-drawingIntersects d u = isJust $ drawingBoundingBox d `rect2DIntersect` rect2DUnionBounds u
+-- | Returns 'True' if the 'drawingRect2DMask' intersects with the 'rect2DUnionBounds' of a
+-- 'Rect2DUnion'. See also 'drawingIntersects' and 'rect2DUnionIntersect'.
+drawingIntersectsAny :: (Ord n, Num n, UMVec.Unbox n) => Drawing n -> Rect2DUnion n -> Bool
+drawingIntersectsAny d u = not $ null $ rect2DUnionIntersect (drawingRect2DMask d) u
+
+-- | Like 'drawingIntersectsAny' but tests only a single 'Rect2D' rathre than a 'Rect2DUnion'. See also
+-- 'drawingIntersectsAny' and 'rect2DUnionIntersect'.
+drawingIntersects :: (Ord n, Num n, UMVec.Unbox n) => Drawing n -> Rect2D n -> Bool
+drawingIntersects d r =
+  not $ null $ dropWhile isNothing $
+  rect2DIntersect r <$> rect2DUnionToList (drawingRect2DMask d)
 
 -- | Count the number of 'Draw2DPrimitive's in a 'Drawing'.
 drawingCountPrimitives :: Drawing n -> Int

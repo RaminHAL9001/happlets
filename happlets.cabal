@@ -21,6 +21,7 @@ library
   hs-source-dirs: src
   exposed-modules:
     Happlets
+    Happlets.Actor
     Happlets.Logging
     Happlets.Model
     Happlets.Model.Audio
@@ -39,7 +40,6 @@ library
     Happlets.Initialize
     Happlets.Provider.React
     Happlets.Provider.ConfigState
-    Happlets.Scene
     Happlets.View
     Happlets.View.Audio
     Happlets.View.Canvas
