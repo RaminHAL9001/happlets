@@ -35,8 +35,6 @@ import qualified Data.Text               as Strict
 import qualified Data.Text.IO            as Strict
 import qualified Data.Vector.Mutable     as MVec
 
-import Debug.Trace
-
 ----------------------------------------------------------------------------------------------------
 
 -- | Objects stored in a 'Registry'.
@@ -98,16 +96,14 @@ registryMoveElem from to (Registry{theRegistryStore=storeref}) =
 -- registries with lots and lots of objects.
 registryClean :: MonadIO m => Registry obj -> m Int
 registryClean (Registry{theRegistryStore=storeref}) =
-  withStoreIO storeref $
-  fst <$> storeClean ()
+  withStoreIO storeref $ storeClean
 
 -- | Force a sweep of all elements in a 'Registry' and remove all elements that have died. Returns
 -- the number of elements that were cleaned and (equivalently) the amount of space reclaimed in the
 -- 'Registry'.
 registryForceClean :: MonadIO m => Registry obj -> m Int
 registryForceClean (Registry{theRegistryStore=storeref}) =
-  withStoreIO storeref $
-  fst <$> storeForceClean ()
+  withStoreIO storeref $ storeForceClean
 
 ----------------------------------------------------------------------------------------------------
 
@@ -229,9 +225,9 @@ data Store obj
 
 instance Show (Store obj) where
   show store =
-    "theStoreAllocation = " <> show (theStoreAllocation store)
-    "\ntheStoreCount = " <> show (theStoreCount store)
-    "\ntheStoreDeleted = " <> show (theStoreDeleted store)
+    "theStoreAllocation=" <> show (theStoreAllocation store) <>
+    "\ntheStoreCount=" <> show (theStoreCount store) <>
+    "\ntheStoreDeleted=" <> show (theStoreDeleted store)
 
 newtype ModifyStore obj m a = ModifyStore (StateT (Store obj) m a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadState (Store obj))
@@ -324,19 +320,17 @@ storeEnqueue obj = do
   -- completely used up.
   vec <- if count < size then return vec else liftIO $ do
     let newsize = head $ dropWhile (< newcount) $ iterate (* 2) size
-    traceM ("Resize registry vector to " <> show newsize)
     newvec <- MVec.new newsize
     MVec.copy (MVec.slice 0 count newvec) vec
     MVec.set (MVec.slice count (newsize - count) newvec) NullObject
     return newvec
   storeVector .= vec
   -- Now perform a 'storeClean' operation, if the old allocation count turned out to be not enough.
-  when (count >= size) $ void $ storeClean ()
+  when (count >= size) $ void storeClean
   -- The allocation resize and 'storeClean' opreation may have updated the 'count' value, get the
   -- updated value.
   count <- use storeCount
   liftIO $ MVec.write vec count obj
-  traceM ("Store element into registry at index " <> show count)
   storeCount += 1
 
 -- | Move an element within the 'Store', shifting elements around without re-allocating anything.
@@ -376,15 +370,12 @@ storeDelete liftIO i =
 
 -- | First checks the 'storeCleanCondition', and if conditions for cleaning are met, calls
 -- 'storeForceClean'. Returns the number of dead elements that were removed.
-storeClean
-  :: MonadIO m
-  => fold
-  -> ModifyStore obj m (Int, fold)
-storeClean fold = do
+storeClean :: MonadIO m => ModifyStore obj m Int
+storeClean = do
   trigger  <- use storeCleanTrigger
   alloc    <- gets storeAllocation
   delcount <- use storeDeleted
-  if trigger alloc delcount then storeForceClean fold else return (0, fold)
+  if trigger alloc delcount then storeForceClean else return 0
 
 -- | This function scans through a 'Store' and removes elements that have been deleted.
 --
@@ -392,32 +383,33 @@ storeClean fold = do
 -- deleted, and over the function 'StoreReassignIndex' which informs an element what it's new index
 -- within the 'Store' is, allowing the element to update it's own state with it's own index so that
 -- it can remove itself from the 'Store' quickly.
-storeForceClean
-  :: MonadIO m
-  => fold
-  -> ModifyStore obj m (Int, fold)
-storeForceClean fold =
-  use storeDeleted >>= \ del ->
-  if del <= 0 then return (0, fold) else
-  use storeVector >>= \ vec ->
-  use storeCount  >>= \ top ->
-  runFoldMapRegistry fold $ fix -- Step into FoldMapRegistry monad, loop.
-  (\ loop rem0 i ->  -- i: Loop cursor, scans through vector.
-    if i >= top then foldMapReactorLiftModifyStore $ do
-      storeCount .= rem0 -- Set the new 'storeCount' after removing deleted elements.
-      storeDeleted .= 0  -- Reset 'storeDeleted' to indicate store is already clean.
-    else
-      liftIO (MVec.read vec i) >>= \ obj -> -- Read the object at index i.
-      if nullObjectNode obj then do
-        foldMapReactorCountDeleted (+ 1)
-        (loop rem0) $! i + 1
-      else
-        let rem = rem0 + 1 in seq rem $!           -- rem: accounting for remaining elements.
-        foldMapReactorCountDeleted id >>= \ del -> -- del: counts number of deleted elements.
-        if del <= 0 then loop rem $! i + 1 else    -- Bubble down if any have been deleted.
-        liftIO (MVec.write vec rem obj) >>
-        (loop rem $! i + 1)
-  ) 0 0
+storeForceClean :: MonadIO m => ModifyStore obj m Int
+storeForceClean = do
+  del <- use storeDeleted
+  if del <= 0 then return 0 else do
+    vec <- use storeVector
+    top <- subtract 1 <$> use storeCount
+    (count, ()) <- runFoldMapRegistry () $ fix -- Step into FoldMapRegistry monad, loop.
+      (\ loop rem i ->  -- i: Loop cursor, scans through vector.
+        let next rem = loop rem $! i + 1 in
+        if i <= top then do
+          obj <- liftIO (MVec.read vec i) -- Read the object at index i.
+          if nullObjectNode obj then do
+              foldMapReactorCountDeleted (+ 1)
+              next rem
+            else do
+              when (rem < i) (liftIO $ MVec.write vec rem obj)
+              next $! rem + 1
+        else do
+          foldMapReactorLiftModifyStore $ do
+            storeCount .= rem -- Set the new 'storeCount' after removing deleted elements.
+            storeDeleted .= 0 -- Reset 'storeDeleted' to indicate store is already clean.
+      ) 0 0
+    newtop <- use storeCount
+    when (count > 0) $
+      forM_ [newtop .. top] $ \ i ->
+      liftIO $ MVec.write vec i NullObject
+    return count
 
 ----------------------------------------------------------------------------------------------------
 
@@ -461,7 +453,9 @@ debugShowRegistry
   => (forall a . IO a -> m a) -- ^ usually 'liftIO' or a function similar to it
   -> Registry obj -- ^ the registry to inspect
   -> m ()
-debugShowRegistry liftIO reg = debugPrintRegistry liftIO reg $ \ line ->
-  liftIO . Strict.putStrLn . \ case
+debugShowRegistry liftIO reg = debugPrintRegistry liftIO reg
+  (\ line -> liftIO . Strict.putStrLn . \ case
     Nothing   -> line
     Just elem -> line <> Strict.pack (": " <> show elem)
+  )
+  (liftIO . print)

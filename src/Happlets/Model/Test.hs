@@ -51,14 +51,14 @@ markAllElems check update (Elem _ txt) = do
 -- | Search through the 'Registry' by evaluating a predicate on the 'Text' of each 'Elem', if the
 -- predicate is 'True' then toggle the boolean value and halt the search.
 toggleElem
-  :: (Strict.Text -> Bool)
+  :: Bool -> (Strict.Text -> Bool)
   -> UpdateElem Int -> Elem -> FoldMapRegistry Elem Int IO KeepOrDelete
-toggleElem check update (Elem bool txt) =
+toggleElem all check update (Elem bool txt) =
   let doToggle = check txt in
   if doToggle then do
     update (Elem (not bool) txt)
     modify (+ 1)
-    return DeleteObjectHalt
+    return (if all then DeleteObject else DeleteObjectHalt)
   else
     return KeepObject
 
@@ -87,6 +87,10 @@ runTest = do
   let count  msg after dir f = test msg dir $ do
         c <- reactEventRegistryIO dir f reg (0::Int)
         putStrLn $ after <> " " <> show c <> " elements"
+  let clear msg p = do
+        count ("toggle (" <> msg <> ")") "toggled" down $ toggleElem True p
+        count "clear" "cleared" up clearFalseElems
+        test "force clean" up $ registryForceClean reg
   test "enqueue 4 items" up $ do
     enqueue "zero"
     enqueue "one"
@@ -95,7 +99,7 @@ runTest = do
   printRegistryInfo reg
   test "display" up $ pure ()
   test "display" down $ pure ()
-  count "toggle" "toggled" down $ toggleElem (== "two")
+  count ("toggle " <> "== \"two\"") "toggled" down $ toggleElem False (== "two")
   count "clear" "cleared" up clearFalseElems
   test "enqueue 4 items" up $ do
     enqueue "four"
@@ -103,9 +107,16 @@ runTest = do
     enqueue "six"
     enqueue "seven"
   test "force clean" up $ registryForceClean reg
-  test "enqueue 4 items" up $ do
+  test "enqueue 9 items" up $ do
     enqueue "eight"
     enqueue "nine"
     enqueue "ten"
     enqueue "eleven"
+    enqueue "twelve"
+    enqueue "thirteen"
+    enqueue "fourteen"
+    enqueue "fifteen"
+    enqueue "sixteen"
+  clear "any 'v'" (Strict.any (== 'v'))
+  clear "any 'e'" (Strict.any (== 'e'))
   printRegistryInfo reg
