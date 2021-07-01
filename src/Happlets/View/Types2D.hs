@@ -606,7 +606,6 @@ cubic2DCtrlPt2 = lens theCubic2DCtrlPt1 $ \ a b -> a{ theCubic2DCtrlPt2 = b }
 cubic2DEndPoint :: Lens' (Cubic2DSegment n) (Point2D n)
 cubic2DEndPoint = lens theCubic2DEndPoint $ \ a b -> a{ theCubic2DEndPoint = b }
 
-
 ----------------------------------------------------------------------------------------------------
 
 -- | A function used to draw a @model@ to the canvas.
@@ -616,6 +615,12 @@ data Drawing n
     , unwrapDrawing :: Vec.Vector (Draw2DPrimitive n)
     }
   deriving Eq
+
+instance Show (Drawing n) where
+  show d = case Vec.toList . unwrapDrawing $ d of
+    [] -> "(mempty :: Drawing)"
+    [p] -> "[" <> show p <> "]"
+    p:px -> "[ " <> show p <> (px >>= ("\n, " <>) . show) <> "\n]"
 
 instance (Ord n, Num n) => Semigroup (Drawing n) where
   (<>) (Drawing{drawingBoundingBox=boxA,unwrapDrawing=a})
@@ -685,6 +690,12 @@ data Draw2DPrimitive n
   | Draw2DShapes !(Draw2DFillStroke n) [Draw2DShape n]
     -- ^ Draws several primitive 'Draw2DShape's.
   deriving Eq
+
+instance Show (Draw2DPrimitive n) where
+  show = \ case
+    Draw2DReset{}  -> "Draw2DReset"
+    Draw2DLines{}  -> "Draw2DLines"
+    Draw2DShapes{} -> "Draw2DShapes"
 
 instance Map2DShape Draw2DPrimitive where
   map2DShape f = \ case
