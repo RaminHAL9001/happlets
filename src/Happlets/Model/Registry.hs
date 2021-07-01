@@ -19,8 +19,10 @@ module Happlets.Model.Registry
     FoldMapRegistry, KeepOrDelete(..), reactEventRegistry, reactEventRegistryIO,
     -- ** Debugging
     debugPrintRegistry, debugShowRegistry,
-    Store, theStoreCount, theStoreDeleted, theStoreAllocation
+    Store, theStoreAllocation, theStoreCount, theStoreDeleted,
   ) where
+
+import           Happlets.Logging
 
 import           Control.Lens            (Lens', lens, use, (^.), (.=), (+=))
 import           Control.Monad           (void, when, forM_)
@@ -58,11 +60,11 @@ newRegistry = fmap Registry . newStore
 
 -- | Lookup the number of elements stored into the given registry.
 registrySize :: Registry obj -> IO Int
-registrySize (Registry{theRegistryStore=storeref}) = storeSize <$> readIORef storeref
+registrySize (Registry{theRegistryStore=storeref}) = theStoreCount <$> readIORef storeref
 
 -- | Lookup the number of elements that the current 'Registry' has been allocated to hold.
 registryAllocation :: Registry obj -> IO Int
-registryAllocation (Registry{theRegistryStore=storeref}) = storeAllocation <$> readIORef storeref
+registryAllocation (Registry{theRegistryStore=storeref}) = theStoreAllocation <$> readIORef storeref
 
 -- | Place an object into the registry. The @obj@ value you provide will have it's own 'IORef'
 -- allocated by this function, and the 'IORef' is returned.
@@ -127,6 +129,9 @@ instance MonadTrans (FoldMapRegistry obj fold) where
 instance Monad m => MonadState fold (FoldMapRegistry obj fold m) where
   state f = FoldMapRegistry $
     state $ \ (del, fold0) -> let (a, fold) = f fold0 in (a, (del, fold))
+
+instance CanWriteReports m => CanWriteReports (FoldMapRegistry obj fold m) where
+  report level = lift . report level
 
 -- | This value is used by the callback for 'reactEventRegistry' to control iteration over the
 -- 'Registry' elements. The 'reactEventRegistry' function provides the iterated continuation with an
@@ -247,6 +252,10 @@ withStore liftIO ref (ModifyStore f) =
   runStateT f >>= \ (a, store) ->
   liftIO (writeIORef ref store) >>
   return a
+ 
+-- | Returns the number of elements that can be added to the 'Store' before it needs to be resized.
+theStoreAllocation :: Store obj -> Int
+theStoreAllocation = MVec.length . theStoreVector
 
 -- | How many elements have been registered.
 storeCount :: Lens' (Store obj) Int
@@ -294,14 +303,6 @@ storeCleanCondition
 storeCleanCondition alloc delcount = delcount > 0 &&
   let (frac, rem) = divMod alloc delcount in
   frac < 4 || frac == 4 && rem == 0
-
--- | Get the number of elements stored into this store.
-storeSize :: Store obj -> Int
-storeSize = theStoreCount
-
--- | Get the pre-allocation size of vector within a store.
-storeAllocation :: Store obj -> Int
-storeAllocation = MVec.length . theStoreVector
 
 storeEnqueue
   :: MonadIO m
@@ -373,7 +374,7 @@ storeDelete liftIO i =
 storeClean :: MonadIO m => ModifyStore obj m Int
 storeClean = do
   trigger  <- use storeCleanTrigger
-  alloc    <- gets storeAllocation
+  alloc    <- gets theStoreAllocation
   delcount <- use storeDeleted
   if trigger alloc delcount then storeForceClean else return 0
 
@@ -441,10 +442,6 @@ debugPrintRegistry liftIO (Registry{theRegistryStore=storeref}) onElem onStats =
     NullObject     -> onElem (showIndex i) Nothing
     ObjectNode ref -> liftIO (readIORef ref) >>= onElem (showIndex i) . Just
   onStats store
-
--- | Returns the number of elements that can be added to the 'Store' before it needs to be resized.
-theStoreAllocation :: Store obj -> Int
-theStoreAllocation = MVec.length . theStoreVector
 
 -- | Like 'debugPrintRegistry' but uses the 'Show' instance of the @obj@ instead of taking an
 -- arbitrary action.

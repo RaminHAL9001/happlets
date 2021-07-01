@@ -22,7 +22,8 @@ module Happlets.Scene
   ( -- ** Acts
     Act, actWindow, newActHapplet, actLiftIO,
     -- ** Scenes
-    Scene, newScene, sceneBracket, grabFocus, delegateSceneEvents, debugEventHandlerStats,
+    Scene, newScene, sceneBracket, grabFocus, delegateSceneEvents,
+    debugEventHandlerStats, debugSceneElements,
     -- ** The Actor data type
     Actor, TypedActor, theUntypedActor, actor, actress, onStage, selfLabel, thisLabel, actorTypedActor,
     -- ** The Script function type
@@ -48,7 +49,7 @@ module Happlets.Scene
     ActorEventHandlerStats(..), MouseEventHandlerStats(..),
     getEventHandlerStats, diffActorEventHandlerStats,
     -- ** Low-Level Happlets APIs
-    guiRunScriptTypedActor, guiRunScriptActor, sceneRedraw, forceSceneRedraw,
+    guiRunScriptTypedActor, guiRunScriptActor, guiDebugSceneElements, sceneRedraw, forceSceneRedraw,
     sceneKeyboardHandler, actAnimationHandler,
     sceneMouseDown, sceneMouseClick, sceneMouseDoubleClick,
     sceneMouseOver, sceneMouseDrag,
@@ -56,7 +57,7 @@ module Happlets.Scene
 
 import           Happlets.Logging
                  ( CanWriteReports(report), LogReporter,
-                   ReportLevel(DEBUG, ERROR)
+                   ReportLevel(DEBUG, ERROR, INFO)
                  )
 import           Happlets.Initialize (Initialize, newHappletIO)
 import           Happlets.Model.GUI
@@ -64,7 +65,8 @@ import           Happlets.Model.GUI
                  )
 import           Happlets.Model.Registry
                  ( Registry, KeepOrDelete(..), newRegistry, registryEnqueue,
-                   reactEventRegistry, reactEventRegistryIO
+                   reactEventRegistry, reactEventRegistryIO,
+                   Store, debugPrintRegistry
                  )
 import           Happlets.View
                  ( Happlet2DGraphics(draw2D),
@@ -1068,6 +1070,32 @@ actor init model = snd <$> makeActor init model
 actress :: Monoid model => Script model () -> Script any (TypedActor model)
 actress = flip actor mempty
 
+-- | Print a debug reporrt of the content of the current 'Scene' to standard output. Note that if
+-- @model@ type is bound to 'Scene', that is, if you evaluate 'debugSceneElements' in a 'Script'
+-- context of type @'Script' 'Scene' ()@ this function will not necessarily produce a debug report
+-- about the same 'Scene' that would be returned by 'get', the debug report is only about the
+-- internal (hidden) 'Scene' that is part of every 'Script' context regardless of the @model@ type.
+debugSceneElements :: Strict.Text -> Script model ()
+debugSceneElements msg =
+  scriptGetsScene theSceneRegistry >>= debugPrintSceneRegistry scriptIO msg
+
+debugInfoRole :: CanWriteReports m => Strict.Text -> Maybe (Role Actor) -> m ()
+debugInfoRole line = \ case
+  Nothing   -> pure ()
+  Just role -> report INFO $ line <> ": " <> theRoleLabel role
+
+debugInfoStore :: CanWriteReports m => Store (Role Actor) -> m ()
+debugInfoStore = report INFO . Strict.pack . show
+
+debugPrintSceneRegistry
+  :: CanWriteReports m
+  => (forall a . IO a -> m a)
+  -> Strict.Text
+  -> Registry (Role Actor) -> m ()
+debugPrintSceneRegistry liftIO msg registry = do
+  report INFO $ "scene registry " <> msg
+  debugPrintRegistry liftIO registry debugInfoRole debugInfoStore
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'Scene' is a model of a 2D canvas containing many 'Actor' objects, within which all can
@@ -1128,12 +1156,12 @@ sceneStats = lens theSceneStats $ \ a b -> a{ theSceneStats = b }
 --
 -- Place an 'Actor' on stage, making it visible and able to respond to events.
 stageActor :: Actor -> Script any ()
-stageActor (Actor actorRef) =
+stageActor (Actor actorRef) = do
   scriptGets (view $ scriptScene . sceneRegistry) >>=
-  scriptIO . registryEnqueue actorRef >>
-  scriptIO (roleEventStats <$> readIORef actorRef) >>= \ stats ->
-  report DEBUG (Strict.pack $ "Staging actor, stats:\n" <> show stats) >>
-  (scriptModify . ((scriptScene . sceneStats) <>~) $ stats)
+    scriptIO . registryEnqueue actorRef
+  stats <- scriptIO (roleEventStats <$> readIORef actorRef)
+  report DEBUG (Strict.pack $ "Staging actor, stats:\n" <> show stats)
+  scriptModify $ scriptScene . sceneStats <>~ stats
 
 -- | Place a 'TypedActor' on stage, making it visible and able to respond to events. After defining
 -- a 'TypedActor' using 'actor' or 'actress', it is necessary to call this 'onStage' function in
@@ -1351,6 +1379,11 @@ guiRunScriptTypedActor f typed = do
   (result, scene) <- get >>= liftIO . flip (runScript f) typed
   state $ const (result, theScriptScene scene)
 
+guiDebugSceneElements
+  :: ProvidesLogReporter provider
+  => Strict.Text -> GUI provider Act ()
+guiDebugSceneElements msg = onScene $ use sceneRegistry >>= debugPrintSceneRegistry liftIO msg
+
 -- | Like 'guiRunScriptTypedActor', but performs the 'Script' with an untyped 'Actor'.
 --
 -- See also: 'scriptWithTypedActor', 'scriptWithActor'.
@@ -1380,7 +1413,7 @@ triggerEventHandlers
   -> m ()
 triggerEventHandlers liftIO liftScript handler event = do
   report DEBUG "triggerEventHandlers"
-  reg <- use sceneRegistry
+  registry <- use sceneRegistry
   reactEventRegistry False liftIO
     (\ _update role -> case role ^. handler of
       Nothing -> pure KeepObject
@@ -1388,10 +1421,15 @@ triggerEventHandlers liftIO liftScript handler event = do
         lift (liftScript (runEventAction action event) (role ^. roleModel)) >>= \ case
           ActionOK ()    -> pure KeepObjectHalt
           ActionHalt     -> pure KeepObject
-          ActionCancel   -> pure DeleteObjectHalt
-          ActionFail msg -> lift (report ERROR msg) >> pure DeleteObjectHalt
+          ActionCancel   -> do
+            lift (report DEBUG $ "delete object: " <> (role ^. roleLabel))
+            pure DeleteObjectHalt
+          ActionFail msg -> do
+            lift (report ERROR msg)
+            pure DeleteObjectHalt
     )
-    reg ()
+    registry ()
+  debugPrintSceneRegistry liftIO "triggerEventHandlers" registry -- DEBUG
 
 guiTriggerEventHandlers
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
@@ -1416,14 +1454,17 @@ forceSceneRedraw =
         let role = role0 &
               actionDraw %~ maybe id const (role0 ^. actionRedraw) &
               actionRedraw .~ Nothing
-        lift $ onCanvas $ draw2D mempty (role ^. actionDraw)
+        let drawing = (role ^. actionDraw)
+        lift $ report DEBUG $ "Redraw " <> (role ^. roleLabel) <> "\n" <> Strict.pack (show drawing)
+        lift $ onCanvas $ draw2D mempty drawing
         -- TODO ^ Skip if clipRect does not intersects with 'theBoundingBox' of 'actionDraw'?
         modify $ (<> (roleEventStats role))
         update role
         return KeepObject
     )
     registry mempty >>=
-  assign sceneStats
+  assign sceneStats >>
+  debugPrintSceneRegistry liftIO "forceSceneRedraw" registry
 
 -- | Redraw all elements that have changed. Each element is erased (by redrawing all elements below
 -- it that intersect with it's bounding box), and then redrawn.
@@ -1461,6 +1502,7 @@ sceneRedraw = do
     registry
     mempty >>=
     assign sceneStats
+  debugPrintSceneRegistry liftIO "sceneRedraw" registry
 
 -- | Like 'liftIO' but only works in a the 'GUI' monad for an 'Act' data structure.
 actLiftIO :: (Act -> IO a) -> GUI provider Act a
