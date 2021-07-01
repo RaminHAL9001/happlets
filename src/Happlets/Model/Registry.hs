@@ -18,7 +18,8 @@ module Happlets.Model.Registry
     -- ** Folds and Maps
     FoldMapRegistry, KeepOrDelete(..), reactEventRegistry, reactEventRegistryIO,
     -- ** Debugging
-    debugPrintRegistry, debugShowRegistry
+    debugPrintRegistry, debugShowRegistry,
+    Store, theStoreCount, theStoreDeleted, theStoreAllocation
   ) where
 
 import           Control.Lens            (Lens', lens, use, (^.), (.=), (+=))
@@ -33,7 +34,6 @@ import           Data.IORef              (IORef, newIORef, readIORef, writeIORef
 import qualified Data.Text               as Strict
 import qualified Data.Text.IO            as Strict
 import qualified Data.Vector.Mutable     as MVec
-import           Data.Unique             (Unique, newUnique)
 
 import Debug.Trace
 
@@ -215,17 +215,23 @@ reactEventRegistry upward liftIO action (Registry{theRegistryStore=storeref}) fo
 
 ----------------------------------------------------------------------------------------------------
 
--- | An immutable data structure containing references to objects.
+-- | Values of this type contain the registry 'MVector' and accounting information such as
+-- 'theStoreCount', and 'theStoreDeleted'
 data Store obj
   = Store
-    { theStoreId           :: !Unique
-    , theStoreCount        :: !Int -- ^ the number of items
-    , theStoreDeleted      :: !Int -- ^ counts the number of deleted items
+    { theStoreCount        :: !Int -- ^ The number of registered items .
+    , theStoreDeleted      :: !Int
+      -- ^ A count of the number of items that have been deleted since the last time 'registryClean'
+      -- has been evaluated.
     , theStoreCleanTrigger :: !(Int -> Int -> Bool) -- ^ see 'storeCleanTrigger'
     , theStoreVector       :: !(MVec.IOVector (ObjectNode obj))
     }
 
-instance Eq (Store obj) where { a == b = theStoreId a == theStoreId b; }
+instance Show (Store obj) where
+  show store =
+    "theStoreAllocation = " <> show (theStoreAllocation store)
+    "\ntheStoreCount = " <> show (theStoreCount store)
+    "\ntheStoreDeleted = " <> show (theStoreDeleted store)
 
 newtype ModifyStore obj m a = ModifyStore (StateT (Store obj) m a)
   deriving (Functor, Applicative, Monad, MonadIO, MonadState (Store obj))
@@ -277,10 +283,8 @@ storeVector = lens theStoreVector $ \ a b -> a{ theStoreVector = b }
 newStore :: Int -> IO (IORef (Store obj))
 newStore size = do
   vec <- MVec.replicate size NullObject
-  storeId <- newUnique
   newIORef Store
-    { theStoreId           = storeId
-    , theStoreCount        = 0
+    { theStoreCount        = 0
     , theStoreDeleted      = 0
     , theStoreCleanTrigger = storeCleanCondition
     , theStoreVector       = vec
@@ -425,11 +429,12 @@ storeForceClean fold =
 -- 'liftIO'-like function as the first argument to this function.
 debugPrintRegistry
   :: Monad m
-  => (forall a . IO a -> m a) -- ^ usually 'liftIO' or a function similar to it
-  -> Registry obj -- ^ the registry to inspect
-  -> (Strict.Text -> Maybe obj -> m ()) -- ^ evaluated on each cell
+  => (forall a . IO a -> m a) -- ^ Usually 'liftIO' or a function similar to it.
+  -> Registry obj -- ^ The registry to inspect.
+  -> (Strict.Text -> Maybe obj -> m ()) -- ^ Evaluated on each cell.
+  -> (Store obj -> m ()) -- ^ Evaluated after all cells have been evaluated.
   -> m ()
-debugPrintRegistry liftIO (Registry{theRegistryStore=storeref}) onElem = do
+debugPrintRegistry liftIO (Registry{theRegistryStore=storeref}) onElem onStats = do
   store <- liftIO (readIORef storeref)
   let vec = theStoreVector store
   let len = MVec.length vec
@@ -443,6 +448,11 @@ debugPrintRegistry liftIO (Registry{theRegistryStore=storeref}) onElem = do
   forM_ [0 .. len-1] $ \ i ->  liftIO (MVec.read vec i) >>= \ case
     NullObject     -> onElem (showIndex i) Nothing
     ObjectNode ref -> liftIO (readIORef ref) >>= onElem (showIndex i) . Just
+  onStats store
+
+-- | Returns the number of elements that can be added to the 'Store' before it needs to be resized.
+theStoreAllocation :: Store obj -> Int
+theStoreAllocation = MVec.length . theStoreVector
 
 -- | Like 'debugPrintRegistry' but uses the 'Show' instance of the @obj@ instead of taking an
 -- arbitrary action.
