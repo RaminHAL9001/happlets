@@ -18,8 +18,8 @@ import           Happlets.Model.GUI
 -- mouse devices provided by the back-end, especially for two-player games.
 --
 -- This data type does not contain information about clicks, double-clicks, or drags, which is why
--- it is a "signal" and not an "event." For events, you need to use a 'Happlets.Scene.Act' and
--- 'Happlets.Scene.Scene' which has it's own high-level event handlers based on this low-level
+-- it is a "signal" and not an "event." For events, you need to use a 'Happlets.Actor.Act' and
+-- 'Happlets.Actor.Scene' which has it's own high-level event handlers based on this low-level
 -- 'MouseSignal' data type. Or you can use a functional reactive programming framework and establish
 -- your own methods of translating signals to events.
 data MouseSignal

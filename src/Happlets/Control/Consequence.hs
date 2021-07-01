@@ -56,6 +56,9 @@ class Applicative m => Consequential m where
 class Consequential m => CatchConsequence m where
   catchConsequence :: m a -> m (Consequence a)
 
+class Consequential m => ThrowConsequence m where
+  throwConsequence :: Consequence a -> m a
+
 discontinue :: String -> Consequence a -> Consequence b
 discontinue msg = fmap $ const $ error $ "internal: Consequence." ++ msg
 
@@ -96,6 +99,8 @@ instance Consequential Consequence where { cancel = ActionCancel; }
 
 instance CatchConsequence Consequence where { catchConsequence = ActionOK; }
 
+instance ThrowConsequence Consequence where { throwConsequence = id; }
+
 ----------------------------------------------------------------------------------------------------
 
 -- | A 'Consequence' monad transformer similar to 'ExceptT' but uses 'Consequence' rather than
@@ -107,6 +112,9 @@ instance Applicative m => Consequential (ConsequenceT m) where
 
 instance Applicative m => CatchConsequence (ConsequenceT m) where
   catchConsequence (ConsequenceT f) = ConsequenceT (ActionOK <$> f)
+
+instance Applicative m => ThrowConsequence (ConsequenceT m) where
+  throwConsequence = ConsequenceT . pure
 
 instance Functor m => Functor (ConsequenceT m) where
   fmap f (ConsequenceT a) = ConsequenceT $ fmap f <$> a
@@ -152,7 +160,22 @@ instance MonadReader r m => MonadReader r (ConsequenceT (ReaderT r m)) where
   ask = lift ask
   local f (ConsequenceT a) = ConsequenceT $ local f a
 
--- | Construct a 'ConsequenceT' function that immediately evaluates to the given 'Consequence'
--- value.
-consequence :: Monad m => Consequence a -> ConsequenceT m a
-consequence = ConsequenceT . return
+-- | Evaluate a 'Conseqeunce' to a monadic action. The 'Consequence' is translated like so:
+--
+-- @
+-- 'ActionOK'   -> 'return'
+-- 'ActionHalt'  -> 'empty'
+-- 'ActionCancel' -> 'cancel'
+-- 'ActionFail msg -> 'fail' ('Strict.unpack' message'
+--
+-- This can be used to instantiate the 'throwConsequence' function, but this is not ideal when
+-- rethrowing an 'ActionFail' message in a 'ConsequenceT' context, because it requires decoding the
+-- Strict.Text message to a 'String' in order to call 'fail', but then the instance of
+-- 'ConsequenceT' for 'fail' will re-encoding it back to a 'Strict.Text' value. If this is the case,
+-- it might be better to simply
+evalConsequence :: (Monad m, Alternative m, MonadFail m, Consequential m) => Consequence a -> m a
+evalConsequence = \ case
+  ActionOK     a -> return a
+  ActionHalt     -> empty
+  ActionCancel   -> cancel
+  ActionFail msg -> fail $ Strict.unpack msg

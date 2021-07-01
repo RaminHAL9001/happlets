@@ -38,8 +38,8 @@ module Happlets.Model.GUI
     sameHapplet, getWaitingThreads,
 
     -- * The GUI Function Type
-    GUI, onSubModel, getModel, getSubModel, putModel, modifyModel, askHapplet,
-    consequenceGUI, changeRootHapplet, mzeroIfBusy, howBusy, guiLogReportWriter,
+    GUI, onSubModel, focusSubModel, getModel, getSubModel, putModel, modifyModel, askHapplet,
+    changeRootHapplet, mzeroIfBusy, howBusy, guiLogReportWriter,
 
     -- ** GUI Threads
     SendGUISignal, forkGUI, bracketGUI, guiCatch,
@@ -263,7 +263,7 @@ data GUIState provider model
 instance Applicative (GUI provider model) where { pure = return; (<*>) = ap; }
 
 instance Monad (GUI provider model) where
-  return = consequenceGUI . ActionOK
+  return = throwConsequence . ActionOK
   (GUI f) >>= next = GUI $ StateT $ \ st -> runStateT f st >>= \ (a, st) -> case a of
     ActionOK   a   -> runStateT (unwrapGUI $ next a) st
     ActionHalt     -> return (ActionHalt    , st)
@@ -285,10 +285,10 @@ instance MonadReader (Happlet model) (GUI provider model) where
     f <* modify (\ newst -> newst{ theGUIHapplet = theGUIHapplet oldst })
   
 instance Monad.MonadFail (GUI provider model) where
-  fail = consequenceGUI . ActionFail . Strict.pack
+  fail = throwConsequence . ActionFail . Strict.pack
 
 instance MonadError Strict.Text (GUI provider model) where
-  throwError = consequenceGUI . ActionFail
+  throwError = throwConsequence . ActionFail
   catchError (GUI try) catch = GUI $ try >>= \ case
     ActionFail msg -> unwrapGUI $ catch msg
     result         -> return result
@@ -318,17 +318,14 @@ instance ProvidesLogReporter provider => CanWriteReports (GUI provider model) wh
     ($ msg) .
     ($ msgLevel)
 
--- | Force a 'GUI' computation's result to assume the value of the given 'Consequence', i.e. when
--- given 'ActionOK', evaluate to 'return', when given 'ActionHalt' evaluate to 'mzero', when given
--- 'ActionCancel' evaluate to 'cancel', when given 'ActionFail', evaluate to 'fail'.
-consequenceGUI :: Consequence a -> GUI provider model a
-consequenceGUI = GUI . return
+instance ThrowConsequence (GUI provider model) where
+  throwConsequence = GUI . pure
 
----- | 'Control.Lens.Lens' for manipulating the 'GUIState'. It is better to use 'getModel',
----- 'updateModel', 'putModel', 'subModel', or 'liftGUI' instead of manipulating a 'GUIState'
----- directly.
---guiModel :: Lens' (GUIState provider model) model
---guiModel = lens theGUIModel $ \ a b -> a{ theGUIModel = b }
+-- | 'Control.Lens.Lens' for manipulating the 'GUIState'. It is better to use 'getModel',
+-- 'updateModel', 'putModel', 'subModel', or 'liftGUI' instead of manipulating a 'GUIState'
+-- directly.
+guiModel :: Lens' (GUIState provider model) model
+guiModel = lens theGUIModel $ \ a b -> a{ theGUIModel = b }
 
 -- | 'Control.Lens.Lens' for manipulating the 'GUIState'. It is better to not use this function at
 -- all.
@@ -381,28 +378,35 @@ bracketGUI lock unlock f = GUI $ StateT $ \ st -> do
   st <- takeMVar mvar
   return (a, st)
 
--- | Operate on a portion of the @model@, which can be updated by a given 'Lens' into a @subModel@
--- of the @model@, by evaluating a 'GUI' function on that @subModel@.
-onSubModel 
-  :: Lens' model subModel
-  -> GUI provider subModel a
-  -> GUI provider model a 
-onSubModel submodel subgui = do
+-- | Temporarily change the @model@ operated on by the 'GUI' with a different @subModel@, and then
+-- evaluate another 'GUI' continuation on that @subModel@. The updated @subModel@ is returned. The
+-- content of the 'Happlet' model remains unchanged. This is simply a way to lift a 'GUI' function
+-- of a different model type into the current 'GUI' context. It is also possible to do this using a
+-- 'Lens' with the 'focusSubModel' function.
+onSubModel :: GUI provider subModel a -> subModel -> GUI provider model (a, subModel)
+onSubModel subgui modst = do
   guist <- getGUIState
-  let modst = theGUIModel guist ^. submodel
   (a, new) <- liftIO $ runGUI subgui $ GUIState
     { theGUIModel    = modst
     , theGUIHapplet  = subHapplet $ theGUIHapplet guist
     , theGUIProvider = theGUIProvider guist
 --  , theGUIWorkers  = theGUIWorkers  guist
     }
-  putGUIState $ guist
-    { theGUIModel    = theGUIModel    guist & submodel .~ theGUIModel new
-    , theGUIHapplet  = theGUIHapplet  guist
-    , theGUIProvider = theGUIProvider guist
---  , theGUIWorkers  = theGUIWorkers  guist
-    }
-  GUI $ return a
+  putGUIState guist
+  GUI $ return $ flip (,) (theGUIModel new) <$> a
+
+-- | Operate on a portion of the @model@, which can be updated by a given 'Lens' into a @subModel@
+-- of the @model@, by evaluating a 'GUI' function on that @subModel@.
+focusSubModel 
+  :: Lens' model subModel
+  -> GUI provider subModel a
+  -> GUI provider model a 
+focusSubModel submodel subgui = do
+  guist <- getGUIState
+  let modst = guist ^. guiModel . submodel
+  (a, modst) <- onSubModel subgui modst
+  modifyGUIState $ guiModel . submodel .~ modst
+  return a
 
 -- | When an event handler evaluates this function, it is voluntarily canceling the current event
 -- handler execution if there are one or more other threads waiting for access to the 'Happlet'
