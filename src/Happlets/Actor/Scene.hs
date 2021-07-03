@@ -1,18 +1,25 @@
--- | A 'Scene' makes use of the 'Happlets.Actor.Presence' data type to construct an array of untyped
+-- | A 'Stage' makes use of the 'Happlets.Actor.Presence' data type to construct an array of untyped
 -- actors that can respond to events.
-module Happlets.Actor.Scene
-  ( -- ** Scenes
-    Scene, newScene, sceneBracket, grabFocus, delegateSceneEvents,
-    debugSceneElements, debugPrintSceneRegistry
-    sceneRedraw, forceSceneRedraw,
-    sceneKeyboardHandler, actAnimationHandler,
-    sceneMouseDown, sceneMouseClick, sceneMouseDoubleClick,
-    sceneMouseOver, sceneMouseDrag,
+module Happlets.Actor.Stage
+  ( -- ** Stages
+    Stage, newStage, stageBracket, grabFocus, delegateStageEvents,
+    debugStageElements, debugPrintStageRegistry
+    stageRedraw, forceStageRedraw,
+    stageKeyboardHandler, actAnimationHandler,
+    stageMouseDown, stageMouseClick, stageMouseDoubleClick,
+    stageMouseOver, stageMouseDrag,
   )
   where
 
 import           Happlets.Actor
-                 (
+                 ( Actor, Presence,
+                   OnQueue, onDraw, scriptRedraw, onSelect, onKeyPress, onAnimate,
+                   onMouseOver, onMouseDown, onMouseClick, onMouseDoubleClick, onMouseDrag,
+                   actorFocus, actorKeyPress,
+                   actorMouseDown, actorMouseClick, actorMouseDoubleClick, actorMouseDrag,
+                   actorStepAnimate,
+                   ActorEventHandlerStats(..), MouseEventHandlerStats(..),
+                   getEventHandlerStats, diffActorEventHandlerStats
                  )
 
 import           Happlets.Logging
@@ -84,242 +91,242 @@ import           System.IO (hPutStrLn, stderr)
 
 ----------------------------------------------------------------------------------------------------
 
--- | A 'Scene' is a model of a 2D canvas containing many 'Presence' objects, within which all can
+-- | A 'Stage' is a model of a 2D canvas containing many 'Presence' objects, within which all can
 -- update the canvas and can respond to canvas events. When an 'Act' is first constructed by
--- 'newActHapplet' it already has a new 'Scene' ready to be populated with 'Presence's, so it is not
--- necessary to create a new 'Scene', but keeping 'Presence's organized into 'Scene's and changing
--- between 'Scene's is a good way to keep a user interface less cluttered.
+-- 'newActHapplet' it already has a new 'Stage' ready to be populated with 'Presence's, so it is not
+-- necessary to create a new 'Stage', but keeping 'Presence's organized into 'Stage's and changing
+-- between 'Stage's is a good way to keep a user interface less cluttered.
 --
--- A 'Scene' itself can be used as the @model@ of a 'Actor', so you can use the 'Scene' as an
--- 'Presence' in another scene, and events can be delegated to the 'Scene' through the 'Actor'
--- event handler APIs. When you create a 'Scene' using 'newScene', a 'Actor' containing the
--- 'Scene' is returned.
-data Scene
-  = Scene
-    { theSceneRegistry   :: !(Registry (Role Presence))
-      -- ^ The objects in this scene
-    , theSceneFocus      :: !(Maybe Presence)
-      -- ^ A reference to the object in 'theSceneRegistry' that currently responds to keyboard
+-- A 'Stage' itself can be used as the @model@ of a 'Actor', so you can use the 'Stage' as an
+-- 'Presence' in another stage, and events can be delegated to the 'Stage' through the 'Actor'
+-- event handler APIs. When you create a 'Stage' using 'newStage', a 'Actor' containing the
+-- 'Stage' is returned.
+data Stage
+  = Stage
+    { theStageRegistry   :: !(Registry (Role Presence))
+      -- ^ The objects in this stage
+    , theStageFocus      :: !(Maybe Presence)
+      -- ^ A reference to the object in 'theStageRegistry' that currently responds to keyboard
       -- events or double-click events. Also, an object that is being dragged necessarily has focus.
-    , theSceneStats      :: !ActorEventHandlerStats
+    , theStageStats      :: !ActorEventHandlerStats
       -- ^ Statistics about the number of event handlers installed across all 'Presence's within the
-      -- 'Scene', this helps to determine if the 'Scene' should install it's own event handler to
+      -- 'Stage', this helps to determine if the 'Stage' should install it's own event handler to
       -- delegate events to any of it's 'Presence's.
-    , theSceneGlobalBounds :: !(Rect2D SampCoord)
-      -- ^ The 'Rect2D', in global coordinates of this 'Scene's viewable window, in the 'GUI'
+    , theStageGlobalBounds :: !(Rect2D SampCoord)
+      -- ^ The 'Rect2D', in global coordinates of this 'Stage's viewable window, in the 'GUI'
       -- monad's coordinate system.
     }
 
 -- | not for export
 --
--- The Registry for the 'Scene' contains a reference to all 'Actors'.
-sceneRegistry :: Lens' Scene (Registry (Role Presence))
-sceneRegistry = lens theSceneRegistry $ \ a b -> a{ theSceneRegistry = b }
+-- The Registry for the 'Stage' contains a reference to all 'Actors'.
+stageRegistry :: Lens' Stage (Registry (Role Presence))
+stageRegistry = lens theStageRegistry $ \ a b -> a{ theStageRegistry = b }
 
 -- | The 'Presence' that currently has focus.
-sceneFocus :: Lens' Scene (Maybe Presence)
-sceneFocus = lens theSceneFocus $ \ a b -> a{ theSceneFocus = b }
+stageFocus :: Lens' Stage (Maybe Presence)
+stageFocus = lens theStageFocus $ \ a b -> a{ theStageFocus = b }
 
--- | The 'Rect2D', in global coordinates of this 'Scene's viewable window, in the 'GUI' monad's
+-- | The 'Rect2D', in global coordinates of this 'Stage's viewable window, in the 'GUI' monad's
 -- coordinate system.
-sceneGlobalBounds :: Lens' Scene (Rect2D SampCoord)
-sceneGlobalBounds = lens theSceneGlobalBounds $ \ a b -> a{ theSceneGlobalBounds = b }
+stageGlobalBounds :: Lens' Stage (Rect2D SampCoord)
+stageGlobalBounds = lens theStageGlobalBounds $ \ a b -> a{ theStageGlobalBounds = b }
 
 -- | not for export
 --
--- Tracks statistics on how many elements in a 'Scene' respond to particular events. It is
--- determined by an aggregate computation over all @('Role' 'Presence')@ items in a 'Scene's
+-- Tracks statistics on how many elements in a 'Stage' respond to particular events. It is
+-- determined by an aggregate computation over all @('Role' 'Presence')@ items in a 'Stage's
 -- 'Registry'.
-sceneStats :: Lens' Scene ActorEventHandlerStats
-sceneStats = lens theSceneStats $ \ a b -> a{ theSceneStats = b }
+stageStats :: Lens' Stage ActorEventHandlerStats
+stageStats = lens theStageStats $ \ a b -> a{ theStageStats = b }
 
 -- | not for export
 --
 -- Place a 'Presence' on stage, making it visible and able to respond to events.
-stagePresence :: Presence -> Script Scene ()
+stagePresence :: Presence -> Script Stage ()
 stagePresence (Presence actorRef) = do
-  use sceneRegistry >>= scriptIO . registryEnqueue actorRef
+  use stageRegistry >>= scriptIO . registryEnqueue actorRef
   role <- scriptIO (readIORef actorRef)
   let stats = roleEventStats role
   report OBJECT $
     "Staging actor: " <> (role ^. roleLabel) <>
     "\n  stats:\n" <> Strict.pack (show stats)
-  sceneStats <>= stats
-  stats <- use sceneStats
-  report OBJECT ("Scene stats after staging actor:\n" <> Strict.pack (show stats))
+  stageStats <>= stats
+  stats <- use stageStats
+  report OBJECT ("Stage stats after staging actor:\n" <> Strict.pack (show stats))
 
 -- | Place a 'Actor' on stage, making it visible and able to respond to events. After defining
 -- a 'Actor' using 'actor' or 'actress', it is necessary to call this 'onStage' function in
 -- order for the 'Actor' begin acting on stage and responding to events and cues.
-onStage :: Actor model -> Script Scene ()
+onStage :: Actor model -> Script Stage ()
 onStage = stagePresence . thePresenceActor
 
--- | Function used internally by 'newActHapplet' to create a new scene. Scenes that can be
+-- | Function used internally by 'newActHapplet' to create a new stage. Stages that can be
 -- manipulated by end users of this API are always wrapped in a 'Actor'.
-makeEmptyScene :: Int -> IO Scene
-makeEmptyScene size = do
+makeEmptyStage :: Int -> IO Stage
+makeEmptyStage size = do
   registry <- newRegistry size
-  return Scene
-    { theSceneRegistry     = registry
-    , theSceneFocus        = Nothing
-    , theSceneStats        = mempty
-    , theSceneGlobalBounds = rect2D
+  return Stage
+    { theStageRegistry     = registry
+    , theStageFocus        = Nothing
+    , theStageStats        = mempty
+    , theStageGlobalBounds = rect2D
     }
 
 ----------------------------------------------------------------------------------------------------
 
--- | Print a debug reporrt of the content of the current 'Scene' to standard output. Note that if
--- @model@ type is bound to 'Scene', that is, if you evaluate 'debugSceneElements' in a 'Script'
--- context of type @'Script' 'Scene' ()@ this function will not necessarily produce a debug report
--- about the same 'Scene' that would be returned by 'get', the debug report is only about the
--- internal (hidden) 'Scene' that is part of every 'Script' context regardless of the @model@ type.
-debugSceneElements :: Strict.Text -> Script Scene ()
-debugSceneElements msg =
-  gets theSceneRegistry >>= debugPrintSceneRegistry scriptIO msg
+-- | Print a debug reporrt of the content of the current 'Stage' to standard output. Note that if
+-- @model@ type is bound to 'Stage', that is, if you evaluate 'debugStageElements' in a 'Script'
+-- context of type @'Script' 'Stage' ()@ this function will not necessarily produce a debug report
+-- about the same 'Stage' that would be returned by 'get', the debug report is only about the
+-- internal (hidden) 'Stage' that is part of every 'Script' context regardless of the @model@ type.
+debugStageElements :: Strict.Text -> Script Stage ()
+debugStageElements msg =
+  gets theStageRegistry >>= debugPrintStageRegistry scriptIO msg
 
-debugPrintSceneRegistry
+debugPrintStageRegistry
   :: CanWriteReports m
   => (forall a . IO a -> m a)
   -> Strict.Text
   -> Registry (Role Presence) -> m ()
-debugPrintSceneRegistry liftIO msg registry = do
-  report INFO $ "scene registry " <> msg
+debugPrintStageRegistry liftIO msg registry = do
+  report INFO $ "stage registry " <> msg
   debugPrintRegistry liftIO registry debugInfoRole debugInfoStore
 
 -- | Steals the spotlight -- meaning it becomes the target non-mouse events such as keyboard
 -- events. This function can be evaluated within the event handler for an 'Actor', it will change
--- the 'sceneFocus' of the current 'Scene' to be the 'Actor' that evaluates this function.
-grabFocus :: Script Scene ()
+-- the 'stageFocus' of the current 'Stage' to be the 'Actor' that evaluates this function.
+grabFocus :: Script Stage ()
 grabFocus =
   scriptGets (thePresenceActor . theScriptActor) >>=
-  assign sceneFocus . Just
+  assign stageFocus . Just
 
 ----------------------------------------------------------------------------------------------------
 
 -- | not for export
 --
 -- Calls 'actor'' to initialize a new 'Actor' without staging the constructed actor.
-sceneToActor :: Script Scene a -> Scene -> Script any (a, Actor Scene)
-sceneToActor init =
+stageToActor :: Script Stage a -> Stage -> Script any (a, Actor Stage)
+stageToActor init =
   makeActor $
   init <*
-  ( use sceneRegistry >>=
-    scriptIO . sceneRecountActionStats >>=
-    assign sceneStats
+  ( use stageRegistry >>=
+    scriptIO . stageRecountActionStats >>=
+    assign stageStats
   )
 
--- | A 'Scene' is a sub-group of 'Actors' that can be created within the current top-level
--- 'Scene'. This function creates an empty 'Scene' with space pre-allocated for an integer number of
+-- | A 'Stage' is a sub-group of 'Actors' that can be created within the current top-level
+-- 'Stage'. This function creates an empty 'Stage' with space pre-allocated for an integer number of
 -- 'Presence's to be stored, although 16 is the minimum pre-allocation size. It then evaluates an
--- initializer function that should fill the 'Scene' with 'Presence's.
+-- initializer function that should fill the 'Stage' with 'Presence's.
 --
--- The state value of the 'Script' continuation will be a value of the 'Scene' data type, but there
+-- The state value of the 'Script' continuation will be a value of the 'Stage' data type, but there
 -- will not be much you can do to manipulate it directly. The 'Script' continuation given here for
--- the most part will simply call 'actor' or 'actress' to place actors into the scene.
+-- the most part will simply call 'actor' or 'actress' to place actors into the stage.
 --
--- __NOTE:__ that the @'Script' 'Scene' ()@ function is really only to allow you to install 'Presence's
--- into the 'Scene' using the 'actor' or 'actress' functions. You may install event handlers into
--- the 'Scene' using functions like 'onKeyboard', but these event handlers will not be used in a
--- situation where all other actors in the scene have not already captured and dispatched the events
+-- __NOTE:__ that the @'Script' 'Stage' ()@ function is really only to allow you to install 'Presence's
+-- into the 'Stage' using the 'actor' or 'actress' functions. You may install event handlers into
+-- the 'Stage' using functions like 'onKeyboard', but these event handlers will not be used in a
+-- situation where all other actors in the stage have not already captured and dispatched the events
 -- received. So any event handlers you install during the initialize 'Script' evaluation should only
 -- be the "last resort" event handlers that are only triggered when no other 'Presence's have responded
 -- to the event.
 --
 -- See also: newActHapplet
-newScene :: Int -> Script Scene () -> Script any (Actor Scene)
-newScene size init =
-  scriptIO (makeEmptyScene size) >>=
-  sceneToActor init >>= \ ((), actor) ->
+newStage :: Int -> Script Stage () -> Script any (Actor Stage)
+newStage size init =
+  scriptIO (makeEmptyStage size) >>=
+  stageToActor init >>= \ ((), actor) ->
   return actor
 
-sceneRecountActionStats :: Registry (Role Presence) -> IO ActorEventHandlerStats
-sceneRecountActionStats registry =
+stageRecountActionStats :: Registry (Role Presence) -> IO ActorEventHandlerStats
+stageRecountActionStats registry =
   reactEventRegistryIO True
   (const $ modify . mappend . roleEventStats >=> return . const KeepObject)
   registry
   mempty
 
--- | This function creates an 'EventAction' that evaluates 'sceneEventHandlers' on all elements in
--- a 'Scene'.
-reactScene
+-- | This function creates an 'EventAction' that evaluates 'stageEventHandlers' on all elements in
+-- a 'Stage'.
+reactStage
   :: (forall model . Lens' (Role model) (Maybe (EventAction event model)))
-  -> EventAction event Scene
-reactScene handler =
+  -> EventAction event Stage
+reactStage handler =
   EventAction
   { theActionText = ""
-  , theAction = sceneEventHandlers scriptIO ((.) catchConsequence . scriptWithPresence) handler
+  , theAction = stageEventHandlers scriptIO ((.) catchConsequence . scriptWithPresence) handler
   }
 
--- | Check current statistics on the current 'Scene' and update delegate event handlers.
+-- | Check current statistics on the current 'Stage' and update delegate event handlers.
 delegateEvents
   :: (ActorEventHandlerStats -> Int)
   -> (forall model . Lens' (Role model) (Maybe (EventAction event model)))
-  -> Script Scene ()
+  -> Script Stage ()
 delegateEvents checkStats handle = do
-  s <- use sceneStats
+  s <- use stageStats
   scriptModify $
     scriptRole . cloneLens handle .~
-    if checkStats s > 0 then Just (reactScene handle) else Nothing
+    if checkStats s > 0 then Just (reactStage handle) else Nothing
 
 -- | Call 'delegateEvents' on a 'RoleMouseEvents' handler.
 delegateButtonEvents
   :: (MouseEventHandlerStats -> Int)
   -> (forall model . Lens' (RoleMouseEvents model) (Maybe (EventAction event model)))
   -> MouseButton
-  -> Script Scene ()
+  -> Script Stage ()
 delegateButtonEvents checkStats handle button =
   delegateEvents
   (maybe 0 checkStats . roleMouseEventStatsFor button)
   (actionMouseButton button . handle)
 
-delegateSelectEvents :: Script Scene ()
+delegateSelectEvents :: Script Stage ()
 delegateSelectEvents = delegateEvents countActionSelect actionSelect
 
-delegateKeyboardEvents :: Script Scene ()
+delegateKeyboardEvents :: Script Stage ()
 delegateKeyboardEvents = delegateEvents countActionKeyboard actionKeyboard
 
-delegateMouseOverEvents :: Script Scene ()
+delegateMouseOverEvents :: Script Stage ()
 delegateMouseOverEvents = delegateEvents countActionMouseOver actionMouseOver
 
-delegateMouseDownEvents :: MouseButton -> Script Scene ()
+delegateMouseDownEvents :: MouseButton -> Script Stage ()
 delegateMouseDownEvents = delegateButtonEvents countActionMouseDown mouseButtonDown
 
-delegateMouseClickEvents :: MouseButton -> Script Scene ()
+delegateMouseClickEvents :: MouseButton -> Script Stage ()
 delegateMouseClickEvents = delegateButtonEvents countActionMouseClick mouseButtonClick
 
-delegateMouseDoubleClickEvents :: MouseButton -> Script Scene ()
+delegateMouseDoubleClickEvents :: MouseButton -> Script Stage ()
 delegateMouseDoubleClickEvents = delegateButtonEvents countActionMouseDouble mouseButtonDouble
 
-delegateMouseDragEvents :: MouseButton -> Script Scene ()
+delegateMouseDragEvents :: MouseButton -> Script Stage ()
 delegateMouseDragEvents = delegateButtonEvents countActionMouseDrag mouseButtonDrag
 
 -- | Delegate all mouse button event handlers for a particular 'MouseButton'.
-delegateMouseButtonEvents :: MouseButton -> Script Scene ()
+delegateMouseButtonEvents :: MouseButton -> Script Stage ()
 delegateMouseButtonEvents a = do
   delegateMouseDownEvents a
   delegateMouseClickEvents a
   delegateMouseDoubleClickEvents a
   delegateMouseDragEvents a
 
-delegateAnimationEvents :: Script Scene ()
+delegateAnimationEvents :: Script Stage ()
 delegateAnimationEvents = delegateEvents countActionAnimation actionAnimation
 
--- | This function may be used to update the event hanlders on a @'Actor' 'Scene'@ whenever the
--- contents of the 'Scene' changes.
+-- | This function may be used to update the event hanlders on a @'Actor' 'Stage'@ whenever the
+-- contents of the 'Stage' changes.
 --
--- What this function actually does is check 'theSceneStats' and installs the correct event handlers
--- into the 'Scene's top-level event handler to automatically delegate events to the 'Presence's that
--- have been staged into the 'Scene'. If the scene has no staged 'Presence's which respond to a
+-- What this function actually does is check 'theStageStats' and installs the correct event handlers
+-- into the 'Stage's top-level event handler to automatically delegate events to the 'Presence's that
+-- have been staged into the 'Stage'. If the stage has no staged 'Presence's which respond to a
 -- particular event, the event handler for that particular event is set to 'Nothing'.
 --
--- Note that event delegation can only be performed by 'Scene' values, as these are the only values
+-- Note that event delegation can only be performed by 'Stage' values, as these are the only values
 -- that can contain other 'Presence's.
 --
 -- This function calls all of 'delegateSelectEvents', 'delegateKeyboardEvents',
 -- 'delegateMosueOverEvents', 'delegateMouseButtonEvents' (for both 'RightMouseButton' and
 -- 'LeftMouseButton), and 'delegateAnimationEvents'.
-delegateSceneEvents :: Script Scene ()
-delegateSceneEvents = do
+delegateStageEvents :: Script Stage ()
+delegateStageEvents = do
   delegateSelectEvents
   delegateKeyboardEvents
   delegateMouseOverEvents
@@ -327,32 +334,32 @@ delegateSceneEvents = do
   delegateMouseButtonEvents LeftMouseButton
   delegateAnimationEvents
 
--- Functions for evaluating 'GUI' functions using elements of a 'Scene', such as event handlers.
+-- Functions for evaluating 'GUI' functions using elements of a 'Stage', such as event handlers.
 
-onScene :: GUI provider Scene a -> GUI provider (Act Scene) a
-onScene f = do
+onStage :: GUI provider Stage a -> GUI provider (Act Stage) a
+onStage f = do
   ref <- theActorRole <$> use actCurrentActor
   role <- liftIO $ readIORef ref
-  (a, scene) <- onSubModel f $ theRoleModel role
-  liftIO $ writeIORef ref (role{ theRoleModel = scene })
+  (a, stage) <- onSubModel f $ theRoleModel role
+  liftIO $ writeIORef ref (role{ theRoleModel = stage })
   return a
 
 -- | Not for export
 --
--- Functions that operate on 'Scene' data types can broadcast delegate events to all 'Presence'
+-- Functions that operate on 'Stage' data types can broadcast delegate events to all 'Presence'
 -- agents within the 'Registry', this function does that broadcasting of events to a particular
 -- event handler selected by a given 'Lens'.
-sceneEventHandlers
-  :: (Monad m, MonadState Scene m, CanWriteReports m)
+stageEventHandlers
+  :: (Monad m, MonadState Stage m, CanWriteReports m)
   => (forall a . IO a -> m a)
   -> (Script Presence () -> Presence -> m (Consequence ()))
   -> Lens' (Role Presence) (Maybe (EventAction event Presence))
   -> event
   -> m ()
-sceneEventHandlers liftIO liftScript handler event = do
-  report EVENT "sceneEventHandlers"
-  scene <- get
-  let registry = scene ^. sceneRegistry
+stageEventHandlers liftIO liftScript handler event = do
+  report EVENT "stageEventHandlers"
+  stage <- get
+  let registry = stage ^. stageRegistry
   reactEventRegistry False liftIO
     (\ _update role -> case role ^. handler of
       Nothing -> pure KeepObject
@@ -368,36 +375,36 @@ sceneEventHandlers liftIO liftScript handler event = do
             pure DeleteObjectHalt
     )
     registry ()
-  -- Warning: this function does not update 'theSceneStats' or re-delegate any of the event
-  -- handlers. It is expected that the 'sceneRedraw' or similar function will be triggered shortly
-  -- after this function is called, and 'sceneRedraw' will update the statistics properly.
-  debugPrintSceneRegistry liftIO "sceneEventHandlers" registry -- DEBUG
+  -- Warning: this function does not update 'theStageStats' or re-delegate any of the event
+  -- handlers. It is expected that the 'stageRedraw' or similar function will be triggered shortly
+  -- after this function is called, and 'stageRedraw' will update the statistics properly.
+  debugPrintStageRegistry liftIO "stageEventHandlers" registry -- DEBUG
 
-guiSceneEventHandlers
+guiStageEventHandlers
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
   => Lens' (Role Presence) (Maybe (EventAction event Presence))
   -> event
-  -> GUI provider (Act Scene) ()
-guiSceneEventHandlers lens event = do
+  -> GUI provider (Act Stage) ()
+guiStageEventHandlers lens event = do
   guiRunScript $
-    sceneEventHandlers scriptIO ((.) catchConsequence . scriptWithPresence) lens event
-  sceneRedraw
+    stageEventHandlers scriptIO ((.) catchConsequence . scriptWithPresence) lens event
+  stageRedraw
 
--- | A GUI action to force the redraw of all elements in a Scene, regardless of whether they lie
+-- | A GUI action to force the redraw of all elements in a Stage, regardless of whether they lie
 -- within the updated clip region, or whether they have requested a redraw. The bounding box in
 -- 'actVisibleFrame' is still passed to the 'onCavnas' function, so the low-level drawing APIs will
 -- clip all drawings to this bounding box.
 --
--- This operation will slow down your application if used more often. Use 'sceneRedraw' to do a more
+-- This operation will slow down your application if used more often. Use 'stageRedraw' to do a more
 -- efficient redraw.
-forceSceneRedraw
+forceStageRedraw
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
-  => GUI provider (Act Scene) ()
-forceSceneRedraw =
+  => GUI provider (Act Stage) ()
+forceStageRedraw =
   flip rect2DUnion 1 . pure <$> use actVisibleFrame >>= \ uframe ->
-  onScene $ 
-  report EVENT "forceSceneRedraw" >>
-  use sceneRegistry >>= \ registry ->
+  onStage $ 
+  report EVENT "forceStageRedraw" >>
+  use stageRegistry >>= \ registry ->
   reactEventRegistry True liftIO
   (\ update role0 -> do
       let role = role0 &
@@ -410,19 +417,19 @@ forceSceneRedraw =
       update role
       return KeepObject
   ) registry mempty >>=
-  assign sceneStats >>
-  debugPrintSceneRegistry liftIO "forceSceneRedraw" registry
+  assign stageStats >>
+  debugPrintStageRegistry liftIO "forceStageRedraw" registry
 
 -- | Redraw all elements that have changed. Each element is erased (by redrawing all elements below
 -- it that intersect with it's bounding box), and then redrawn.
-sceneRedraw
+stageRedraw
   :: (HappletWindow provider render, ProvidesLogReporter provider, Happlet2DGraphics render)
-  => GUI provider (Act Scene) ()
-sceneRedraw =
-  report EVENT "sceneRedraw" >>
+  => GUI provider (Act Stage) ()
+stageRedraw =
+  report EVENT "stageRedraw" >>
   use actVisibleFrame >>= \ frame ->
-  onScene $
-  use sceneRegistry >>= \ registry ->
+  onStage $
+  use stageRegistry >>= \ registry ->
   -- first scan the registry for 'Presence's that need to be erased
   canonicalize2DShape . uncurry rect2DUnion <$>
   reactEventRegistryIO True
@@ -446,31 +453,31 @@ sceneRedraw =
         modify $ (<> (roleEventStats role))
         return KeepObject
     ) registry mempty >>=
-    assign sceneStats
+    assign stageStats
   ) >>
-  debugPrintSceneRegistry liftIO "sceneRedraw" registry
+  debugPrintStageRegistry liftIO "stageRedraw" registry
 
 ----------------------------------------------------------------------------------------------------
 
 -- | Force a 'Keyboard' event to occur in the current 'Act'.
-sceneKeyboardHandler
+stageKeyboardHandler
   :: ProvidesLogReporter provider
-  => Keyboard -> GUI provider Scene ()
-sceneKeyboardHandler evt = case evt of
+  => Keyboard -> GUI provider Stage ()
+stageKeyboardHandler evt = case evt of
   Keyboard True _ _ -> run evt
   RawKey   True _ _ -> run evt
   _                 -> return ()
   where
   run evt =
-    report EVENT "sceneKeyboardHandler" >>
-    use sceneFocus >>= \ case
+    report EVENT "stageKeyboardHandler" >>
+    use stageFocus >>= \ case
       Nothing                -> return ()
       Just actor@(Presence ref) ->
         liftIO (readIORef ref) >>= \ role ->
         case theActionKeyboard role of
           Nothing     -> return ()
           Just script -> do
-            let unfocus = sceneFocus .= Nothing
+            let unfocus = stageFocus .= Nothing
             guiRunScript (runEventAction script evt) actor >>= \ case
               ActionOK ()    -> return ()
               ActionHalt     -> empty
@@ -478,43 +485,43 @@ sceneKeyboardHandler evt = case evt of
               ActionFail msg -> unfocus >> throwError msg
 
 -- | Force a 'MouseSignal'-over event to occur in the current 'Act'.
-sceneMouseOver
+stageMouseOver
   :: ( HappletWindow provider render, Managed provider, Happlet2DGraphics render
      , ProvidesLogReporter provider
      )
-  => PixelMouse -> GUI provider Scene ()
-sceneMouseOver = guiSceneEventHandlers actionMouseOver
+  => PixelMouse -> GUI provider Stage ()
+stageMouseOver = guiStageEventHandlers actionMouseOver
 
 -- | Force a 'Mouse' context menu button click event to occur in the current 'Act'.
-sceneMouseDown
+stageMouseDown
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
-  => MouseButton -> PixelMouse -> GUI provider Scene ()
-sceneMouseDown button event = do
-  report EVENT "sceneMouseDown"
-  guiSceneEventHandlers (actionMouseDown button) event
+  => MouseButton -> PixelMouse -> GUI provider Stage ()
+stageMouseDown button event = do
+  report EVENT "stageMouseDown"
+  guiStageEventHandlers (actionMouseDown button) event
 
 -- | Force a 'Mouse' context menu button click event to occur in the current 'Act'.
-sceneMouseClick
+stageMouseClick
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
-  => MouseButton -> PixelMouse -> GUI provider Scene ()
-sceneMouseClick button event = do
-  report EVENT "sceneMouseClick"
-  guiSceneEventHandlers (actionMouseClick button) event
+  => MouseButton -> PixelMouse -> GUI provider Stage ()
+stageMouseClick button event = do
+  report EVENT "stageMouseClick"
+  guiStageEventHandlers (actionMouseClick button) event
 
 -- | Force a 'Mouse' action button double click event to occur in the current 'Act'.
-sceneMouseDoubleClick
+stageMouseDoubleClick
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
-  => MouseButton -> PixelMouse -> GUI provider Scene ()
-sceneMouseDoubleClick button event = do
-  report EVENT "sceneMouseDoubleClick"
-  guiSceneEventHandlers (actionMouseDouble button) event
+  => MouseButton -> PixelMouse -> GUI provider Stage ()
+stageMouseDoubleClick button event = do
+  report EVENT "stageMouseDoubleClick"
+  guiStageEventHandlers (actionMouseDouble button) event
 
 -- | Force a 'MouseSignal' drag event to occur in the current 'Act'.
-sceneMouseDrag
+stageMouseDrag
   :: ( HappletWindow provider render, Managed provider, Happlet2DGraphics render
      , ProvidesLogReporter provider
      )
-  => MouseButton -> Maybe PixelMouse -> GUI provider Scene ()
-sceneMouseDrag button event = do
-  report DEBUG_ALL "sceneMouseDrag"
-  guiSceneEventHandlers (actionMouseDrag button) event
+  => MouseButton -> Maybe PixelMouse -> GUI provider Stage ()
+stageMouseDrag button event = do
+  report DEBUG_ALL "stageMouseDrag"
+  guiStageEventHandlers (actionMouseDrag button) event
