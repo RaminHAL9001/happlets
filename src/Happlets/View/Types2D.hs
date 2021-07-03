@@ -21,10 +21,12 @@ module Happlets.View.Types2D
     -- *** Lines
     Line2D(..), line2D, line2DHead, line2DTail, line2DPoints,
     -- *** Rectangles
-    Rect2D(..), Rect2DUnion, rect2DUnion, rect2DUnionToList, rect2DUnionCount, rect2DUnionNull,
+    Rect2D(..),
     rect2D, rect2DSize, rect2DHead, rect2DTail, rect2DPoints,
     rect2DCenter, rect2DCentre, rect2DArea, rect2DContainsRect, bounds2DExpandLineWidth,
     rect2DMinBoundsOf, rect2DMinBoundsForAll, rect2DIntersect, rect2DDiagonal, rect2DtoInt,
+    Rect2DUnion, rect2DUnion, rect2DUnionSingle,
+    rect2DUnionToList, rect2DUnionCount, rect2DUnionNull,
     MaybeSingleton2D(..), HasBoundingBox(..),
     -- *** Arcs
     Magnitude(..), ArcRadius, Angle(..), StartAngle, EndAngle,
@@ -226,6 +228,7 @@ data Rect2DUnion n
     { rect2DUnionBounds :: !(Rect2D n)
     , rect2DUnionVector :: !(UVec.Vector n)
     }
+  deriving Eq
 
 instance (Ord n, Num n, UMVec.Unbox n) => Semigroup (Rect2DUnion n) where
   (<>) (Rect2DUnion{rect2DUnionBounds=bndsA,rect2DUnionVector=vecA})
@@ -267,6 +270,9 @@ rect2DUnion rectlist nelems =
           return vec
       )
   }
+
+rect2DUnionSingle :: (Ord n, Num n, UVec.Unbox n) => Rect2D n -> Rect2DUnion n
+rect2DUnionSingle = flip rect2DUnion 1 . pure
 
 rect2DUnionToList :: (Num n, UMVec.Unbox n) => Rect2DUnion n -> [Rect2D n]
 rect2DUnionToList (Rect2DUnion{rect2DUnionVector=vec}) = loop $ UVec.toList vec where
@@ -608,10 +614,15 @@ cubic2DEndPoint = lens theCubic2DEndPoint $ \ a b -> a{ theCubic2DEndPoint = b }
 
 ----------------------------------------------------------------------------------------------------
 
+class HasRect2DUnionMask obj where
+  getRect2DUnionMask :: obj n -> Rect2DUnion n
+
+----------------------------------------------------------------------------------------------------
+
 -- | A function used to draw a @model@ to the canvas.
 data Drawing n
   = Drawing
-    { drawingBoundingBox :: !(Rect2D n)
+    { drawingBoundingBox :: !(Rect2DUnion n)
     , unwrapDrawing :: Vec.Vector (Draw2DPrimitive n)
     }
   deriving Eq

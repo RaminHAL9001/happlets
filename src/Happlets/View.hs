@@ -80,17 +80,17 @@ class (Functor render, Applicative render, Monad render, MonadIO render, Sized2D
   -- 'Rect2DUnion' clip region so that the drawing algorithm can prune 'Draw2DPrimitive's that do of
   -- the 'Drawing' that do not intersect with any part of the 'Rect2DUnion' can be pruned from the
   -- drawing.
+  draw2D :: Rect2D -> Drawing SampCoord -> render ()
+
+  -- | Set all pixels in the screen graphics to the same color value given by the 'fillColor',
+  -- deleting all graphics that existed prior. This function does not reset the 'clipRegion'.
   --
   -- __NOTE__ that __if__ the 'Rect2DUnion' is __null__ (rect2DUnionNull evaluates to bool), __this
   -- means to redraw everything__ that intersects with the bounds of the visible window, it does not
   -- mean to redraw nothing. This is more convenient for programmers as they do not have to
   -- construct a 'Rect2DUnion' encompassing the entire screen if they want to force-redraw the
   -- entire screen, they can instead simply pass 'mempty' to force redraw the entire screen.
-  draw2D :: Rect2DUnion SampCoord -> Drawing SampCoord -> render ()
-
-  -- | Set all pixels in the screen graphics to the same color value given by the 'fillColor',
-  -- deleting all graphics that existed prior. This function does not reset the 'clipRegion'.
-  clearScreen :: Color -> render ()
+  clearScreen :: Rect2DUnion SampCoord -> Color -> render ()
 
 -- | This function provides a default implementation for 'clearScreen' for the 'Happlet2DGraphics'
 -- typeclass, as long as the @render@ function that instantiates the 'Happlet2DGraphics' typeclass
