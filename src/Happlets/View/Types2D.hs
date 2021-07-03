@@ -11,7 +11,7 @@ module Happlets.View.Types2D
     Has2DOrigin(..), Is2DPrimitive(..), Quantizable(..), HasMidpoint(..),
     Canonical2D(..), ContainsPoint2D(..),
     -- ** The 'Drawing' datatype
-    Drawing(..), drawing, drawingIsNull, drawingIntersects,
+    Drawing(..), drawing, drawingIsNull, drawingIntersectsAny, drawingIntersects,
     drawingPrimitives, drawingCountPrimitives,
     -- ** Primitives
     Draw2DPrimitive(..), Draw2DShape(..), Map2DShape(..),
@@ -67,7 +67,7 @@ import           Control.Monad (mapM_, guard)
 import           Data.Int  (Int32)
 import           Data.Function (on)
 import           Data.List (sortBy, nubBy)
-import           Data.Maybe (maybeToList)
+import           Data.Maybe (isNothing, maybeToList)
 import           Data.Ord (Down(..))
 import qualified Data.Vector.Unboxed  as UVec
 import qualified Data.Vector.Unboxed.Mutable as UMVec
@@ -739,9 +739,16 @@ drawingIsNull :: Drawing n -> Bool
 drawingIsNull (Drawing{unwrapDrawing=vec}) = Vec.null vec
 
 -- | Returns 'True' if the 'drawingRect2DMask' intersects with the 'rect2DUnionBounds' of a
--- 'Rect2DUnion'.
-drawingIntersects :: (Ord n, Num n, UMVec.Unbox n) => Drawing n -> Rect2DUnion n -> Bool
-drawingIntersects d u = not $ null $ rect2DUnionIntersect (drawingRect2DMask d) u
+-- 'Rect2DUnion'. See also 'drawingIntersects' and 'rect2DUnionIntersect'.
+drawingIntersectsAny :: (Ord n, Num n, UMVec.Unbox n) => Drawing n -> Rect2DUnion n -> Bool
+drawingIntersectsAny d u = not $ null $ rect2DUnionIntersect (drawingRect2DMask d) u
+
+-- | Like 'drawingIntersectsAny' but tests only a single 'Rect2D' rathre than a 'Rect2DUnion'. See also
+-- 'drawingIntersectsAny' and 'rect2DUnionIntersect'.
+drawingIntersects :: (Ord n, Num n, UMVec.Unbox n) => Drawing n -> Rect2D n -> Bool
+drawingIntersects d r =
+  not $ null $ dropWhile isNothing $
+  rect2DIntersect r <$> rect2DUnionToList (drawingRect2DMask d)
 
 -- | Count the number of 'Draw2DPrimitive's in a 'Drawing'.
 drawingCountPrimitives :: Drawing n -> Int
