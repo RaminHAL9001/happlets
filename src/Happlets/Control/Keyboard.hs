@@ -37,6 +37,11 @@ data Keyboard
 -- key/button-up or "released" event.
 type Pressed = Bool
 
+keyIsPressed :: Keyboard -> Pressed
+keyIsPressed = \ case
+  Keyboard p _ _ -> p
+  RawKey   p _ _ -> p
+
 -- | Keyboard event modifier bits. This is just an abstract, opaque, intermediate type used to
 -- encode information from various Happlet back-ends. Instantiates 'Semigroup' with the
 -- @('Data.Bits..|.')@ bitwise-OR function.

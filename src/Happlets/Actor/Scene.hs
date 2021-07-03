@@ -193,6 +193,9 @@ debugPrintStageRegistry liftIO msg registry = do
   report INFO $ "stage registry " <> msg
   debugPrintRegistry liftIO registry debugInfoRole debugInfoStore
 
+debugInfoStore :: CanWriteReports m => Store (Role Presence) -> m ()
+debugInfoStore = report INFO . Strict.pack . show
+
 -- | Steals the spotlight -- meaning it becomes the target non-mouse events such as keyboard
 -- events. This function can be evaluated within the event handler for an 'Actor', it will change
 -- the 'stageFocus' of the current 'Stage' to be the 'Actor' that evaluates this function.
