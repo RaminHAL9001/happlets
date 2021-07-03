@@ -373,7 +373,7 @@ sceneEventHandlers liftIO liftScript handler event = do
   -- after this function is called, and 'sceneRedraw' will update the statistics properly.
   debugPrintSceneRegistry liftIO "sceneEventHandlers" registry -- DEBUG
 
-guirSceneEventHandlers
+guiSceneEventHandlers
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
   => Lens' (Role Presence) (Maybe (EventAction event Presence))
   -> event

@@ -7,33 +7,42 @@
 -- behind the 'Script' function type, which simplifies program logic a great deal.
 module Happlets.Actor
   ( -- ** Acts
-    Act, actWindow, newActHapplet, actLiftIO, debugEventHandlerStats,
+    Act, actWindow, newActHapplet, actLiftIO,
+    debugEventHandlerStats,
     -- ** The Actor data type
-    Actor, Presence, thePresenceActor, actor, actress, onStage, modifyLabel, getLabel, actorPresence,
+    Actor, actor, actress, modifyLabel, getLabel,
+    -- *** The Presence data type
+    Presence, thePresenceActor, actorPresence,
     -- ** The Script function type
     Script, scriptWithActor, scriptWithPresence,
     -- ** Event Handlers
-    OnQueue, onDraw, scriptRedraw, onSelect, onKeyboard, onAnimate,
+    OnQueue, onDraw, scriptRedraw, onSelect, onKeyPress, onAnimate,
     onMouseOver, onMouseDown, onMouseClick, onMouseDoubleClick, onMouseDrag,
     -- *** Event Types
     Mouse2D(..), PixelMouse, MouseButton(..), mouse2DPosition, mouse2DModifiers,
     module Happlets.Control.Keyboard,
     -- *** Event Handler Types
     EventAction(..), runEventAction,
-    -- *** Sending and Delegating Events
+    -- *** Delegating Events
     --
-    -- These functions trigger an event handler for the current 'Actor' in the current 'Script'
-    -- context using event data that you can synthesize yourself, or capture from another event and
-    -- delegate. These functions are only of any use for event handlers that need to execute some
-    -- sort of computation, so there are no redraw triggers -- because redrawing only changes the
-    -- 'Drawing' data structure for the current 'Actor' it doesn't execute a computation.
-    actorAnimate, actorKeyboard,
-    actorMouseOver, actorDown, actorClick, actorDoubleClick, actorDrag,
+    -- These functions trigger an event handler on some other 'Actor' which is known to the current
+    -- 'Actor'. You can simulate events in animations using these functions as well,
+    actorFocus, actorKeyPress,
+    actorMouseOver, actorMouseDown, actorMouseClick, actorMouseDoubleClick, actorMouseDrag,
+    actorStepAnimate,
     -- *** Actor Event Handler Accounting
     ActorEventHandlerStats(..), MouseEventHandlerStats(..),
     getEventHandlerStats, diffActorEventHandlerStats,
-    -- ** Low-Level Happlets APIs
+    -- ** Executing Scripts from within GUI 
+    --
+    -- If you like the 'Actor' and 'Script' model, but you don't like how events are dispatched, you
+    -- can come up with your own method of executing 'Script's within the 'GUI' function, and you
+    -- can force event handlers to trigger.
     guiRunScriptWith, guiRunScript,
+    -- *** Forcing Events from within GUI
+    guiForceRedraw, guiRedraw, guiKeyPress, guiFocus
+    guiMouseDown, guiMouseClick, guiMouseDoubleClick, guiMouseDrag,
+    guiStepAnimate,
   ) where
 
 import           Happlets.Logging
@@ -53,7 +62,7 @@ import           Happlets.Model.Registry
 import           Happlets.View
                  ( Happlet2DGraphics(draw2D, clearScreen, clearRegions),
                    HappletWindow(onCanvas),
-                   Sized2DRaster(getViewSize),
+                   Sized2DRaster(getViewSize), getViewRect,
                    Has2DOrigin(origin2D)
                  )
 import           Happlets.View.Color (black, alphaChannel, dark)
@@ -358,18 +367,18 @@ onQueue handle f = do
 --
 -- 'Role's are required to separate the logic that determines whether it's visualization is
 -- selectable and the logic that decides whether the 'Role' responds to an event. To enforce this
--- rule, if a 'Role's 'actionSelect' is 'Nothing', or is a 'Script' that evaluates to 'empty', the
+-- rule, if a 'Role's 'actionFocus' is 'Nothing', or is a 'Script' that evaluates to 'empty', the
 -- 'Role' will not be passed any events. A 'Script' that evaluates to @('pure' ())@ indicates that
 -- the mouse event can select the 'Role'.
 --
 -- Of course, you can make a 'Role' receive focus programmatically, in which case it can respond to
 -- keyboard events.
-onSelect :: OnQueue SampCoord model
-onSelect = onQueue actionSelect
+onFocus :: OnQueue SampCoord model
+onFocus = onQueue actionFocus
 
 -- | Alter the keyboard event handler function.
-onKeyboard :: OnQueue Keyboard model
-onKeyboard = onQueue actionKeyboard
+onKeyPress :: OnQueue Keyboard model
+onKeyPress = onQueue actionKeyPress
 
 -- | Mouse-over events are events that occur when the mouse moves, but none of the mouse buttons are
 -- depressed.
@@ -413,8 +422,8 @@ onMouseDrag button = onQueue $ cloneLens (actionMouseDrag button)
 -- | If any 'Actor' has an animation type event handler set, an animation event loop is enabled, and
 -- animation frame step events are broadcast to all 'Actor's who have set this event handler,
 -- repeatedly and at very fast regular intervals.
-onAnimate :: OnQueue UTCTime model
-onAnimate = onQueue actionAnimation
+onStepAnimate :: OnQueue UTCTime model
+onStepAnimate = onQueue actionStepAnimate
 
 -- | Set to 'True' if any part of the 'scriptRole' is changed.
 scriptRoleUpdated :: Lens' (ScriptState model) Bool
@@ -433,36 +442,36 @@ data Role model
     , theRoleLabel         :: !Strict.Text
     , theActionDraw        :: !(Drawing SampCoord)
     , theActionRedraw      :: !(Maybe (Drawing SampCoord))
-    , theActionSelect      :: !(Maybe (EventAction SampCoord model))
-    , theActionKeyboard    :: !(Maybe (EventAction Keyboard model))
+    , theActionFocus       :: !(Maybe (EventAction SampCoord model))
+    , theActionKeyPress    :: !(Maybe (EventAction Keyboard model))
     , theActionMouseOver   :: !(Maybe (EventAction PixelMouse model))
       -- ^ Mouse over event with no mouse buttons depressed
     , theActionRightMouse  :: !(Maybe (RoleMouseEvents model))
       -- ^ Event handlers for the right mouse button
     , theActionLeftMouse   :: !(Maybe (RoleMouseEvents model))
       -- ^ Event handlers for the left mouse button
-    , theActionAnimation   :: !(Maybe (EventAction UTCTime model))
+    , theActionStepAnimate :: !(Maybe (EventAction UTCTime model))
     }
 
 -- | A cluster of event handlers that can respond to either left or right mouse buttons. Each mouse
 -- button has it's own FSM state and so can respond to events independently from one another, which
 -- is why there needs to be two identical sets of event handlers.
-data RoleMouseEvents model
+data RoleMouseEvents modela
   = RoleMouseEvents
-    { theActionMouseDown    :: !(Maybe (EventAction PixelMouse model))
+    { theActionMouseDown   :: !(Maybe (EventAction PixelMouse model))
       -- ^ Action triggered on mouse button leading-edge click, that is, as soon as a mouse-down
       -- event occurs, the handler is triggered without waiting for a mouse-up event. An example of
       -- this is in a file browser, clicking down on a file immediately selects the file without
       -- waiting for a mouse-up event.
-    , theActionMouseClick   :: !(Maybe (EventAction PixelMouse model))
+    , theActionMouseClick  :: !(Maybe (EventAction PixelMouse model))
       -- ^ Action triggered on mouse button trailing-edge click, that is, a complete mouse-down and
       -- mouse-up pair of events. An example of this is a push button which does not trigger it's
       -- event handler until a mouse-down and mouse-up event both occur within the visible button
       -- region.
-    , theActionMouseDouble  :: !(Maybe (EventAction PixelMouse model))
+    , theActionMouseDouble :: !(Maybe (EventAction PixelMouse model))
       -- ^ Left mouse button double-click, triggered on second leading edge click if the mouse is
       -- not moved.
-    , theActionMouseDrag    :: !(Maybe (EventAction (Maybe PixelMouse) model))
+    , theActionMouseDrag   :: !(Maybe (EventAction (Maybe PixelMouse) model))
       -- ^ Left mouse button drag, ends when event is 'Nothing'. Event handler does not need to
       -- remove itself when drag ends.
     }
@@ -473,16 +482,16 @@ data RoleMouseEvents model
 -- environment.
 data ActorEventHandlerStats
   = ActorEventHandlerStats
-    { countActors :: !Int
+    { countActors            :: !Int
       -- ^ Does the actor exist? This is here to simply count the number of 'Actor's in a group. It
       -- is zero only if this 'ActorEventHandlerStats' value is 'mempty'.
     , countActionDraw        :: !Int
       -- ^ Non-zero if an 'Actor' is drawn, meaning it can be drawn to the screen
     , countActionRedraw      :: !Int
       -- ^ Non-zero if an 'Actor' is to be redrawn
-    , countActionSelect      :: !Int
+    , countActionFocus      :: !Int
       -- ^ Non-zero if an 'Actor' responds to selection actions
-    , countActionKeyboard    :: !Int
+    , countActionKeyPress    :: !Int
       -- ^ Non-zero if an 'Actor' responds to 'Keyboard' actions
     , countActionMouseOver   :: !Int
       -- ^ Non-zero if an 'Actor' responds to mouse-over events.
@@ -490,7 +499,7 @@ data ActorEventHandlerStats
       -- ^ Non-zero if an 'Actor' responds to any mouse button events.
     , countActionMouseLeft   :: !(Maybe MouseEventHandlerStats)
       -- ^ Non-zero if an 'Actor' responds to any mouse button events.
-    , countActionAnimation   :: !Int
+    , countActionStepAnimate :: !Int
       -- ^ Non-zero if an 'Actor' responds to animation step events
     }
 
@@ -508,12 +517,12 @@ instance Monoid ActorEventHandlerStats where
     { countActors            = 0
     , countActionDraw        = 0
     , countActionRedraw      = 0
-    , countActionSelect      = 0
-    , countActionKeyboard    = 0
+    , countActionFocus       = 0
+    , countActionKeyPress    = 0
     , countActionMouseOver   = 0
     , countActionMouseRight  = mempty
     , countActionMouseLeft   = mempty
-    , countActionAnimation   = 0
+    , countActionStepAnimate = 0
     }
 
 instance Monoid MouseEventHandlerStats where
@@ -530,12 +539,12 @@ instance Semigroup ActorEventHandlerStats where
     { countActors            = add countActors
     , countActionDraw        = add countActionDraw
     , countActionRedraw      = add countActionRedraw
-    , countActionSelect      = add countActionSelect
-    , countActionKeyboard    = add countActionKeyboard
+    , countActionFocus       = add countActionFocus
+    , countActionKeyPress    = add countActionKeyPress
     , countActionMouseOver   = add countActionMouseOver
     , countActionMouseRight  = countActionMouseRight a <> countActionMouseRight b
     , countActionMouseLeft   = countActionMouseLeft  a <> countActionMouseLeft  b
-    , countActionAnimation   = add countActionAnimation
+    , countActionStepAnimate = add countActionStepAnimate
     }
 
 instance Semigroup MouseEventHandlerStats where
@@ -557,9 +566,9 @@ instance Show ActorEventHandlerStats where
     [ f "           countActors" countActors
     , f "       countActionDraw" countActionDraw
     , f "     countActionRedraw" countActionRedraw
-    , f "     countActionSelect" countActionSelect
-    , f "  countActionAnimation" countActionAnimation
-    , f "   countActionKeyboard" countActionKeyboard
+    , f "      countActionFocus" countActionFocus
+    , f "countActionStepAnimate" countActionStepAnimate
+    , f "   countActionKeyPress" countActionKeyPress
     , f "  countActionMouseOver" countActionMouseOver
     , showMouseEventHandlerStats "countActionMouseRight" $ countActionMouseRight a
     , showMouseEventHandlerStats "countActionMouseLeft" $ countActionMouseLeft a
@@ -672,14 +681,14 @@ diffActorEventHandlerStats a b =
   { countActors            = diff countActors
   , countActionDraw        = diff countActionDraw
   , countActionRedraw      = diff countActionRedraw
-  , countActionSelect      = diff countActionSelect
-  , countActionKeyboard    = diff countActionKeyboard
+  , countActionFocus       = diff countActionFocus
+  , countActionKeyPress    = diff countActionKeyPress
   , countActionMouseOver   = diff countActionMouseOver
   , countActionMouseRight  =
       diffButtonEventHandlerStats (countActionMouseLeft a) (countActionMouseLeft b)
   , countActionMouseLeft   =
       diffButtonEventHandlerStats (countActionMouseRight a) (countActionMouseRight b)
-  , countActionAnimation   = diff countActionAnimation
+  , countActionStepAnimate = diff countActionStepAnimate
   }
 
 diffButtonEventHandlerStats
@@ -704,12 +713,12 @@ roleEventStats r = ActorEventHandlerStats
   { countActors            = 1
   , countActionDraw        = if drawingIsNull (theActionDraw r) then 0 else 1
   , countActionRedraw      = inc theActionRedraw
-  , countActionSelect      = inc theActionSelect
-  , countActionKeyboard    = inc theActionKeyboard
+  , countActionFocus       = inc theActionFocus
+  , countActionKeyPress    = inc theActionKeyPress
   , countActionMouseOver   = inc theActionMouseOver
   , countActionMouseRight  = mouseEventStats $ theActionRightMouse r
   , countActionMouseLeft   = mouseEventStats $ theActionLeftMouse r
-  , countActionAnimation   = inc theActionAnimation
+  , countActionStepAnimate = inc theActionStepAnimate
   } where
     inc :: (Role any -> Maybe void) -> Int
     inc fromRole = maybe 0 (const 1) (fromRole r)
@@ -741,12 +750,12 @@ role model = Role
   , theRoleLabel         = ""
   , theActionDraw        = mempty
   , theActionRedraw      = Nothing
-  , theActionSelect      = Nothing
-  , theActionKeyboard    = Nothing
+  , theActionFocus      = Nothing
+  , theActionKeyPress    = Nothing
   , theActionMouseOver   = Nothing
   , theActionLeftMouse   = Nothing
   , theActionRightMouse  = Nothing
-  , theActionAnimation   = Nothing
+  , theActionStepAnimate   = Nothing
   }
 
 -- | A lens to inspect and update the model inside of the 'Role'.
@@ -764,15 +773,15 @@ actionDraw = lens theActionDraw $ \ a b -> a{ theActionDraw = b }
 actionRedraw :: Lens' (Role model) (Maybe (Drawing SampCoord))
 actionRedraw = lens theActionRedraw $ \ a b -> a{ theActionRedraw = b }
 
-actionSelect :: Lens' (Role model) (Maybe (EventAction SampCoord model))
-actionSelect = lens theActionSelect $ \ a b -> a{ theActionSelect = b }
+actionFocus :: Lens' (Role model) (Maybe (EventAction SampCoord model))
+actionFocus = lens theActionFocus $ \ a b -> a{ theActionFocus = b }
 
-actionKeyboard :: Lens' (Role model) (Maybe (EventAction Keyboard model))
-actionKeyboard = lens theActionKeyboard $ \ a b -> a{ theActionKeyboard = b }
+actionKeyPress :: Lens' (Role model) (Maybe (EventAction Keyboard model))
+actionKeyPress = lens theActionKeyPress $ \ a b -> a{ theActionKeyPress = b }
 
 -- | Set the action to perform when an animation step occurs.
-actionAnimation :: Lens' (Role model) (Maybe (EventAction UTCTime model))
-actionAnimation = lens theActionAnimation $ \ a b -> a{ theActionAnimation = b }
+actionStepAnimate :: Lens' (Role model) (Maybe (EventAction UTCTime model))
+actionStepAnimate = lens theActionStepAnimate $ \ a b -> a{ theActionStepAnimate = b }
 
 actionMouseOver :: Lens' (Role model) (Maybe (EventAction PixelMouse model))
 actionMouseOver = lens theActionMouseOver $ \ a b -> a{ theActionMouseOver = b }
@@ -923,7 +932,7 @@ actorPresence self@(Presence ref) = Actor
 -- context.
 actorKeyboard :: Keyboard -> Script model ()
 actorKeyboard key =
-  scriptGetsRole theActionKeyboard >>= maybe (pure ()) (flip runEventAction key)
+  scriptGetsRole theActionKeyPress >>= maybe (pure ()) (flip runEventAction key)
 
 -- | Delegate or send a new 'PixelMouse' mouse-over event to the current 'Actor' of the
 -- 'Script' function context.
@@ -933,33 +942,33 @@ actorMouseOver mouse =
 
 -- | Delegate or send a new mouse down event to the current 'Actor' of the 'Script' function
 -- context.
-actorDown :: MouseButton -> PixelMouse -> Script model ()
-actorDown button mouse =
+actorMouseDown :: MouseButton -> PixelMouse -> Script model ()
+actorMouseDown button mouse =
   scriptGetsRole (view $ actionMouseDown button) >>= maybe (pure ()) (flip runEventAction mouse)
 
 -- | Delegate or send a new mouse click event to the current 'Actor' of the 'Script' function
 -- context.
-actorClick :: MouseButton -> PixelMouse -> Script model ()
-actorClick button mouse =
+actorMouseClick :: MouseButton -> PixelMouse -> Script model ()
+actorMouseClick button mouse =
   scriptGetsRole (view $ actionMouseClick button) >>= maybe (pure ()) (flip runEventAction mouse)
 
 -- | Delegate or send a new 'MouseSignal' double click event to the current 'Actor' of the
 -- 'Script' function context.
-actorDoubleClick :: MouseButton -> PixelMouse -> Script model ()
-actorDoubleClick button mouse =
+actorMouseDoubleClick :: MouseButton -> PixelMouse -> Script model ()
+actorMouseDoubleClick button mouse =
   scriptGetsRole (view $ actionMouseDouble button) >>= maybe (pure ()) (flip runEventAction mouse)
 
 -- | Delegate or send a new 'Mouse' double click event to the current 'Actor' of the 'Script'
 -- function context.
-actorDrag :: MouseButton -> Maybe PixelMouse -> Script model ()
-actorDrag button mouse =
+actorMouseDrag :: MouseButton -> Maybe PixelMouse -> Script model ()
+actorMouseDrag button mouse =
   scriptGetsRole (view $ actionMouseDrag button) >>= maybe (pure ()) (flip runEventAction mouse)
 
 -- | Delegate or send a new animation event to the current 'Actor' of the 'Script' function
 -- context.
-actorAnimate :: UTCTime -> Script model ()
-actorAnimate t =
-  scriptGetsRole theActionAnimation >>= maybe (pure ()) (flip runEventAction t)
+actorStepAnimate :: UTCTime -> Script model ()
+actorStepAnimate t =
+  scriptGetsRole theActionStepAnimate >>= maybe (pure ()) (flip runEventAction t)
 
 -- | Calls all relevant "enclose" functions to create a closure around an entire 'Role' by creating
 -- a closure around an every 'EventAction' or 'DrawAction' function stored within the 'Role'.
@@ -974,12 +983,12 @@ encloseRole ref pack = Role
   , theRoleLabel        = theRoleLabel pack
   , theActionDraw       = theActionDraw pack
   , theActionRedraw     = theActionRedraw pack
-  , theActionSelect     = encloseEventAction ref <$> theActionSelect    pack
-  , theActionKeyboard   = encloseEventAction ref <$> theActionKeyboard  pack
+  , theActionFocus     = encloseEventAction ref <$> theActionFocus    pack
+  , theActionKeyPress   = encloseEventAction ref <$> theActionKeyPress  pack
   , theActionMouseOver  = encloseEventAction ref <$> theActionMouseOver pack
   , theActionRightMouse = encloseMouseEvents ref $ theActionRightMouse  pack
   , theActionLeftMouse  = encloseMouseEvents ref $ theActionLeftMouse   pack
-  , theActionAnimation  = encloseEventAction ref <$> theActionAnimation pack
+  , theActionStepAnimate  = encloseEventAction ref <$> theActionStepAnimate pack
   }
 
 -- | Calls all relevant "enclose" functions to create a closure around an entire 'RoleMouseEvents'
@@ -1170,56 +1179,76 @@ actWindow initSize = do
   actVisibleFrame %=
     (rect2DHead .~ initSize) .
     (rect2DTail .~ point2D)
-  actForceRedraw
-  resetEventHandlers
+  guiForceRedraw
+  actDelegateEventHandlers
 
--- Event handler resets
+----------------------------------------------------------------------------------------------------
+-- Event handler delegate resets
 
--- | This function clears the window and redraws everything using the 'actionRedraw', or if there is
--- no drawing for 'actionRedraw' then 'actionDraw' is used. The 'scriptStepDrawing' function is
--- evaluated.
-actForceRedraw
-  :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
+guiSetEventHandler
+  :: Strict.Text
+  -> Lens' (Role model) (Maybe (EventAction event model))
+  => ((signal -> GUI provider (Act model) ()) -> GUI provider (Act model) ())
+  -> GUI provider (Act model) ()
+guiSetEventHandler typemsg handlerLens delegate = do
+  role <- actRoleGets id
+  let handler = role ^. handlerLens
+  case handler of
+    Nothing -> pure ()
+    Just{}  -> report OBJECT $
+      "-- ENABLE " <> typemsg <>
+      " events for: " <> (role ^. roleLabel)
+  delegate $ case handler of
+    Nothing -> const cancel
+    Just handler -> \ event ->
+      guiRunScript (runEventAction handler event) >>=
+      throwConsequence
+
+actDelegateKeyboard
+  :: (CanKeyboard provider, ProvidesLogReporter provider)
   => GUI provider (Act stage) ()
-actForceRedraw = do
-  let bgcolor = black & alphaChannel .~ 0.9 -- TODO: make background color configurable
-  frame <- use actVisibleFrame
-  (draw, redraw) <- guiRunScript scriptStepDrawing >>= throwConsequence
-  onCanvas $ do
-    clearRegions (rect2DUnionSingle frame) bgcolor
-    draw2D frame $ maybe draw id redraw
+actDelegateKeyboard = do
+  role <- actRoleGets id
+  let keyHandler = role ^. actionKeyPress
+  case keyHandler of
+    Nothing -> pure ()
+    Just{}  -> report OBJECT $ "-- ENABLE keyboard events for: " <> (role ^. roleLabel)
+  keyboardEvents $ case keyHandler of
+    Nothing -> const cancel
+    Just keyHandler -> \ event ->
+      guiRunScript (runEventAction keyHandler event) >>=
+      throwConsequence
 
--- | This function is used to perform an animation step. It clears the current region using the
--- bounding box of 'actionDraw', and then draws using 'actionRedraw'. The 'actionDraw' is then set
--- to the value of 'actionRedraw' and the value of 'actionRedraw' is set to 'Nothing'.
-actRedraw
-  :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
+actDelegateStepAnimate
+  :: ( CanAnimate provider, HappletWindow provider render
+     , Managed provider, Happlet2DGraphics render
+     , ProvidesLogReporter provider
+     )
   => GUI provider (Act stage) ()
-actRedraw = do
-  let bgcolor = black & alphaChannel .~ 0.9 -- TODO: make background color configurable
-  (draw, redraw) <- guiRunScript scriptStepDrawing >>= throwConsequence
-  case redraw of
-    Nothing     -> pure ()
-    Just redraw -> do
-      frame <- use actVisibleFrame
-      onCanvas $ do
-        flip clearRegions bgcolor $
-          theRect2DUnionMask draw <>
-          theRect2DUnionMask redraw
-        draw2D frame draw
+actDelegateStepAnimate = do
+  role <- actRoleGets id
+  let animHandler = role ^. actionStepAnimate
+  case animHandler of
+    Nothing -> pure ()
+    Just{}  -> report OBJECT $ "-- ENABLE animation events for: " <> (role ^. roleLabel)
+  stepFrameEvents $ case animHandler of
+    Nothing -> const cancel
+    Just animHandler -> \ event ->
+      guiRunScript (runEventAction animHandler event) >>=
+      throwConsequence
 
-actResetMouseEvents
+actDelegateMouse
   :: ( CanAnimate provider, CanMouse provider, Managed provider
      , HappletWindow provider render, Happlet2DGraphics render
      , ProvidesLogReporter provider
      )
   => GUI provider (Act stage) ()
-actResetMouseEvents =
+actDelegateMouse =
   actRoleGets id >>= \ role ->
   let stats = roleEventStats role in
   let remark filter =
-        report EVENT $
-        "-- enable " <> (Strict.pack $ show filter) <>
+        report OBJECT $
+        "-- ENABLE " <> (Strict.pack $ show filter) <>
         " events for: " <> (role ^. roleLabel)
   in
   let has f =
@@ -1235,55 +1264,154 @@ actResetMouseEvents =
   then remark MouseButton >> react MouseButton
   else mouseSignals MouseAll (const cancel)
 
-actResetKeyboardEvents
-  :: (CanKeyboard provider, ProvidesLogReporter provider)
-  => GUI provider (Act stage) ()
-actResetKeyboardEvents = do
-  role <- actRoleGets id
-  let keyHandler = role ^. actionKeyboard
-  case keyHandler of
-    Nothing -> pure ()
-    Just{}  -> report EVENT $ "-- enable keyboard events for: " <> (role ^. roleLabel)
-  keyboardEvents $ case keyHandler of
-    Nothing -> const cancel
-    Just keyHandler -> \ event ->
-      guiRunScript (runEventAction keyHandler event) >>=
-      throwConsequence
-
-actResetAnimationEvents
-  :: ( CanAnimate provider, HappletWindow provider render
-     , Managed provider, Happlet2DGraphics render
-     , ProvidesLogReporter provider
-     )
-  => GUI provider (Act stage) ()
-actResetAnimationEvents = do
-  role <- actRoleGets id
-  let animHandler = role ^. actionAnimation
-  case animHandler of
-    Nothing -> pure ()
-    Just{}  -> report EVENT $ "-- enable animation events for: " <> (role ^. roleLabel)
-  stepFrameEvents $ case animHandler of
-    Nothing -> const cancel
-    Just animHandler -> \ event ->
-      guiRunScript (runEventAction animHandler event) >>=
-      throwConsequence
-
-resetEventHandlers
+actDelegateEventHandlers
   :: ( CanMouse provider, CanKeyboard provider, CanAnimate provider, Managed provider
      , HappletWindow provider render, Happlet2DGraphics render
      , ProvidesLogReporter provider
      )
   => GUI provider (Act stage) ()
-resetEventHandlers = do
-  stats <- actGetActorStats
-  report EVENT $ Strict.pack $ "resetEventHandlers:\n" <> (show stats)
-  newSize <- onCanvas getViewSize
-  actVisibleFrame %= (rect2DHead .~ newSize)
-  actResetMouseEvents stats
-  actResetKeyboardEvents
-  actResetAnimationEvents stats
+actDelegateEventHandlers = do
+  frame <- onCanvas getViewRect
+  actVisibleFrame .= frame
+  actDelegateMouse
+  actDelegateKeyboard
+  actDelegateStepAnimate
 
 ----------------------------------------------------------------------------------------------------
+-- Event handler triggers
+
+-- | This function clears the window and redraws everything using the 'actionRedraw', or if there is
+-- no drawing for 'actionRedraw' then 'actionDraw' is used. The 'scriptStepDrawing' function is
+-- evaluated.
+guiForceRedraw
+  :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
+  => GUI provider (Act stage) ()
+guiForceRedraw = do
+  let bgcolor = black & alphaChannel .~ 0.9 -- TODO: make background color configurable
+  frame <- use actVisibleFrame
+  (draw, redraw) <- guiRunScript scriptStepDrawing >>= throwConsequence
+  onCanvas $ do
+    clearRegions (rect2DUnionSingle frame) bgcolor
+    draw2D frame $ maybe draw id redraw
+
+-- | This function is used to perform an animation step. It clears the current region using the
+-- bounding box of 'actionDraw', and then draws using 'actionRedraw'. The 'actionDraw' is then set
+-- to the value of 'actionRedraw' and the value of 'actionRedraw' is set to 'Nothing'.
+guiRedraw
+  :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
+  => GUI provider (Act stage) ()
+guiRedraw = do
+  let bgcolor = black & alphaChannel .~ 0.9 -- TODO: make background color configurable
+  (draw, redraw) <- guiRunScript scriptStepDrawing >>= throwConsequence
+  case redraw of
+    Nothing     -> pure ()
+    Just redraw -> do
+      frame <- use actVisibleFrame
+      onCanvas $ do
+        flip clearRegions bgcolor $
+          theRect2DUnionMask draw <>
+          theRect2DUnionMask redraw
+        draw2D frame draw
+
+-- | Triggers other event handlers
+actTriggerHandler
+  :: (Show event, ProvidesLogReporter provider)
+  => ReportLevel -- ^ Animation and mouse drag events are at a whole other level
+  -> Strict.Text -- ^ Used in reports to indicate the kind of event this is handling
+  -> Lens' (Role model) (Maybe (EventAction event model))
+  -> event
+  -> GUI provider (Act model) ()
+actTriggerHandler level actmsg handlerLens event = do
+  role <- actRoleGets
+  report level $ "-- EVENT " <> actmsg <> " with data: " <> Strict.pack (show event)
+  let runAction handler = do
+        let txt = theActionText handler
+        report level $
+          ("-- ACTION on " <> (role ^. roleLabel)) &
+          if Strict.null txt then id else ((" triggers:\n" <> txt) <>)
+        theAction handler
+  let doCancel =
+        guiRunScript (scriptModify $ scriptRole . handlerLens .~ Nothing) >>=
+        throwConsequence
+  guiRunScript
+    ( scriptGetsRole (view handlerLens) >>=
+      maybe cancel runAction
+    ) >>= \ case
+      ActionCancel -> do
+        doCancel
+        report OBJECT $
+          "-- DISABLE " <> actmsg <> " events for: " <> (role ^. roleLabel)
+      ActionFail err -> do
+        doCancel
+        report OBJECT $
+          "-- FAILURE on " <> actmsg <>
+          "\n--   in event handler for:\n-- " <> (role ^. roleLabel) <>
+          "\n--   Reason given: " <> err
+      _ -> return ()  
+
+-- | Force an 'onFocus' event. Usually this happens when a Happlets app window which was not active
+-- is activated by a mouse down occurring in the window.
+guiFocus
+  :: (ProvidesLogReporter provider)
+  => Keyboard -> GUI provider (Act model) ()
+guiFocus = actTriggerEventHandler EVENT "onFocus" actionFocus
+
+-- | Force an 'onKeyPress' event on the 'Actor' in the current 'Act'.
+guiKeyPress ::
+  :: (ProvidesLogReporter provider)
+  => Keyboard -> GUI provider (Act model) ()
+guiKeyPress = actTriggerHandler EVENT "onKeyPress" actionKeyPress
+
+-- | Force an 'onMouseOver' event on the 'Actor' in the current 'Act'.
+guiMouseOver
+  :: (ProvidesLogReporter provider)
+  => PixelMouse -> GUI provider (Act model) ()
+guiMouseOver = actTriggerHandler EVENT "onMouseOver" actionMouseOver
+
+-- | Force an 'onMouseDown' event on the 'Actor' in the current 'Act'.
+guiMouseDown
+  :: (ProvidesLogReporter provider)
+  => MouseButton -> PixelMouse -> GUI provider (Act model) ()
+guiMouseDown button =
+  actTriggerHandler EVENT
+  ("onMouseDown " <> Strict.pack (show button))
+  (actionMouseDown button)
+
+-- | Force an 'onMouseClick' event on the 'Actor' in the current 'Act'.
+guiMouseClick
+  :: (ProvidesLogReporter provider)
+  => MouseButton -> PixelMouse -> GUI provider (Act model) ()
+guiMouseClick button =
+  actTriggerHandler EVENT
+  ("onMouseClick " <> Strict.pack (show button))
+  (actionMouseClick button)
+
+-- | Force an 'onMouseDoubleClick' event on the 'Actor' in the current 'Act'.
+guiMouseDoubleClick
+  :: (ProvidesLogReporter provider)
+  => MouseButton -> PixelMouse -> GUI provider (Act model) ()
+guiMouseDoubleClick button =
+  actTriggerHandler EVENT
+  ("onMouseDoubleClick " <> Strict.pack (show button))
+  (actionMouseDoubleClick button)
+
+-- | Force an 'onMouseDrag' event on the 'Actor' in the current 'Act'.
+guiMouseDrag
+  :: (ProvidesLogReporter provider)
+  => MouseButton -> PixelMouse -> GUI provider (Act model) ()
+guiMouseDrag button =
+  actTriggerHandler DEBUG_ALL
+  ("onMouseDrag " <> Strict.pack (show button))
+  (actionMouseDrag button)
+
+-- | Force an 'onAnimation' event on the 'Actor' in the current 'Act'.
+guiStepAnimate
+  :: (ProvidesLogReporter provider)
+  => MouseButton -> PixelMouse -> GUI provider (Act model) ()
+guiStepAnimate = actTriggerHandler DEBUG_ALL "onStepAnimate" actionStepAnimate
+
+----------------------------------------------------------------------------------------------------
+-- MouseSignal FSA for triggering events
 
 -- | There are two 'MouseState' values in an act, one for the left and right mouse buttons, so each
 -- mouse button has it's own state value. This data structure along with the 'MouseFSA' determines
@@ -1366,14 +1494,14 @@ actMouseHandler
      )
   => MouseSignal -> GUI provider (Act stage) ()
 actMouseHandler new@(MouseSignal _ pressed mods signalButton coord) = case signalButton of
-  MotionOnly | not pressed -> actMouseOver $
+  MotionOnly | not pressed -> guiMouseOver $
     Mouse2D
     { theMouse2DPosition = coord
     , theMouse2DModifiers = mods
     }
   LeftClick  -> debounce actLeftMouseState
   RightClick -> debounce actRightMouseState
-  _ -> report EVENT $ Strict.pack $ "ignored mouse signal (" <> show new <> ")"
+  _ -> report SIGNAL $ Strict.pack $ "ignored mouse signal (" <> show new <> ")"
   where
     debounce buttonLens = do
       -- TODO: certain constant values have been hard-coded into this function, like the
@@ -1390,7 +1518,7 @@ actMouseHandler new@(MouseSignal _ pressed mods signalButton coord) = case signa
           -- If the time difference between button-down and button-up signals are too small, the
           -- event is ignored, the latest event is recorded, overwriting the previously recorded
           -- event.
-          report EVENT $ Strict.pack $ "actMouseHandler: debounce (" <> show new <> ")"
+          report SIGNAL $ Strict.pack $ "actMouseHandler: debounce (" <> show new <> ")"
           cloneLens buttonLens . mouseStateSignal .= Just new
         else do
           -- Here we set the mouse signal to be processed and pass control over to
@@ -1399,8 +1527,8 @@ actMouseHandler new@(MouseSignal _ pressed mods signalButton coord) = case signa
           cloneLens buttonLens . mouseStateSignal .= Just new
           cloneLens buttonLens . mouseStateTime   .= present
           stats <- actGetActorStats
-          if countActionAnimation stats <= 0 then actActualMouseHandler else
-            report EVENT $ Strict.pack $ "actMouseHandler: defer event " <> show new
+          if countActionStepAnimate stats <= 0 then actActualMouseHandler else
+            report SIGNAL $ Strict.pack $ "actMouseHandler: defer event " <> show new
 
 -- | This function implements the interpretation of the 'MouseFSA', so it sets 'theMouseStateFSA'
 -- and will transition the state when expected 'MouseSignal's are received. Unexpected

@@ -8,7 +8,8 @@
 -- been made at the time of this writing.
 module Happlets.View
   ( -- * 2D Graphics Typeclass
-    Happlet2DGraphics(..), Sized2DRaster(..), BlitOperator(..), modifyPixel, defaultClearScreen,
+    Happlet2DGraphics(..), Sized2DRaster(..), BlitOperator(..),
+    getViewRect, modifyPixel, defaultClearScreen,
     -- * Image Buffers
     Happlet2DBuffersPixels(..), Source, Target,
     -- * Re-Exports
@@ -42,8 +43,8 @@ type Target image = image
 class Sized2DRaster render where
   getViewSize :: render PixSize
 
-defaultRasterBounds :: (Functor render, Sized2DRaster render) => render (Rect2D SampCoord)
-defaultRasterBounds = getViewSize <&> \ size ->
+getViewRect :: (Functor render, Sized2DRaster render) => render (Rect2D SampCoord)
+getViewRect = getViewSize <&> \ size ->
   rect2D &
   rect2DHead .~ size &
   rect2DTail .~ point2D
@@ -107,7 +108,7 @@ class (Functor render, Applicative render, Monad render, MonadIO render, Sized2D
 defaultClearScreen :: Happlet2DGraphics render => Color -> render ()
 defaultClearScreen c = tempContext $ do
   resetGraphicsContext
-  bounds <- defaultRasterBounds
+  bounds <- getViewRect
   draw2D bounds $ drawing
     [ Draw2DShapes
       (FillOnly $ paintColor c)

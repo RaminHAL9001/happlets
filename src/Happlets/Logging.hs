@@ -13,20 +13,33 @@ import qualified Data.Text as Strict
 -- as long as higher 'Int' values indicate higher priority messages.
 data ReportLevel
   = DEBUG_ALL
-    -- ^ Print all events, including animation event handlers and mouse drag event handlers. Reports
-    -- at this level produce many megabytes of log text in minutes.
+    -- ^ Report everything, including animation event handlers and mouse drag event
+    -- handlers. Reports at this level produce many megabytes of log text in minutes.
+  | SIGNAL
+   -- ^ Report all incomming low-level signal received, __except for__ animation or mouse drag
+   -- events.
   | EVENT
-    -- ^ Most event signals that come in are reported, only animation and mouse drag events are not
-    -- printed at this level.
+    -- ^ Report high-level events that have been generated after interpreting the signal stream,
+    -- only animation and mouse drag events are not printed at this level. This also prints event
+    -- delegation calls, so can produce a lot of logging information.
   | OBJECT
-    -- ^ Reporting of the initialization and destruction of objects (closures) and changing event
-    -- handlers go at this level.
-  | DEBUG Int -- ^ User-defined report levels. Lower levels are more important.
-  | INFO  -- ^ Non-essential reports that can be safely ignored.
-  | WARN  -- ^ The default report level.
+    -- ^ Report initialization and destruction of objects (closures) and the activation or
+    -- deactivation of event handlers.
+  | DEBUG Int
+    -- ^ User-defined report levels. Higher levels are more important.
+  | INFO
+    -- ^ Report Non-essential messages that can be safely ignored. If you have a "--verbose" flag to
+    -- your program, set this 'ReportLevel'. Here you can print computational progress information
+    -- that might notify a command-line user of what computations are happening, estimated and
+    -- actual execution time information, or telemetry data if your app doesn't require very
+    -- rigorous or sophisticated telemetry.
+  | WARN
+    -- ^ The default report level. Report on missing information, or actions that were not taken due
+    -- to some runtime condition not being met, or when a default setting overrides a user-requested
+    -- setting because user setting was nonsense.
   | ERROR
-    -- ^ Highest-priority report level, messages are always printed. Caught exceptions should
-    -- reported be at this level.
+    -- ^ Highest-priority report level, messages at this level are always printed regardless of the
+    -- debug level filter. Caught exceptions should reported be at this level.
   deriving (Eq, Ord, Show)
 
 type LogReporter m = ReportLevel -> Strict.Text -> m ()
