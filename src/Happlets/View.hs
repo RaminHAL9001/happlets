@@ -24,7 +24,7 @@ import           Happlets.View.Text
 import           Happlets.View.Types2D
 import           Happlets.Provider.ConfigState
 
-import           Control.Lens ((&), (.~))
+import           Control.Lens ((&), (<&>), (.~))
 import           Control.Monad.IO.Class
 
 ----------------------------------------------------------------------------------------------------
@@ -41,6 +41,12 @@ type Target image = image
 -- the size of the pixel raster as a 'PixSize' value.
 class Sized2DRaster render where
   getViewSize :: render PixSize
+
+defaultRasterBounds :: (Functor render, Sized2DRaster render) => render (Rect2D SampCoord)
+defaultRasterBounds = getViewSize <&> \ size ->
+  rect2D &
+  rect2DHead .~ size &
+  rect2DTail .~ point2D
 
 -- | This is a set of of drawing primitives functions for updating the graphics in a Happlet window,
 -- which is essentially a subset of Cairo Graphics or Rasterific. This class must instantiate
@@ -80,7 +86,7 @@ class (Functor render, Applicative render, Monad render, MonadIO render, Sized2D
   -- 'Rect2DUnion' clip region so that the drawing algorithm can prune 'Draw2DPrimitive's that do of
   -- the 'Drawing' that do not intersect with any part of the 'Rect2DUnion' can be pruned from the
   -- drawing.
-  draw2D :: Rect2D -> Drawing SampCoord -> render ()
+  draw2D :: Rect2D SampCoord -> Drawing SampCoord -> render ()
 
   -- | Set all pixels in the screen graphics to the same color value given by the 'fillColor',
   -- deleting all graphics that existed prior. This function does not reset the 'clipRegion'.
@@ -90,7 +96,10 @@ class (Functor render, Applicative render, Monad render, MonadIO render, Sized2D
   -- mean to redraw nothing. This is more convenient for programmers as they do not have to
   -- construct a 'Rect2DUnion' encompassing the entire screen if they want to force-redraw the
   -- entire screen, they can instead simply pass 'mempty' to force redraw the entire screen.
-  clearScreen :: Rect2DUnion SampCoord -> Color -> render ()
+  clearRegions :: Rect2DUnion SampCoord -> Color -> render ()
+
+  -- | Like 'clearRegions' but clears the whole screen.
+  clearScreen :: Color -> render ()
 
 -- | This function provides a default implementation for 'clearScreen' for the 'Happlet2DGraphics'
 -- typeclass, as long as the @render@ function that instantiates the 'Happlet2DGraphics' typeclass
@@ -98,7 +107,8 @@ class (Functor render, Applicative render, Monad render, MonadIO render, Sized2D
 defaultClearScreen :: Happlet2DGraphics render => Color -> render ()
 defaultClearScreen c = tempContext $ do
   resetGraphicsContext
-  draw2D mempty $ drawing
+  bounds <- defaultRasterBounds
+  draw2D bounds $ drawing
     [ Draw2DShapes
       (FillOnly $ paintColor c)
       [Draw2DRect (rect2D & rect2DHead .~ V2 maxBound maxBound)]

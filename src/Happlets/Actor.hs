@@ -51,16 +51,17 @@ import           Happlets.Model.Registry
                    Store, debugPrintRegistry
                  )
 import           Happlets.View
-                 ( Happlet2DGraphics(draw2D),
+                 ( Happlet2DGraphics(draw2D, clearScreen, clearRegions),
                    HappletWindow(onCanvas),
                    Sized2DRaster(getViewSize),
                    Has2DOrigin(origin2D)
                  )
+import           Happlets.View.Color (black, alphaChannel, dark)
 import           Happlets.View.Types2D
                  ( SampCoord, PixSize, PixCoord, Point2D, V2(..),
                    Rect2D, rect2D, point2D, rect2DSize, rect2DHead, rect2DTail,
-                   Drawing, drawingIsNull, canonicalize2DShape,
-                   rect2DUnion, rect2DUnionNull, theBoundingBox,
+                   Drawing, drawingIsNull, canonicalize2DShape, theRect2DUnionMask,
+                   rect2DUnion, rect2DUnionSingle, rect2DUnionNull, theBoundingBox,
                  )
 import           Happlets.Control.Animate (CanAnimate(stepFrameEvents))
 import           Happlets.Control.Consequence
@@ -82,6 +83,7 @@ import           Happlets.Control.Keyboard
 import           Happlets.Control.WindowManager
 
 import           Control.Applicative (Alternative(..))
+import           Control.Arrow ((&&&))
 import           Control.Lens
                  ( Lens', lens, cloneLens, view, set, use, assign,
                    (&), (^.), (%~), (.~), (<>=), (.=), (%=)
@@ -171,6 +173,10 @@ instance CatchConsequence (Script model) where
 
 instance ThrowConsequence (Script model) where
   throwConsequence = Script . throwConsequence
+
+instance CanWriteReports (Script any) where
+  report lvl msg =
+    scriptGets theScriptLogger >>= \ log -> scriptIO $ log lvl msg
 
 instance Monoid a => Semigroup (Script model a) where
   a <> b = mappend <$> (a <|> pure mempty) <*> (b <|> pure mempty)
@@ -308,14 +314,16 @@ scriptRedraw redraw = scriptModify $
 -- not 'Nothing', it sets the 'actionDraw' value to the value of 'actionRedraw' then clears
 -- 'actionRedraw' to 'Nothing'. This is necessary for an update, for example, during animation or
 -- mouse dragging.
-scriptStepDrawing :: Script (Drawing, Maybe Drawing)
+scriptStepDrawing :: Script model (Drawing SampCoord, Maybe (Drawing SampCoord))
 scriptStepDrawing = do
-  draw <- scriptGetsRole (view actionDraw &&& view actionRedraw)
-  scriptModify $
-    scriptRole %~
-    (actionDraw .~ redraw) .
-    (actionRedraw .~ Nothing)
-  pure draw
+  drawings@(draw, redraw) <- scriptGetsRole (view actionDraw &&& view actionRedraw)
+  case redraw of
+    Nothing -> pure ()
+    Just redraw -> scriptModify $
+      scriptRole %~
+      (actionDraw .~ redraw) .
+      (actionRedraw .~ Nothing)
+  pure drawings
 
 -- | A function of type 'OnQueue' is an instruction to modify the behavior of a 'Actor', it
 -- sets an 'EventAction' handler for a 'Actor'. All 'OnQueue' functions take a continuation
@@ -1170,15 +1178,16 @@ actWindow initSize = do
 -- | This function clears the window and redraws everything using the 'actionRedraw', or if there is
 -- no drawing for 'actionRedraw' then 'actionDraw' is used. The 'scriptStepDrawing' function is
 -- evaluated.
-actForceRedraw ::
+actForceRedraw
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
   => GUI provider (Act stage) ()
 actForceRedraw = do
-  let bgcolor = black & alphaChannel %~ dark 0.9 -- TODO: make background color configurable
+  let bgcolor = black & alphaChannel .~ 0.9 -- TODO: make background color configurable
   frame <- use actVisibleFrame
-  clearScreen (rect2DUnionSingle frame) bgcolor
-  (draw, redraw) <- guiRunScript scriptStepDrawing
-  onCavnas $ draw2D frame $ maybe draw id redraw
+  (draw, redraw) <- guiRunScript scriptStepDrawing >>= throwConsequence
+  onCanvas $ do
+    clearRegions (rect2DUnionSingle frame) bgcolor
+    draw2D frame $ maybe draw id redraw
 
 -- | This function is used to perform an animation step. It clears the current region using the
 -- bounding box of 'actionDraw', and then draws using 'actionRedraw'. The 'actionDraw' is then set
@@ -1187,17 +1196,17 @@ actRedraw
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
   => GUI provider (Act stage) ()
 actRedraw = do
-  let bgcolor = black & alphaChannel %~ dark 0.9 -- TODO: make background color configurable
-  (draw, redraw) <- guiRunScript scriptStepDrawing
+  let bgcolor = black & alphaChannel .~ 0.9 -- TODO: make background color configurable
+  (draw, redraw) <- guiRunScript scriptStepDrawing >>= throwConsequence
   case redraw of
     Nothing     -> pure ()
     Just redraw -> do
-      onCavnas $
-        flip clearScreen bgcolor $
-        getRect2DUnionMask draw <>
-        getRect2DUnionMask redraw
       frame <- use actVisibleFrame
-      onCavnas $ draw2D frame draw
+      onCanvas $ do
+        flip clearRegions bgcolor $
+          theRect2DUnionMask draw <>
+          theRect2DUnionMask redraw
+        draw2D frame draw
 
 actResetMouseEvents
   :: ( CanAnimate provider, CanMouse provider, Managed provider
@@ -1206,12 +1215,13 @@ actResetMouseEvents
      )
   => GUI provider (Act stage) ()
 actResetMouseEvents =
-  guiRoleGets id >>= \ role ->
+  actRoleGets id >>= \ role ->
   let stats = roleEventStats role in
-  let remark filter which =
+  let remark filter =
         report EVENT $
         "-- enable " <> (Strict.pack $ show filter) <>
         " events for: " <> (role ^. roleLabel)
+  in
   let has f =
         maybe 0 f (countActionMouseRight stats) > 0 ||
         maybe 0 f (countActionMouseLeft  stats) > 0

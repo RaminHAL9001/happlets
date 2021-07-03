@@ -110,10 +110,6 @@ data Scene
       -- monad's coordinate system.
     }
 
-instance CanWriteReports (Script any) where
-  report lvl msg =
-    scriptGets theScriptLogger >>= \ log -> scriptIO $ log lvl msg
-
 -- | not for export
 --
 -- The Registry for the 'Scene' contains a reference to all 'Actors'.
