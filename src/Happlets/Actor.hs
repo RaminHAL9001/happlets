@@ -7,9 +7,9 @@
 -- behind the 'Script' function type, which simplifies program logic a great deal.
 module Happlets.Actor
   ( -- ** Scenes
-    Scene, sceneWindow, newActHapplet, sceneLiftIO,
+    Scene, sceneWindow, newSceneHapplet, sceneLiftIO,
     -- ** The Actor data type
-    Actor, actor, actress, modifyLabel, getLabel,
+    Actor, actor, actress, modifySelfLabel, getSelfLabel,
     -- *** The Presence data type
     Presence, thePresenceActor, actorPresence, getPresenceLabel,
     -- ** The Script function type
@@ -256,13 +256,13 @@ scriptFrame = lens theScriptFrame $ \ a b -> a{ theScriptFrame = b }
 --
 -- Provide a function for modifying the description, the modified description is returned. Evaluate
 -- @('selfDescribe' 'id')@ to retrieve the description without modifying it.
-modifyLabel :: (Strict.Text -> Strict.Text) -> Script model Strict.Text
-modifyLabel f = scriptModify (scriptRole . roleLabel %~ f) >> getLabel
+modifySelfLabel :: (Strict.Text -> Strict.Text) -> Script model Strict.Text
+modifySelfLabel f = scriptModify (scriptRole . roleLabel %~ f) >> getSelfLabel
 
 -- | Get the self-applied label set by 'modifyLabel'. This arbitrary text can be used to identify
 -- actors, and is especially useful for debugging.
-getLabel :: Script model Strict.Text
-getLabel = scriptGetsRole theRoleLabel
+getSelfLabel :: Script model Strict.Text
+getSelfLabel = scriptGetsRole theRoleLabel
 
 -- | This function hands control over to another 'Actor' to act out another 'Script' function, then
 -- returns control to the current 'Script' and 'Actor'.
@@ -1009,9 +1009,9 @@ encloseMouseEvents ref = maybe Nothing $ \ pack -> Just $
 -- reports the string you return as an 'INFO'-level report. This function is commonly used for
 -- debugging since it is a bit more concise than writing:
 --
--- @'getLabel' 'Control.Monad.>>=' 'report' 'INFO' ("Object label: " 'Data.Semigroup.<>')@
+-- @'getSelfLabel' 'Control.Monad.>>=' 'report' 'INFO' ("Object label: " 'Data.Semigroup.<>')@
 reportSelfLabel :: (Strict.Text -> Strict.Text) -> Script model ()
-reportSelfLabel msg = getLabel >>= report INFO . msg
+reportSelfLabel msg = getSelfLabel >>= report INFO . msg
 
 -- | Print a debug message before and after evaluating a 'Script' function.
 reportSubScript :: Strict.Text -> Script model a -> Script model a
@@ -1141,12 +1141,12 @@ sceneLiftIO = (get >>=) . (liftIO .)
 -- 'Script' that executes which places 'Actor's onto the @stage@. You must provide an initial
 -- @stage@ value, and executing the initialzing 'Script' sets the event handlers that will prompt
 -- execution of various other 'Script's delegated to other 'Actor's.
-newActHapplet
+newSceneHapplet
   :: ProvidesLogReporter provider
   => stage
   -> Script stage ()
   -> Initialize provider (Happlet (Scene stage))
-newActHapplet stage init =
+newSceneHapplet stage init =
   gets theActualLogReporter >>= \ logger ->
   newHappletIO $
   liftIO (makeActorIO $ role stage) >>= \ actor ->
