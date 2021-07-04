@@ -8,20 +8,27 @@
 module Happlets.Actor
   ( -- ** Scenes
     Scene, sceneWindow, newSceneHapplet, sceneLiftIO,
-    -- ** The Actor data type
-    Actor, actor, actress, modifySelfLabel, getSelfLabel,
-    -- *** The Presence data type
-    Presence, thePresenceActor, actorPresence, getPresenceLabel,
+
     -- ** The Script function type
     Script, scriptWithActor, scriptWithPresence,
+
+    -- ** The Actor data type
+    Actor, actor, actress, modifySelfLabel, getSelfLabel,
+
+    -- *** The Presence data type
+    Presence, thePresenceActor, actorPresence, getPresenceLabel,
+
     -- ** Event Handlers
     OnQueue, onDraw, scriptRedraw, onFocus, onKeyPress, onStepAnimate,
     onMouseOver, onMouseDown, onMouseClick, onMouseDoubleClick, onMouseDrag,
+
     -- *** Event Types
     Mouse2D(..), PixelMouse, MouseButton(..), mouse2DPosition, mouse2DModifiers,
     module Happlets.Control.Keyboard,
+
     -- *** Event Handler Types
     EventAction(..), runEventAction,
+
     -- *** Delegating Events
     --
     -- These functions trigger an event handler on some other 'Actor' which is known to the current
@@ -34,11 +41,13 @@ module Happlets.Actor
     -- If you like the whole 'Actor'-'Scene'-'Script' model provided in this code library, but you
     -- don't like how events are dispatched, you can come up with your own method of executing
     -- 'Script's within the 'GUI' function, and you can force event handlers to trigger.
-    guiRunScriptWith, guiRunScript,
+    guiRunScriptWith, guiRunScript, unsafeScriptIO,
+
     -- *** Forcing Events from within GUI
     guiForceRedraw, guiRedraw, guiKeyPress, guiFocus,
     guiMouseDown, guiMouseClick, guiMouseDoubleClick, guiMouseDrag,
     guiStepAnimate,
+
     -- ** Actor event handler accounting
     --
     -- Used to count which event handlers are set for particular 'Actor's. This is useful for
@@ -183,7 +192,7 @@ instance ThrowConsequence (Script model) where
 
 instance CanWriteReports (Script any) where
   report lvl msg =
-    scriptGets theScriptLogger >>= \ log -> scriptIO $ log lvl msg
+    scriptGets theScriptLogger >>= \ log -> unsafeScriptIO $ log lvl msg
 
 instance Monoid a => Semigroup (Script model a) where
   a <> b = mappend <$> (a <|> pure mempty) <*> (b <|> pure mempty)
@@ -219,15 +228,12 @@ runScript (Script f) frame logger actor@(Actor{thePresenceActor=(Presence untype
     writeIORef untyped $ encloseRole actor role
   return (result, st)
 
-debugEventHandlerStats :: Strict.Text -> Script model ()
-debugEventHandlerStats message = do
-  role <- scriptGets theScriptRole
-  report EVENT $ message <> "\n  Role:\n" <> theRoleLabel role <>
-    "\n  Event handler stats:\n" <> Strict.pack (show $ roleEventStats role)
-
--- | not for export
-scriptIO :: IO a -> Script model a
-scriptIO = Script . liftIO
+-- | Perform an arbitrary @IO@ action within a 'Script' function. This NOT guaranteed to be thread
+-- safe at all, not even a little bit. If you are only making updates to mutable arrays or IORefs,
+-- then it should be OK to use. But if you are spawning threads or updating 'MVar', all such
+-- behavior is undefined.
+unsafeScriptIO :: IO a -> Script model a
+unsafeScriptIO = Script . liftIO
 
 -- | not for export
 scriptGets :: (ScriptState model -> a) -> Script model a
@@ -468,118 +474,6 @@ data RoleMouseEvents model
       -- remove itself when drag ends.
     }
 
--- | Expresses information about which event handlers in a 'Actor' are set as an integer so that the
--- number of 'Role's that respond to a particular event type can be counted. This is used to
--- determine whether a group of 'Role's needs to maintain the event handler in the 'Happlet'
--- environment.
-data ActorEventHandlerStats
-  = ActorEventHandlerStats
-    { countActors            :: !Int
-      -- ^ Does the actor exist? This is here to simply count the number of 'Actor's in a group. It
-      -- is zero only if this 'ActorEventHandlerStats' value is 'mempty'.
-    , countActionDraw        :: !Int
-      -- ^ Non-zero if an 'Actor' is drawn, meaning it can be drawn to the screen
-    , countActionRedraw      :: !Int
-      -- ^ Non-zero if an 'Actor' is to be redrawn
-    , countActionFocus      :: !Int
-      -- ^ Non-zero if an 'Actor' responds to selection actions
-    , countActionKeyPress    :: !Int
-      -- ^ Non-zero if an 'Actor' responds to 'Keyboard' actions
-    , countActionMouseOver   :: !Int
-      -- ^ Non-zero if an 'Actor' responds to mouse-over events.
-    , countActionMouseRight  :: !(Maybe MouseEventHandlerStats)
-      -- ^ Non-zero if an 'Actor' responds to any mouse button events.
-    , countActionMouseLeft   :: !(Maybe MouseEventHandlerStats)
-      -- ^ Non-zero if an 'Actor' responds to any mouse button events.
-    , countActionStepAnimate :: !Int
-      -- ^ Non-zero if an 'Actor' responds to animation step events
-    }
-
-data MouseEventHandlerStats
-  = MouseEventHandlerStats
-    { countActionMouseDown   :: !Int
-    , countActionMouseClick  :: !Int
-    , countActionMouseDouble :: !Int
-    , countActionMouseDrag   :: !Int
-    }
-
-instance Monoid ActorEventHandlerStats where
-  mappend = (<>)
-  mempty = ActorEventHandlerStats
-    { countActors            = 0
-    , countActionDraw        = 0
-    , countActionRedraw      = 0
-    , countActionFocus       = 0
-    , countActionKeyPress    = 0
-    , countActionMouseOver   = 0
-    , countActionMouseRight  = mempty
-    , countActionMouseLeft   = mempty
-    , countActionStepAnimate = 0
-    }
-
-instance Monoid MouseEventHandlerStats where
-  mappend = (<>)
-  mempty = MouseEventHandlerStats
-    { countActionMouseDown   = 0
-    , countActionMouseClick  = 0
-    , countActionMouseDouble = 0
-    , countActionMouseDrag   = 0
-    }
-
-instance Semigroup ActorEventHandlerStats where
-  a <> b = let add f = f a + f b in ActorEventHandlerStats
-    { countActors            = add countActors
-    , countActionDraw        = add countActionDraw
-    , countActionRedraw      = add countActionRedraw
-    , countActionFocus       = add countActionFocus
-    , countActionKeyPress    = add countActionKeyPress
-    , countActionMouseOver   = add countActionMouseOver
-    , countActionMouseRight  = countActionMouseRight a <> countActionMouseRight b
-    , countActionMouseLeft   = countActionMouseLeft  a <> countActionMouseLeft  b
-    , countActionStepAnimate = add countActionStepAnimate
-    }
-
-instance Semigroup MouseEventHandlerStats where
-  a <> b = let add f = f a + f b in MouseEventHandlerStats
-    { countActionMouseDown   = add countActionMouseDown
-    , countActionMouseClick  = add countActionMouseClick
-    , countActionMouseDouble = add countActionMouseDouble
-    , countActionMouseDrag   = add countActionMouseDrag
-    }
-
-instance Show ActorEventHandlerStats where
-  show a =
-    (\ case
-      []    -> "    (no event handlers set)\n"
-      elems -> unlines $ ("    " ++) <$> elems
-    ) $
-    filter (not . null) $
-    let f str item = if item a == 0 then "" else str ++ " = " ++ show (item a) in
-    [ f "           countActors" countActors
-    , f "       countActionDraw" countActionDraw
-    , f "     countActionRedraw" countActionRedraw
-    , f "      countActionFocus" countActionFocus
-    , f "countActionStepAnimate" countActionStepAnimate
-    , f "   countActionKeyPress" countActionKeyPress
-    , f "  countActionMouseOver" countActionMouseOver
-    , showMouseEventHandlerStats "countActionMouseRight" $ countActionMouseRight a
-    , showMouseEventHandlerStats "countActionMouseLeft" $ countActionMouseLeft a
-    ]
-
-showMouseEventHandlerStats :: String -> Maybe MouseEventHandlerStats -> String
-showMouseEventHandlerStats which = maybe "" $ \ a ->
-  (\ case
-      []    -> ""
-      elems -> "  " ++ which ++ ":\n" ++ unlines (("       " ++) <$> elems)
-  ) $
-  filter (not . null) $
-  let f str item = if item a == 0 then "" else str ++ " = " ++ show (item a) in
-  [ f "countActionMouseDown" countActionMouseDown
-  , f "countActionMouseClick" countActionMouseClick
-  , f "countActionMouseDouble" countActionMouseDouble
-  , f "countActionMouseDrag" countActionMouseDrag
-  ]
-
 -- | This is a mouse event type used within a 'Script' and can be transformed according to a
 -- 'Script'. It instantiates 'Functor' so that you can transform 'theMouse2DPosition' to a local
 -- coordinate system (if need be) before passing it on to some even higher-level event handler.
@@ -616,6 +510,7 @@ data MouseButton = RightMouseButton | LeftMouseButton
   deriving (Eq, Ord, Show, Enum)
 
 instance Has2DOrigin Mouse2D where { origin2D = mouse2DPosition; }
+
 roleMouseEvents :: RoleMouseEvents model
 roleMouseEvents = RoleMouseEvents
   { theActionMouseDown = Nothing
@@ -651,81 +546,6 @@ mouse2DPosition = lens theMouse2DPosition $ \ a b -> a{ theMouse2DPosition = b }
 -- | Keyboard modifiers received from the system-level 'Mouse' event data structure.
 mouse2DModifiers :: Lens' (Mouse2D n) ModifierBits
 mouse2DModifiers = lens theMouse2DModifiers $ \ a b -> a{ theMouse2DModifiers = b }
-
--- | Return the 'ActorEventHandlerStats' for the @'Actor' model@ of type that is currently
--- acting out this 'Script'.
-getEventHandlerStats :: Script model ActorEventHandlerStats
-getEventHandlerStats = scriptGetsRole roleEventStats
-
--- | Takes two 'ActorEventHandlerStats' arguments, @a@ and @b@, and on each field @f@ of @a@ and
--- @b@, computes @(f a - f b)@. So if you have two sets of stats, of a 'Role' taken at 2 different
--- times during 'Script' evaluation, let's call them @statsT0@ and @statsT1@, then you will see
--- @'diffActorEventHandlerStats' statsT0 statsT1@ produce fields with a value of @1@ for fields that
--- have been added between T0 and T1, @-1@ for fields that have been removed, and @0@ for fields
--- that are unchanged.
-diffActorEventHandlerStats
-  :: ActorEventHandlerStats
-  -> ActorEventHandlerStats
-  -> ActorEventHandlerStats
-diffActorEventHandlerStats a b =
-  let diff f = f a - f b in
-  ActorEventHandlerStats
-  { countActors            = diff countActors
-  , countActionDraw        = diff countActionDraw
-  , countActionRedraw      = diff countActionRedraw
-  , countActionFocus       = diff countActionFocus
-  , countActionKeyPress    = diff countActionKeyPress
-  , countActionMouseOver   = diff countActionMouseOver
-  , countActionMouseRight  =
-      diffButtonEventHandlerStats (countActionMouseLeft a) (countActionMouseLeft b)
-  , countActionMouseLeft   =
-      diffButtonEventHandlerStats (countActionMouseRight a) (countActionMouseRight b)
-  , countActionStepAnimate = diff countActionStepAnimate
-  }
-
-diffButtonEventHandlerStats
-  :: Maybe MouseEventHandlerStats
-  -> Maybe MouseEventHandlerStats
-  -> Maybe MouseEventHandlerStats
-diffButtonEventHandlerStats a b = case (a, b) of
-  (Nothing, Nothing) -> Nothing
-  (Just  a, Nothing) -> Just a
-  (Nothing, Just  b) -> Just b
-  (Just  a, Just  b) -> 
-    let diff f = f a - f b in Just $
-    MouseEventHandlerStats
-    { countActionMouseDown   = diff countActionMouseDown
-    , countActionMouseClick  = diff countActionMouseClick
-    , countActionMouseDouble = diff countActionMouseDouble
-    , countActionMouseDrag   = diff countActionMouseDrag
-    }
-
-roleEventStats :: forall any . Role any -> ActorEventHandlerStats
-roleEventStats r = ActorEventHandlerStats
-  { countActors            = 1
-  , countActionDraw        = if drawingIsNull (theActionDraw r) then 0 else 1
-  , countActionRedraw      = inc theActionRedraw
-  , countActionFocus       = inc theActionFocus
-  , countActionKeyPress    = inc theActionKeyPress
-  , countActionMouseOver   = inc theActionMouseOver
-  , countActionMouseRight  = mouseEventStats $ theActionRightMouse r
-  , countActionMouseLeft   = mouseEventStats $ theActionLeftMouse r
-  , countActionStepAnimate = inc theActionStepAnimate
-  } where
-    inc :: (Role any -> Maybe void) -> Int
-    inc fromRole = maybe 0 (const 1) (fromRole r)
-
-mouseEventStats :: forall any . Maybe (RoleMouseEvents any) -> Maybe MouseEventHandlerStats
-mouseEventStats = maybe Nothing $ \ r -> if roleMouseEventsNull r then Nothing else Just $
-  MouseEventHandlerStats
-  { countActionMouseDown = inc r theActionMouseDown
-  , countActionMouseClick = inc r theActionMouseClick
-  , countActionMouseDouble = inc r theActionMouseDouble
-  , countActionMouseDrag = inc r theActionMouseDrag
-  }
-  where
-    inc :: RoleMouseEvents any -> (RoleMouseEvents any -> Maybe void) -> Int
-    inc r fromRole = maybe 0 (const 1) (fromRole r)
 
 -- | not for export
 --
@@ -919,7 +739,7 @@ actorPresence self@(Presence ref) = Actor
 -- 'modifyLabel'. This is useful when you have access only to a 'Presence' and not the original
 -- actor, and you want some way to visualize which 'Actor' is assocated with the 'Presence'.
 getPresenceLabel :: Presence -> Script model Strict.Text
-getPresenceLabel (Presence ref) = scriptIO $ view roleLabel <$> readIORef ref
+getPresenceLabel (Presence ref) = unsafeScriptIO $ view roleLabel <$> readIORef ref
 
 -- | Delegate or send a new 'Keyboard' event to the current 'Actor' of the 'Script' function
 -- context.
@@ -1103,9 +923,6 @@ sceneCurrentActor = lens theActCurrentActor $ \ a b -> a{ theActCurrentActor = b
 
 sceneRoleGets :: ProvidesLogReporter provider => (Role stage -> a) -> GUI provider (Scene stage) a
 sceneRoleGets get = guiRunScript (scriptGetsRole get) >>= throwConsequence
-
-sceneGetActorStats :: ProvidesLogReporter provider => GUI provider (Scene stage) ActorEventHandlerStats
-sceneGetActorStats = sceneRoleGets roleEventStats
 
 -- | Execute a 'Script' on a different 'Actor' than the current 'Actor' in the 'Scene'. The current
 -- 'Actor' is not replaced. To change the current 'Actor', simply use the 'put' function. The
@@ -1579,3 +1396,201 @@ sceneActualMouseHandler = stepFSA LeftMouseButton >> stepFSA RightMouseButton wh
                 guiMouseDrag b (Just evt)
                 guiMouseDrag b Nothing
           _ -> ignore
+
+----------------------------------------------------------------------------------------------------
+
+-- | Expresses information about which event handlers in a 'Actor' are set as an integer so that the
+-- number of 'Role's that respond to a particular event type can be counted. This is used to
+-- determine whether a group of 'Role's needs to maintain the event handler in the 'Happlet'
+-- environment.
+data ActorEventHandlerStats
+  = ActorEventHandlerStats
+    { countActors            :: !Int
+      -- ^ Does the actor exist? This is here to simply count the number of 'Actor's in a group. It
+      -- is zero only if this 'ActorEventHandlerStats' value is 'mempty'.
+    , countActionDraw        :: !Int
+      -- ^ Non-zero if an 'Actor' is drawn, meaning it can be drawn to the screen
+    , countActionRedraw      :: !Int
+      -- ^ Non-zero if an 'Actor' is to be redrawn
+    , countActionFocus      :: !Int
+      -- ^ Non-zero if an 'Actor' responds to selection actions
+    , countActionKeyPress    :: !Int
+      -- ^ Non-zero if an 'Actor' responds to 'Keyboard' actions
+    , countActionMouseOver   :: !Int
+      -- ^ Non-zero if an 'Actor' responds to mouse-over events.
+    , countActionMouseRight  :: !(Maybe MouseEventHandlerStats)
+      -- ^ Non-zero if an 'Actor' responds to any mouse button events.
+    , countActionMouseLeft   :: !(Maybe MouseEventHandlerStats)
+      -- ^ Non-zero if an 'Actor' responds to any mouse button events.
+    , countActionStepAnimate :: !Int
+      -- ^ Non-zero if an 'Actor' responds to animation step events
+    }
+
+data MouseEventHandlerStats
+  = MouseEventHandlerStats
+    { countActionMouseDown   :: !Int
+    , countActionMouseClick  :: !Int
+    , countActionMouseDouble :: !Int
+    , countActionMouseDrag   :: !Int
+    }
+
+instance Monoid ActorEventHandlerStats where
+  mappend = (<>)
+  mempty = ActorEventHandlerStats
+    { countActors            = 0
+    , countActionDraw        = 0
+    , countActionRedraw      = 0
+    , countActionFocus       = 0
+    , countActionKeyPress    = 0
+    , countActionMouseOver   = 0
+    , countActionMouseRight  = mempty
+    , countActionMouseLeft   = mempty
+    , countActionStepAnimate = 0
+    }
+
+instance Monoid MouseEventHandlerStats where
+  mappend = (<>)
+  mempty = MouseEventHandlerStats
+    { countActionMouseDown   = 0
+    , countActionMouseClick  = 0
+    , countActionMouseDouble = 0
+    , countActionMouseDrag   = 0
+    }
+
+instance Semigroup ActorEventHandlerStats where
+  a <> b = let add f = f a + f b in ActorEventHandlerStats
+    { countActors            = add countActors
+    , countActionDraw        = add countActionDraw
+    , countActionRedraw      = add countActionRedraw
+    , countActionFocus       = add countActionFocus
+    , countActionKeyPress    = add countActionKeyPress
+    , countActionMouseOver   = add countActionMouseOver
+    , countActionMouseRight  = countActionMouseRight a <> countActionMouseRight b
+    , countActionMouseLeft   = countActionMouseLeft  a <> countActionMouseLeft  b
+    , countActionStepAnimate = add countActionStepAnimate
+    }
+
+instance Semigroup MouseEventHandlerStats where
+  a <> b = let add f = f a + f b in MouseEventHandlerStats
+    { countActionMouseDown   = add countActionMouseDown
+    , countActionMouseClick  = add countActionMouseClick
+    , countActionMouseDouble = add countActionMouseDouble
+    , countActionMouseDrag   = add countActionMouseDrag
+    }
+
+instance Show ActorEventHandlerStats where
+  show a =
+    (\ case
+      []    -> "    (no event handlers set)\n"
+      elems -> unlines $ ("    " ++) <$> elems
+    ) $
+    filter (not . null) $
+    let f str item = if item a == 0 then "" else str ++ " = " ++ show (item a) in
+    [ f "           countActors" countActors
+    , f "       countActionDraw" countActionDraw
+    , f "     countActionRedraw" countActionRedraw
+    , f "      countActionFocus" countActionFocus
+    , f "countActionStepAnimate" countActionStepAnimate
+    , f "   countActionKeyPress" countActionKeyPress
+    , f "  countActionMouseOver" countActionMouseOver
+    , showMouseEventHandlerStats "countActionMouseRight" $ countActionMouseRight a
+    , showMouseEventHandlerStats "countActionMouseLeft" $ countActionMouseLeft a
+    ]
+
+showMouseEventHandlerStats :: String -> Maybe MouseEventHandlerStats -> String
+showMouseEventHandlerStats which = maybe "" $ \ a ->
+  (\ case
+      []    -> ""
+      elems -> "  " ++ which ++ ":\n" ++ unlines (("       " ++) <$> elems)
+  ) $
+  filter (not . null) $
+  let f str item = if item a == 0 then "" else str ++ " = " ++ show (item a) in
+  [ f "countActionMouseDown" countActionMouseDown
+  , f "countActionMouseClick" countActionMouseClick
+  , f "countActionMouseDouble" countActionMouseDouble
+  , f "countActionMouseDrag" countActionMouseDrag
+  ]
+
+-- | Takes two 'ActorEventHandlerStats' arguments, @a@ and @b@, and on each field @f@ of @a@ and
+-- @b@, computes @(f a - f b)@. So if you have two sets of stats, of a 'Role' taken at 2 different
+-- times during 'Script' evaluation, let's call them @statsT0@ and @statsT1@, then you will see
+-- @'diffActorEventHandlerStats' statsT0 statsT1@ produce fields with a value of @1@ for fields that
+-- have been added between T0 and T1, @-1@ for fields that have been removed, and @0@ for fields
+-- that are unchanged.
+diffActorEventHandlerStats
+  :: ActorEventHandlerStats
+  -> ActorEventHandlerStats
+  -> ActorEventHandlerStats
+diffActorEventHandlerStats a b =
+  let diff f = f a - f b in
+  ActorEventHandlerStats
+  { countActors            = diff countActors
+  , countActionDraw        = diff countActionDraw
+  , countActionRedraw      = diff countActionRedraw
+  , countActionFocus       = diff countActionFocus
+  , countActionKeyPress    = diff countActionKeyPress
+  , countActionMouseOver   = diff countActionMouseOver
+  , countActionMouseRight  =
+      diffButtonEventHandlerStats (countActionMouseLeft a) (countActionMouseLeft b)
+  , countActionMouseLeft   =
+      diffButtonEventHandlerStats (countActionMouseRight a) (countActionMouseRight b)
+  , countActionStepAnimate = diff countActionStepAnimate
+  }
+
+diffButtonEventHandlerStats
+  :: Maybe MouseEventHandlerStats
+  -> Maybe MouseEventHandlerStats
+  -> Maybe MouseEventHandlerStats
+diffButtonEventHandlerStats a b = case (a, b) of
+  (Nothing, Nothing) -> Nothing
+  (Just  a, Nothing) -> Just a
+  (Nothing, Just  b) -> Just b
+  (Just  a, Just  b) -> 
+    let diff f = f a - f b in Just $
+    MouseEventHandlerStats
+    { countActionMouseDown   = diff countActionMouseDown
+    , countActionMouseClick  = diff countActionMouseClick
+    , countActionMouseDouble = diff countActionMouseDouble
+    , countActionMouseDrag   = diff countActionMouseDrag
+    }
+
+roleEventStats :: forall any . Role any -> ActorEventHandlerStats
+roleEventStats r = ActorEventHandlerStats
+  { countActors            = 1
+  , countActionDraw        = if drawingIsNull (theActionDraw r) then 0 else 1
+  , countActionRedraw      = inc theActionRedraw
+  , countActionFocus       = inc theActionFocus
+  , countActionKeyPress    = inc theActionKeyPress
+  , countActionMouseOver   = inc theActionMouseOver
+  , countActionMouseRight  = mouseEventStats $ theActionRightMouse r
+  , countActionMouseLeft   = mouseEventStats $ theActionLeftMouse r
+  , countActionStepAnimate = inc theActionStepAnimate
+  } where
+    inc :: (Role any -> Maybe void) -> Int
+    inc fromRole = maybe 0 (const 1) (fromRole r)
+
+mouseEventStats :: forall any . Maybe (RoleMouseEvents any) -> Maybe MouseEventHandlerStats
+mouseEventStats = maybe Nothing $ \ r -> if roleMouseEventsNull r then Nothing else Just $
+  MouseEventHandlerStats
+  { countActionMouseDown = inc r theActionMouseDown
+  , countActionMouseClick = inc r theActionMouseClick
+  , countActionMouseDouble = inc r theActionMouseDouble
+  , countActionMouseDrag = inc r theActionMouseDrag
+  }
+  where
+    inc :: RoleMouseEvents any -> (RoleMouseEvents any -> Maybe void) -> Int
+    inc r fromRole = maybe 0 (const 1) (fromRole r)
+
+debugEventHandlerStats :: Strict.Text -> Script model ()
+debugEventHandlerStats message = do
+  role <- scriptGets theScriptRole
+  report EVENT $ message <> "\n  Role:\n" <> theRoleLabel role <>
+    "\n  Event handler stats:\n" <> Strict.pack (show $ roleEventStats role)
+
+-- | Return the 'ActorEventHandlerStats' for the @'Actor' model@ of type that is currently
+-- acting out this 'Script'.
+getEventHandlerStats :: Script model ActorEventHandlerStats
+getEventHandlerStats = scriptGetsRole roleEventStats
+
+sceneGetActorStats :: ProvidesLogReporter provider => GUI provider (Scene stage) ActorEventHandlerStats
+sceneGetActorStats = sceneRoleGets roleEventStats
