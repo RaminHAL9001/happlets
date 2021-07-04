@@ -19,7 +19,7 @@ module Happlets.Actor
     Presence, thePresenceActor, actorPresence, getPresenceLabel,
 
     -- ** Event Handlers
-    OnQueue, onDraw, scriptRedraw, onFocus, onKeyPress, onStepAnimate,
+    OnQueue, onDraw, onRedraw, onFocus, onKeyPress, onStepAnimate,
     onMouseOver, onMouseDown, onMouseClick, onMouseDoubleClick, onMouseDrag,
 
     -- *** Event Types
@@ -33,7 +33,7 @@ module Happlets.Actor
     --
     -- These functions trigger an event handler on some other 'Actor' which is known to the current
     -- 'Actor'. You can simulate events in animations using these functions as well.
-    actorFocus, actorKeyPress,
+    actorDraw, actorRedraw, actorFocus, actorKeyPress,
     actorMouseOver, actorMouseDown, actorMouseClick, actorMouseDoubleClick, actorMouseDrag,
     actorStepAnimate,
     -- ** Executing Scripts from within 'GUI'
@@ -311,32 +311,17 @@ scriptWithPresence f =
 ----------------------------------------------------------------------------------------------------
 
 -- | While not an 'OnQueue' function, this function can be used to queue a drawing operation for the
--- 'Actor' for the current @model@ that is being 'Script'ed. See also the 'scriptRedraw'
+-- 'Actor' for the current @model@ that is being 'Script'ed. See also the 'onRedraw'
 -- function, which lets you update the existing 'Drawing' for the current 'Actor'.
 onDraw :: Drawing SampCoord -> Script model ()
 onDraw = scriptModify . set (scriptRole . actionRedraw) . Just
 
 -- | This function accomplishes the same thing as 'onDraw', but allows you to directly manipulate
 -- the drawing function that is currently set for the current 'Actor'.
-scriptRedraw :: (Drawing SampCoord -> Drawing SampCoord) -> Script model ()
-scriptRedraw redraw = scriptModify $
+onRedraw :: (Drawing SampCoord -> Drawing SampCoord) -> Script model ()
+onRedraw redraw = scriptModify $
   scriptRole %~ \ role -> role &
   actionRedraw .~ Just (redraw $ maybe (role ^. actionDraw) id $ role ^. actionRedraw)
-
--- | Returns the current 'actionDraw' and 'actionRedraw' value, and then if the 'actionRedraw' is
--- not 'Nothing', it sets the 'actionDraw' value to the value of 'actionRedraw' then clears
--- 'actionRedraw' to 'Nothing'. This is necessary for an update, for example, during animation or
--- mouse dragging.
-scriptStepDrawing :: Script model (Drawing SampCoord, Maybe (Drawing SampCoord))
-scriptStepDrawing = do
-  drawings@(_, redraw) <- scriptGetsRole (view actionDraw &&& view actionRedraw)
-  case redraw of
-    Nothing -> pure ()
-    Just redraw -> scriptModify $
-      scriptRole %~
-      (actionDraw .~ redraw) .
-      (actionRedraw .~ Nothing)
-  pure drawings
 
 -- | A function of type 'OnQueue' is an instruction to modify the behavior of a 'Actor', it
 -- sets an 'EventAction' handler for a 'Actor'. All 'OnQueue' functions take a continuation
@@ -741,6 +726,25 @@ actorPresence self@(Presence ref) = Actor
 getPresenceLabel :: Presence -> Script model Strict.Text
 getPresenceLabel (Presence ref) = unsafeScriptIO $ view roleLabel <$> readIORef ref
 
+-- | Returns the current 'Drawing' for the current 'Actor'.
+actorDraw :: Script model (Drawing SampCoord)
+actorDraw = scriptGetsRole $ view actionDraw
+
+-- | Returns the current 'actionDraw' and 'actionRedraw' value, and then if the 'actionRedraw' is
+-- not 'Nothing', it sets the 'actionDraw' value to the value of 'actionRedraw' then clears
+-- 'actionRedraw' to 'Nothing'. This is necessary for an update, for example, during animation or
+-- mouse dragging.
+actorRedraw :: Script model (Drawing SampCoord, Maybe (Drawing SampCoord))
+actorRedraw = do
+  drawings@(_, redraw) <- scriptGetsRole (view actionDraw &&& view actionRedraw)
+  case redraw of
+    Nothing -> pure ()
+    Just redraw -> scriptModify $
+      scriptRole %~
+      (actionDraw .~ redraw) .
+      (actionRedraw .~ Nothing)
+  pure drawings
+
 -- | Delegate or send a new 'Keyboard' event to the current 'Actor' of the 'Script' function
 -- context.
 actorFocus :: Bool -> Script model ()
@@ -1078,7 +1082,7 @@ sceneDelegateEventHandlers = do
 -- Event handler triggers
 
 -- | This function clears the window and redraws everything using the 'actionRedraw', or if there is
--- no drawing for 'actionRedraw' then 'actionDraw' is used. The 'scriptStepDrawing' function is
+-- no drawing for 'actionRedraw' then 'actionDraw' is used. The 'actorRedraw' function is
 -- evaluated.
 guiForceRedraw
   :: (HappletWindow provider render, Happlet2DGraphics render, ProvidesLogReporter provider)
@@ -1086,7 +1090,7 @@ guiForceRedraw
 guiForceRedraw = do
   let bgcolor = black & alphaChannel .~ 0.9 -- TODO: make background color configurable
   frame <- use sceneVisibleFrame
-  (draw, redraw) <- guiRunScript scriptStepDrawing >>= throwConsequence
+  (draw, redraw) <- guiRunScript actorRedraw >>= throwConsequence
   onCanvas $ do
     clearRegions (rect2DUnionSingle frame) bgcolor
     draw2D frame $ maybe draw id redraw
@@ -1099,7 +1103,7 @@ guiRedraw
   => GUI provider (Scene stage) ()
 guiRedraw = do
   let bgcolor = black & alphaChannel .~ 0.9 -- TODO: make background color configurable
-  (draw, redraw) <- guiRunScript scriptStepDrawing >>= throwConsequence
+  (draw, redraw) <- guiRunScript actorRedraw >>= throwConsequence
   case redraw of
     Nothing     -> pure ()
     Just redraw -> do
