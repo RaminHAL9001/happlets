@@ -74,8 +74,7 @@ registryEnqueueNew obj reg = do
   registryEnqueue ref reg
   return ref
 
--- | Like 'registryEnqueueNew', but you are required to allocate your own 'IORef', and wrap your
--- registered object in an 'IndexSelf' constructor yourself, in order to store the object.
+-- | Like 'registryEnqueueNew', but you are required to allocate your own 'IORef'.
 registryEnqueue :: IORef obj -> Registry obj -> IO ()
 registryEnqueue objref (Registry{theRegistryStore=storeref}) =
   withStoreIO storeref $
