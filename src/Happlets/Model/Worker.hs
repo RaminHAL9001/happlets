@@ -28,7 +28,7 @@ import           Happlets.Model.GUI
 import           Control.Concurrent
 import           Control.Exception
 import           Control.Lens
-import           Control.Monad.Fail
+--import           Control.Monad.Fail -- uncomment if building with GHC version less than 8.8
 import           Control.Monad.Reader
 import           Control.Monad.State
 

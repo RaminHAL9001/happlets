@@ -106,7 +106,7 @@ import           Control.Lens
                  )
 import           Control.Monad (MonadPlus(..), guard, when, (>=>))
 import           Control.Monad.Except (MonadError(throwError, catchError))
-import           Control.Monad.Fail (MonadFail(fail))
+--import           Control.Monad.Fail -- uncomment if building with GHC version less than 8.8
 import           Control.Monad.IO.Class (MonadIO(..))
 import           Control.Monad.State
                  ( MonadState(state, get), StateT(..),
