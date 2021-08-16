@@ -59,7 +59,7 @@ import           Control.Lens
                  ( (&), (^.), (.~), (+~), (-~),
                    Lens', Iso', lens, iso, view, cloneLens
                  )
-import           Control.Monad (mapM_, guard)
+import           Control.Monad (guard)
 
 import           Data.Int  (Int32)
 import           Data.Function (on)
@@ -525,10 +525,10 @@ arc2DEnd = lens theArc2DEnd $ \ a b -> a{ theArc2DEnd = b }
 -- | Returns the origin and the points used to compute 'theBoundingBox'. The list of points returned
 -- will include all points that touch the minimum bounding box of the arc.
 arc2DPoints :: (Real n, Quantizable n) => Arc2D n -> (Point2D n, [Point2D n])
-arc2DPoints (Arc2D (V2 x y) (Magnitude r) start0 end0) = (V2 x y, points) where
+arc2DPoints (Arc2D (V2 x y) (Magnitude r) (Angle start0) (Angle end0)) = (V2 x y, points) where
   lim theta = let mod = theta / (2*pi) in 2*pi * (mod - realToFrac (floor mod :: Integer))
-  start = lim $ min start end
-  end   = lim $ max start end
+  start = lim $ min start0 end0
+  end   = lim $ max start0 end0
   between a b c = a <= (c::Double) && c <= b
   points = fmap snd $
     filter ((if start0 <= end0 then id else flip) between start end . fst)

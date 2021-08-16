@@ -52,7 +52,7 @@ class HappletWindow provider render | provider -> render where
   --
   -- This function is essential to widget libraries, as every widget must set it's own clip region
   -- before drawing itself.
-  windowClipRegion :: ConfigState (GUI provider model) (Maybe (Rect2D SampCoord))
+  windowClipRegion :: ConfigState (GUI provider model) (Rect2DUnion SampCoord)
 
   -- | Construct a 'GUI' function which evaluates a @render@ function that updates the happlet's own
   -- "canvas", which is an image buffer accessible only to your happlet, (it serves as the invisible
